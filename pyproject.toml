@@ -24,6 +24,8 @@ docker = ["docker>=7.0"]
 k8s = ["kubernetes>=29.0"]
 # 仿真结果作图
 analysis = ["matplotlib>=3.8"]
+# 读取 parquet 格式的数据集（ML.ENERGY Benchmark）
+data = ["pyarrow>=15"]
 # 文档编译（Typst 编译器的 Python 封装）
 docs = ["typst>=0.12"]
 dev = ["pytest>=8.0", "matplotlib>=3.8"]

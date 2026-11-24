@@ -30,7 +30,7 @@ python scripts/smoke_test.py              # 端到端：各服务独立进程启
 python scripts/real_gpu_check.py --restart  # 有真实 GPU 站点时：压测 + 功率轨迹 + 关停重启
 ```
 
-新增功能时请附带单元测试；没有真实硬件的传感器，用伪造的 sysfs 目录或命令输出测试解析逻辑（参考 `tests/test_sensors.py`）。
+单元测试使用 `tests/data/scenario.yaml`（合成负载与随包电网数据，不需要下载）。新增功能时请附带单元测试；没有真实硬件的传感器，用伪造的 sysfs 目录或命令输出测试解析逻辑（参考 `tests/test_sensors.py`）。
 涉及外部依赖的失败处理，用 `httpx.MockTransport` 注入连接失败、503、超时等故障，断言状态与指标（参考 `tests/test_faults.py`）。
 
 == 持续集成与镜像发布
@@ -95,4 +95,8 @@ NVIDIA Container Toolkit 并以 `--gpus all` 启动；WSL2 中 `libnvidia-ml.so`
 #qa[kind 部署卡在等待就绪？][`kubectl --context kind-cpc -n cpc get pods` 查看状态；`ErrImagePull` 多为镜像未加载，重新运行
 `python deploy/k8s/kind_up.py --skip-build`；`describe pod` 查看事件。]
 
-#qa[仿真结果每次都一样吗？][负载生成使用场景中的 `workload.seed`，相同场景与策略的仿真结果可复现；改变种子可评估随机性的影响。]
+#qa[仿真结果每次都一样吗？][负载数据集固定版本并校验，到达率缩放与来源区域分配使用场景中的 `workload.seed`，
+相同场景与策略的仿真结果可复现；改变种子可评估随机性的影响。]
+
+#qa[提示数据集缺失或校验失败？][运行 `cpc data fetch <名称>` 下载；已下载的文件被修改或数据源更新了文件时校验失败，
+可删除缓存目录中的对应文件后重新下载。数据源发布新版本时，应在清单中更新版本、地址与校验和。]

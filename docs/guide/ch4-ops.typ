@@ -102,6 +102,51 @@ class MyAccel(Sensor):
 
 用 `CPC_PLUGINS=my_sensors cpc sensors --types my-accel` 测试。
 
+= 数据集 <g-data>
+
+== 查看与下载
+
+```bash
+cpc data list                                   # 全部数据集：类别、版本、本地状态（就绪 / 未下载 / 不完整 / 合成）、大小、许可
+cpc data info azure-llm-2024-conv               # 清单：来源、许可、引用、文件地址与 SHA-256、本地路径
+cpc data fetch azure-llm-2023-conv mooncake-fast25-conversation
+cpc data verify azure-llm-2024-conv             # 重新校验本地文件
+cpc data summary azure-llm-2024-conv            # 请求数、时长、平均到达率、token 均值
+cpc data summary burstgpt-1 --params '{"include_failed": false}'
+```
+
+文件下载到 `$CPC_DATA_DIR`（缺省 `~/.cache/cpc/datasets`）下的 `<名称>/<版本>/`，下载后逐一校验 SHA-256。外部下载使用系统代理设置。
+受控访问的数据集（`mlenergy-benchmark-v3-llm`）需先在其 Hugging Face 页面申请访问，再以环境变量 `HF_TOKEN` 提供访问令牌；
+读取 parquet 文件需要 `pip install -e ".[data]"`（pyarrow）。
+
+== 在场景中使用
+
+```yaml
+workload:
+  dataset: azure-llm-2024-conv
+  start_s: 230400        # 时间窗起点（原始 trace 秒）
+  duration_s: 86400      # 时间窗长度
+  time_scale: 1.0        # >1 表示时间压缩
+  rate_scale: 0.5        # 到达率缩放
+  seed: 1
+grid:
+  price:  {dataset: cn-tou-tariffs}
+  carbon: {dataset: cn-provincial-carbon-2023}
+```
+
+美国平衡区的逐时碳强度示例见 `configs/scenario.us-eia.yaml`（`eia930-carbon-2024h1`，排放因子在场景中显式给出）。
+对全部已下载的公开数据集运行仿真检验：`python scripts/dataset_check.py`（结果写入 `results/dataset-check/summary.md`）。
+
+== 标定节点参数
+
+```bash
+cpc data calibrate mlenergy-benchmark-v3-llm --model meta-llama/Llama-3.1-405B-Instruct-FP8 \
+    --gpu H100 --task lm-arena-chat --num-gpus 8 --slots 128     # 默认场景节点参数的来源
+```
+
+输出可写入场景 `node_profiles` 的参数（`gpus`、`slots`、`gpu_active_min_w`、`gpu_max_w`、`power_exponent`、
+`decode_s_per_token`、`decode_slowdown`）、拟合残差与所用运行。空载功率、主机功率与预填充吞吐不在数据集中，须另行给定。
+
 = 健康状态与故障排查 <g-health>
 
 == 健康与就绪接口
@@ -142,9 +187,10 @@ class MyAccel(Sensor):
     header: ("命令", "作用"),
     [`cpc up`], [本机单进程启动全部服务（`--speedup`、`--routing`、`--capacity`、`--interval`、`--no-controller`）],
     [`cpc grid` / `site` / `gateway` / `controller`], [单独启动某个服务（`-s` 场景、`-e` 地址文件或 `--local`、`--host`/`--port` 覆盖监听地址）],
-    [`cpc loadgen`], [负载生成（`--duration`、`--rps`、`--trace`、`--no-stream`、`--model`、`--out`）],
-    [`cpc sim`], [离散事件仿真（`--routing`、`--capacity`、`--hours`、`--rps`、`--out`）],
-    [`cpc compare`], [并行仿真多组策略（`--runs "路由:容量,..."`）],
+    [`cpc loadgen`], [负载生成（`--duration`、`--start-s`、`--duration-s`、`--time-scale`、`--rate-scale`、`--no-stream`、`--model`、`--out`）],
+    [`cpc sim`], [离散事件仿真（`--routing`、`--capacity`、`--hours`、负载变换参数、`--out`）],
+    [`cpc compare`], [并行仿真多组策略（`--runs "路由:容量,..."`、负载变换参数）],
+    [`cpc data`], [数据集：`list`、`info`、`fetch`、`verify`、`summary`、`calibrate`],
     [`cpc report`], [仿真结果作图],
     [`cpc signals` / `cpc rtt`], [打印电网信号 / RTT 矩阵],
     [`cpc event`], [注入需求响应事件（`--site`、`--cap-kw`、`--duration-min`）],
@@ -163,6 +209,8 @@ class MyAccel(Sensor):
     columns: (12em, 1fr),
     header: ("变量", "作用"),
     [`CPC_ENDPOINTS`], [地址文件路径（等价于 `-e`）],
+    [`CPC_DATA_DIR`], [数据集缓存目录，缺省 `~/.cache/cpc/datasets`],
+    [`HF_TOKEN`], [Hugging Face 访问令牌（下载受控访问的数据集）],
     [`CPC_LOG_FORMAT`], [日志格式：`text`（默认）或 `json`（结构化日志）],
     [`CPC_ADMIN_TOKEN`], [管理接口令牌；服务端校验、控制器与命令行工具调用时自动携带],
     [`CPC_PLUGINS`], [逗号分隔的插件模块名（策略、传感器）],
@@ -175,7 +223,7 @@ class MyAccel(Sensor):
 == 场景文件常改的字段
 
 - 改站点：`sites[]`（增删站点后，Kubernetes 部署需重新运行 `deploy/k8s/generate.py`，Compose 需相应增删 `site-*` 服务）；
-- 改负载：`workload.rps`、`diurnal_amplitude`、`peak_hour`、token 分布；
+- 改负载：`workload.dataset` 与时间窗、`time_scale`、`rate_scale`；
 - 改日期：`clock.start`（决定季节与分时时段）；
 - 加需求响应：`grid.dr_events[]`；
 - 改默认策略：`scheduler.routing`、`scheduler.capacity`；

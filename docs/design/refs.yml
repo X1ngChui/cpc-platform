@@ -184,3 +184,105 @@ yang2023parttime:
   parent:
     type: repository
     title: arXiv preprint
+wang2025burstgpt:
+  type: article
+  title: 'BurstGPT: A Real-World Workload Dataset to Optimize LLM Serving Systems'
+  author:
+  - Wang, Yuxin
+  - Chen, Yuhan
+  - Li, Zeyu
+  - Kang, Xueze
+  - Fang, Yuchu
+  - Zhou, Yeju
+  - Zheng, Yang
+  - Tang, Zhenheng
+  - He, Xin
+  - Guo, Rui
+  - Wang, Xin
+  - Wang, Qiang
+  - Zhou, Amelie Chi
+  - Chu, Xiaowen
+  date: 2025
+  serial-number:
+    doi: 10.1145/3711896.3737413
+  parent:
+    type: proceedings
+    title: Proceedings of the 31st ACM SIGKDD Conference on Knowledge Discovery and Data Mining (KDD '25)
+qin2025mooncake:
+  type: article
+  title: 'Mooncake: Trading More Storage for Less Computation — A KVCache-centric Architecture for Serving LLM Chatbot'
+  author:
+  - Qin, Ruoyu
+  - Li, Zheming
+  - He, Weiran
+  - Cui, Jialei
+  - Ren, Feng
+  - Zhang, Mingxing
+  - Wu, Yongwei
+  - Zheng, Weimin
+  - Xu, Xinran
+  date: 2025
+  page-range: 155-170
+  parent:
+    type: proceedings
+    title: 23rd USENIX Conference on File and Storage Technologies (FAST '25)
+chung2025mlenergy:
+  type: article
+  title: 'The ML.ENERGY Benchmark: Toward Automated Inference Energy Measurement and Optimization'
+  author:
+  - Chung, Jae-Won
+  - Ma, Jeff J.
+  - Wu, Ruofan
+  - Liu, Jiachen
+  - Kweon, Oh Jun
+  - Xia, Yuxuan
+  - Wu, Zhiyu
+  - Chowdhury, Mosharaf
+  date: 2025
+  parent:
+    type: proceedings
+    title: NeurIPS Datasets and Benchmarks Track
+mlenergy2025v3:
+  type: web
+  title: The ML.ENERGY Benchmark v3 Dataset (revision f4db020)
+  author: ML.ENERGY Initiative
+  date: 2025
+  url: https://huggingface.co/datasets/ml-energy/benchmark-v3
+eia930:
+  type: web
+  title: Hourly Electric Grid Monitor (Form EIA-930), Six-Month File 2024 January–June
+  author: U.S. Energy Information Administration
+  date: 2024
+  url: https://www.eia.gov/electricity/gridmonitor/
+ipcc2014annex3:
+  type: article
+  title: 'Annex III: Technology-specific Cost and Performance Parameters'
+  author:
+  - Schlömer, Steffen
+  - Bruckner, Thomas
+  - Fulton, Lew
+  - Hertwich, Edgar
+  - McKinnon, Alan
+  - Perczyk, Daniel
+  - Roy, Joyashree
+  - Schaeffer, Roberto
+  - Sims, Ralph
+  - Smith, Pete
+  - Wiser, Ryan
+  date: 2014
+  parent:
+    type: book
+    title: 'Climate Change 2014: Mitigation of Climate Change. Contribution of Working Group III to the Fifth Assessment Report of the Intergovernmental Panel on Climate Change'
+    publisher: Cambridge University Press
+electricitymaps2026factors:
+  type: repository
+  title: 'electricitymaps-contrib: config/defaults.yaml（默认生命周期排放因子，提交 0b6b5c6）'
+  author: Electricity Maps
+  date: 2026
+  url: https://github.com/electricitymaps/electricitymaps-contrib/blob/0b6b5c6378d3022ab505394eec70b8256fe36ab8/config/defaults.yaml
+azure2024trace:
+  type: web
+  title: Azure LLM Inference Trace 2024（AzurePublicDataset，发布 dataset-llm-2024）
+  author: Microsoft Azure
+  date: 2024
+  url: https://github.com/Azure/AzurePublicDataset/blob/master/AzureLLMInferenceDataset2024.md

@@ -50,10 +50,14 @@ node_profiles:
     host_max_w: 120
   default: {}
 
-workload:
-  rps: 2
-  input_tokens: {mean: 300, sigma: 0.5}
-  output_tokens: {mean: 64, sigma: 0.5, max: 256}
+grid:
+  price:  {dataset: cn-tou-tariffs}
+  carbon: {dataset: cn-provincial-carbon-2023}
+
+workload:                      # Azure LLM Inference Trace 2023（对话，1 小时，平均约 5.5 请求/秒）稀疏化到约 2 请求/秒
+  dataset: azure-llm-2023-conv
+  rate_scale: 0.4
+  seed: 1
 
 scheduler:
   routing: {policy: least_loaded}

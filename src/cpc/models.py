@@ -16,10 +16,14 @@ from .config import NetworkConfig, NodeProfile, Scenario, SiteConfig, SourceRegi
 
 
 def gpu_power_w(p: NodeProfile, occupancy: float, cap_ratio: float = 1.0) -> float:
-    """单卡功率：P = P_idle + (P_cap − P_idle)·occ^α，P_cap = max(P_idle, cap·P_max)。"""
+    """单卡功率。占用率为 0 时为空载功率 P_idle；否则 P = P_a + (P_cap − P_a)·occ^α，
+    其中 P_a 为在服务时的功率下限 gpu_active_min_w（未给出时取 P_idle），P_cap = max(P_a, cap·P_max)。"""
     occ = min(max(occupancy, 0.0), 1.0)
-    p_cap = max(p.gpu_idle_w, cap_ratio * p.gpu_max_w)
-    return p.gpu_idle_w + (p_cap - p.gpu_idle_w) * occ**p.power_exponent
+    if occ == 0.0:
+        return p.gpu_idle_w
+    base = p.gpu_idle_w if p.gpu_active_min_w is None else p.gpu_active_min_w
+    p_cap = max(base, cap_ratio * p.gpu_max_w)
+    return base + (p_cap - base) * occ**p.power_exponent
 
 
 def host_power_w(p: NodeProfile, occupancy: float) -> float:

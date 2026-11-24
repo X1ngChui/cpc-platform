@@ -3,6 +3,7 @@
 服务类：grid / site / gateway / controller / up（本机单进程启动全部服务）/ exporter（通用功率导出器）
 工具类（能耗感知）：sensors（列出传感器类型、读取指定传感器）
 工具类：loadgen / sim / compare / report / signals / rtt / event
+数据集：data list / info / fetch / verify / summary / calibrate
 
 服务地址：除 up 外，需要访问其他服务的命令须用 -e / CPC_ENDPOINTS 给出地址文件，或用 --local 使用本机模式地址。
 配置或启动检查失败时打印原因并以状态码 2 退出。
@@ -23,13 +24,24 @@ from pathlib import Path
 
 from .common import StartupError, setup_logging
 from .config import CST, ConfigError, Endpoints, Scenario, default_local_endpoints, load_endpoints, load_scenario, _host_port
+from .datasets import DatasetError
 from .sensors.base import SensorError
 
 log = logging.getLogger("cpc")
 
 
 def _scn(args) -> Scenario:
-    return load_scenario(args.scenario)
+    scn = load_scenario(args.scenario)
+    apply_workload_overrides(scn, args)
+    return scn
+
+
+def apply_workload_overrides(scn: Scenario, args) -> None:
+    """命令行显式覆盖场景的负载变换参数（--start-s、--duration-s、--time-scale、--rate-scale）。"""
+    for key in ("start_s", "duration_s", "time_scale", "rate_scale"):
+        v = getattr(args, key, None)
+        if v is not None:
+            setattr(scn.workload, key, v)
 
 
 def _ep(args, scn: Scenario) -> Endpoints:
@@ -214,21 +226,21 @@ def cmd_loadgen(args) -> None:
     else:
         ep = _ep(args, scn)
         gateway, grid = args.gateway or ep.gateway, args.grid or ep.grid
-    s = asyncio.run(run(gateway, scn, args.duration, grid=grid, rps=args.rps,
-                        stream=not args.no_stream, out=args.out, trace=args.trace, time_scale=args.time_scale, model=args.model))
+    s = asyncio.run(run(gateway, scn, args.duration, grid=grid, stream=not args.no_stream, out=args.out, model=args.model))
     print(json.dumps(s, ensure_ascii=False, indent=2))
 
 
-def _run_sim(scenario: str, routing: str, capacity: str, hours: float, rps: float | None, out: str | None,
+def _run_sim(scenario: str, routing: str, capacity: str, hours: float, overrides: dict, out: str | None,
              routing_params: dict | None = None, capacity_params: dict | None = None) -> dict:
     from .sched import make_capacity, make_routing
     from .sim.des import Simulator
 
     scn = load_scenario(scenario)
+    apply_workload_overrides(scn, argparse.Namespace(**overrides))
     rp = routing_params if routing_params is not None else (scn.scheduler.routing.params if routing == scn.scheduler.routing.policy else {})
     cp = capacity_params if capacity_params is not None else (scn.scheduler.capacity.params if capacity == scn.scheduler.capacity.policy else {})
     t0 = time.time()
-    res = Simulator(scn, make_routing(routing, rp), make_capacity(capacity, cp), hours=hours, rps=rps).run()
+    res = Simulator(scn, make_routing(routing, rp), make_capacity(capacity, cp), hours=hours).run()
     res.summary["wall_s"] = round(time.time() - t0, 2)
     if out:
         d = Path(out)
@@ -244,12 +256,16 @@ def _run_sim(scenario: str, routing: str, capacity: str, hours: float, rps: floa
     return res.summary
 
 
+def _overrides(args) -> dict:
+    return {k: getattr(args, k, None) for k in ("start_s", "duration_s", "time_scale", "rate_scale")}
+
+
 def cmd_sim(args) -> None:
     scn = _scn(args)
     routing = args.routing or scn.scheduler.routing.policy
     capacity = args.capacity or scn.scheduler.capacity.policy
     out = args.out or f"results/sim-{routing}-{capacity}"
-    s = _run_sim(args.scenario, routing, capacity, args.hours, args.rps, out)
+    s = _run_sim(args.scenario, routing, capacity, args.hours, _overrides(args), out)
     print(json.dumps(s, ensure_ascii=False, indent=2))
     print(f"结果已写入 {out}/")
 
@@ -259,7 +275,7 @@ def cmd_compare(args) -> None:
     combos = [c.split(":") for c in args.runs.split(",")]
     out = Path(args.out)
     with ProcessPoolExecutor(max_workers=min(len(combos), args.jobs)) as ex:
-        futs = [ex.submit(_run_sim, args.scenario, r, c, args.hours, args.rps, str(out / f"{r}__{c}")) for r, c in combos]
+        futs = [ex.submit(_run_sim, args.scenario, r, c, args.hours, _overrides(args), str(out / f"{r}__{c}")) for r, c in combos]
         rows = [f.result() for f in futs]
     keys = ["routing", "capacity", "served", "rejected", "slo_attainment", "ttft_p99_s", "facility_kwh", "cost_yuan", "carbon_kg", "wh_per_request"]
     out.mkdir(parents=True, exist_ok=True)
@@ -288,7 +304,7 @@ def cmd_report(args) -> None:
 
 
 def cmd_signals(args) -> None:
-    from .grid.signals import GridModel
+    from .grid.signals import GridModel, SignalUnavailable
 
     scn = _scn(args)
     g = GridModel(scn)
@@ -299,8 +315,11 @@ def cmd_signals(args) -> None:
         t = day.replace(hour=0, minute=30) + timedelta(hours=h)
         cells = []
         for sid in sites:
-            x = g.signal(sid, t)
-            cells.append(f"{x.price_yuan_per_kwh:.3f}/{x.period}/{x.carbon_kg_per_kwh:.3f}")
+            try:
+                x = g.signal(sid, t)
+                cells.append(f"{x.price_yuan_per_kwh:.3f}/{x.period}/{x.carbon_kg_per_kwh:.3f}")
+            except SignalUnavailable:
+                cells.append("缺失")
         print(f"{h:02d} | " + " | ".join(cells))
 
 
@@ -326,12 +345,69 @@ def cmd_event(args) -> None:
     print(r.status_code, r.text)
 
 
+def cmd_data(args) -> None:
+    """数据集管理。下载显式执行；需要认证的数据集从环境变量 HF_TOKEN 读取令牌。"""
+    from .datasets import DatasetError, all_datasets, data_dir, make_dataset
+    from .datasets.base import file_view
+
+    reg = all_datasets()
+    get = file_view
+
+    if args.data_cmd == "list":
+        print(f"缓存目录 {data_dir()}")
+        for name, cls in sorted(reg.items()):
+            m = cls.manifest
+            st = get(name).status()
+            state = "合成" if m.synthetic else ("就绪" if all(v == "ok" for v in st.values()) else "未下载" if all(v == "missing" for v in st.values()) else "不完整")
+            size = sum(f.size for f in m.files) / 1e6
+            print(f"  {name:<30s} {m.kind:<13s} {m.version:<18s} {state:<6s} {size:9.1f} MB  {m.license}")
+        return
+    if args.data_cmd == "calibrate":
+        from .datasets.power import PowerProfileDataset, calibrate
+
+        ds = make_dataset(args.name)
+        if not isinstance(ds, PowerProfileDataset):
+            raise ConfigError(f"{args.name} 不是功率特性数据集")
+        cal = calibrate(ds.points(model=args.model, gpu=args.gpu, task=args.task, num_gpus=args.num_gpus), args.slots)
+        print(json.dumps({**cal.to_dict(), "dataset": ds.ref}, ensure_ascii=False, indent=2))
+        return
+    for name in args.names:
+        ds = get(name)
+        if args.data_cmd == "info":
+            print(json.dumps({**ds.manifest.to_dict(), "dir": str(ds.dir), "status": ds.status()}, ensure_ascii=False, indent=2))
+        elif args.data_cmd == "fetch":
+            def progress(fn: str, done: int, total: int) -> None:
+                print(f"\r  {fn} {done / 1e6:8.1f} / {total / 1e6:.1f} MB", end="", file=sys.stderr, flush=True)
+
+            for p in ds.fetch(force=args.force, progress=progress):
+                print(f"\n  {p}", file=sys.stderr)
+            ds.verify()
+            print(f"{ds.ref} 就绪")
+        elif args.data_cmd == "verify":
+            ds.verify()
+            print(f"{ds.ref} 校验通过")
+        elif args.data_cmd == "summary":
+            from .datasets.workload import WorkloadDataset
+
+            full = make_dataset(name, **(json.loads(args.params) if args.params else {}))
+            if not isinstance(full, WorkloadDataset):
+                raise DatasetError(f"{name} 不是负载数据集")
+            print(json.dumps(full.load_trace().summary(), ensure_ascii=False))
+
+
 # ------------------------------------------------------------------ 解析
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="cpc", description="算电协同跨数据中心 AI 任务调度虚拟化平台")
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    def workload_args(sp):
+        g = sp.add_argument_group("负载变换（覆盖场景 workload 中的同名参数）")
+        g.add_argument("--start-s", type=float, default=None, help="时间窗起点（原始 trace 秒）")
+        g.add_argument("--duration-s", type=float, default=None, help="时间窗长度（原始 trace 秒）")
+        g.add_argument("--time-scale", type=float, default=None, help="时间压缩倍数（>1 压缩）")
+        g.add_argument("--rate-scale", type=float, default=None, help="到达率缩放倍数")
 
     def common(sp, endpoints=True, local=True):
         sp.add_argument("--scenario", "-s", default="configs/scenario.yaml", help="场景文件")
@@ -402,12 +478,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = common(sub.add_parser("loadgen", help="负载生成器"))
     sp.add_argument("--duration", type=float, default=60)
-    sp.add_argument("--rps", type=float, default=None)
+    workload_args(sp)
     sp.add_argument("--gateway", default=None)
     sp.add_argument("--grid", default=None)
     sp.add_argument("--no-stream", action="store_true")
-    sp.add_argument("--trace", default=None, help="Azure LLM trace CSV")
-    sp.add_argument("--time-scale", type=float, default=1.0, help="trace 时间压缩倍数")
     sp.add_argument("--model", default="cpc", help="请求中的 model 字段（真实后端需与 vLLM 的模型名一致）")
     sp.add_argument("--out", default=None)
     sp.set_defaults(fn=cmd_loadgen)
@@ -416,7 +490,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--routing", default=None)
     sp.add_argument("--capacity", default=None)
     sp.add_argument("--hours", type=float, default=24)
-    sp.add_argument("--rps", type=float, default=None)
+    workload_args(sp)
     sp.add_argument("--out", default=None)
     sp.set_defaults(fn=cmd_sim)
 
@@ -424,7 +498,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--runs", default="nearest:static,least_loaded:reactive,cost_aware:reactive,weighted:grid_aware",
                     help="逗号分隔的 路由:容量 组合")
     sp.add_argument("--hours", type=float, default=24)
-    sp.add_argument("--rps", type=float, default=None)
+    workload_args(sp)
     sp.add_argument("--jobs", type=int, default=4)
     sp.add_argument("--out", default="results/compare")
     sp.set_defaults(fn=cmd_compare)
@@ -438,6 +512,27 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(fn=cmd_signals)
 
     common(sub.add_parser("rtt", help="打印来源—站点 RTT 矩阵"), endpoints=False).set_defaults(fn=cmd_rtt)
+
+    dp = sub.add_parser("data", help="数据集：列出、查看、下载、校验、统计、标定")
+    dsub = dp.add_subparsers(dest="data_cmd", required=True)
+    dsub.add_parser("list", help="列出已注册的数据集及本地状态").set_defaults(fn=cmd_data)
+    for name, h in (("info", "清单：出处、许可、引用、文件与校验和"), ("fetch", "下载并校验"), ("verify", "校验本地文件"),
+                    ("summary", "负载数据集的统计（请求数、时长、平均到达率、token 均值）")):
+        x = dsub.add_parser(name, help=h)
+        x.add_argument("names", nargs="+")
+        if name == "fetch":
+            x.add_argument("--force", action="store_true", help="重新下载已存在的文件")
+        if name == "summary":
+            x.add_argument("--params", default=None, help="数据集参数（JSON），如 BurstGPT 的 include_failed")
+        x.set_defaults(fn=cmd_data)
+    x = dsub.add_parser("calibrate", help="由功率特性数据集标定节点参数")
+    x.add_argument("name")
+    x.add_argument("--model", required=True)
+    x.add_argument("--gpu", required=True)
+    x.add_argument("--task", required=True)
+    x.add_argument("--num-gpus", type=int, required=True)
+    x.add_argument("--slots", type=int, required=True, help="节点并发槽数（对应 max_num_seqs）")
+    x.set_defaults(fn=cmd_data)
 
     sp = common(sub.add_parser("event", help="向电网信号服务注入需求响应事件"))
     sp.add_argument("--site", required=True)
@@ -456,7 +551,7 @@ def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     try:
         args.fn(args)
-    except (ConfigError, StartupError, SensorError) as e:
+    except (ConfigError, StartupError, SensorError, DatasetError) as e:
         print(f"cpc {args.cmd}：{e}", file=sys.stderr)
         sys.exit(2)
 

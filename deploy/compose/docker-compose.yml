@@ -8,6 +8,9 @@
 #   CPC_SPEEDUP   信号时钟加速倍数，默认 60（真实 1 分钟 = 信号 1 小时）
 #   CPC_ROUTING   路由策略，默认取场景文件
 #   CPC_CAPACITY  容量策略，默认取场景文件
+#   CPC_LOAD_SECONDS / CPC_RATE_SCALE  负载生成器的时长与到达率缩放
+#   CPC_DATA_DIR  宿主机的数据集缓存目录（默认 ~/.cache/cpc/datasets），负载生成器以只读方式挂载；
+#                 须先在宿主机执行 cpc data fetch azure-llm-2024-conv
 
 name: cpc
 
@@ -65,8 +68,8 @@ services:
     restart: "no"
     profiles: ["load"]
     command: ["loadgen", "-s", "/app/configs/scenario.yaml", "--duration", "${CPC_LOAD_SECONDS:-600}",
-              "--out", "/logs/loadgen.jsonl"]
-    volumes: ["../../logs/compose:/logs"]
+              "--rate-scale", "${CPC_RATE_SCALE:-1}", "--out", "/logs/loadgen.jsonl"]
+    volumes: ["../../logs/compose:/logs", "${CPC_DATA_DIR:-~/.cache/cpc/datasets}:/var/lib/cpc/datasets:ro"]
     depends_on: [gateway]
 
   prometheus:

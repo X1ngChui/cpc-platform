@@ -82,11 +82,23 @@ pytest                              # 单元测试，约 10 秒
 python scripts/smoke_test.py        # 端到端冒烟测试，约 1.5 分钟
 ```
 
+冒烟测试使用默认场景的负载数据集（见下节的数据准备）；未下载数据集时可加 `--synthetic-workload`，改用合成负载。
 冒烟测试把各服务作为独立进程启动，依次检查：全部服务就绪；压测请求全部成功；控制器完成决策；能耗与电网信号指标；
 需求响应事件生效；传感器故障（真实后端站点的功率计不可用）与站点故障（停止一个站点进程）被隔离并显式报告，
 其余部分正常服务。最后输出"冒烟测试通过"即说明环境正常。
 
 = 本机快速开始 <g-quick>
+
+== 准备数据集
+
+默认场景的负载取自 Azure LLM Inference Trace 2024（约 1.1 GB），电价与排放因子数据随包提供。首次使用前下载并校验：
+
+```bash
+cpc data list                         # 已注册的数据集、版本、本地状态与许可
+cpc data fetch azure-llm-2024-conv    # 下载到 ~/.cache/cpc/datasets（或环境变量 CPC_DATA_DIR）
+```
+
+数据集缺失或校验失败时，`cpc sim`、`cpc loadgen` 等命令报错并给出获取方式，不会改用其他数据。
 
 == 启动全部服务
 
@@ -105,10 +117,13 @@ cpc up --speedup 60
 另开一个终端：
 
 ```bash
-cpc loadgen --local --duration 120 --rps 10 --out logs/loadgen.jsonl
+cpc loadgen --local --duration 120 --out logs/loadgen.jsonl                  # 按场景负载（约 50 请求/秒）回放 2 分钟
+cpc loadgen --local --duration 120 --rate-scale 0.2 --out logs/loadgen.jsonl # 到达率缩放到约 10 请求/秒
 ```
 
 `--local` 表示使用与 `cpc up` 相同的本机模式地址；访问其他部署时用 `-e <地址文件>` 给出服务地址。
+负载按真实时间回放，与信号时钟的加速倍数无关；需要让负载的日内变化与加速后的信号时钟同步时，用 `--time-scale` 压缩 trace 时间，
+并以 `--rate-scale` 相应降低到达率。
 
 结束后打印汇总：发送数、成功数、端到端时延与 TTFT 的中位数和 P99、SLO 达成率、各站点分担比例。
 也可以用任何 OpenAI 客户端直接访问网关，例如：
@@ -160,5 +175,6 @@ cpc compare --runs "nearest:static,least_loaded:reactive,cost_aware:reactive,wei
 cpc report results/compare            # 生成 comparison.png 与各组的 run.png
 ```
 
-仿真输出目录中：`summary.json` 为汇总（请求数、SLO 达成率、TTFT 分位数、IT/设施用电、电费、碳排放、各站点明细），
+仿真输出目录中：`summary.json` 为汇总（请求数、SLO 达成率、TTFT 分位数、IT/设施用电、电费、碳排放、各站点明细、
+所用数据集、路由原因统计、跳过的控制周期、信号覆盖率），
 `timeseries.csv` 为每 5 分钟的各站点功率、节点数、请求率、电价、碳强度，`decisions.jsonl` 为容量决策记录。

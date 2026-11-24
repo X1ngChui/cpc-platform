@@ -29,7 +29,6 @@ def test_tou_periods(scn):
 
 
 def test_carbon_and_events(scn):
-    scn.grid.carbon_profile = "flat"
     g = GridModel(scn)
     assert g.signal("gz", t(12)).carbon_kg_per_kwh == pytest.approx(0.5683)  # 2023 年贵州省级因子
     assert g.signal("gd", t(15)).power_cap_kw == 8  # 场景中的需求响应事件
@@ -39,6 +38,7 @@ def test_carbon_and_events(scn):
 
 
 def test_synthetic_carbon_mean_preserved(scn):
+    scn.grid.carbon.dataset, scn.grid.carbon.params = "synthetic-diurnal-carbon", {"amplitude": 0.1}
     g = GridModel(scn)
     vals = [g.signal("gz", datetime(2026, 7, 15, h, m, tzinfo=CST)).carbon_kg_per_kwh for h in range(24) for m in range(0, 60, 10)]
     assert sum(vals) / len(vals) == pytest.approx(0.5683, rel=0.01)

@@ -19,7 +19,9 @@ from cpc.config import ConfigError, default_local_endpoints, load_endpoints, loa
 from cpc.controller.service import create_app as controller_app
 from cpc.gateway.service import create_app as gateway_app
 from cpc.grid.service import create_app as grid_app
-from cpc.grid.signals import GridModel, Tariff
+from cpc.datasets import DatasetError
+from cpc.datasets.grid import Tariff
+from cpc.grid.signals import GridModel
 from cpc.site.core import SiteCore
 from cpc.site.power import ModelPower
 
@@ -30,9 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def write_scenario(tmp_path: Path, mutate) -> Path:
-    raw = yaml.safe_load((ROOT / "configs/scenario.yaml").read_text(encoding="utf-8"))
-    raw["grid"]["tariffs"] = str(ROOT / "data/grid/tou_tariffs.yaml")
-    raw["grid"]["carbon_factors"] = str(ROOT / "data/grid/carbon_factors_2023.csv")
+    raw = yaml.safe_load((ROOT / "tests/data/scenario.yaml").read_text(encoding="utf-8"))
     mutate(raw)
     p = tmp_path / "scenario.yaml"
     p.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
@@ -46,9 +46,11 @@ def test_config_rejects_unknown_and_obsolete_fields(tmp_path):
         load_scenario(write_scenario(tmp_path, lambda r: r["workload"].update(rpss=3)))
 
 
-def test_config_missing_file_and_power_declaration(tmp_path):
-    with pytest.raises(ConfigError, match="不存在"):
-        load_scenario(write_scenario(tmp_path, lambda r: r["grid"].update(tariffs="nope.yaml")))
+def test_config_unknown_dataset_and_power_declaration(tmp_path):
+    with pytest.raises(ConfigError, match="未知数据集"):
+        load_scenario(write_scenario(tmp_path, lambda r: r["workload"].update(dataset="no-such-trace")))
+    with pytest.raises(ConfigError, match="grid_signal"):
+        load_scenario(write_scenario(tmp_path, lambda r: r["grid"]["price"].update(dataset="azure-llm-2023-conv")))
 
     def real_site_without_power(r):
         r["sites"][0].update(backend="openai", upstreams=[{"id": "u0", "url": "http://x", "gpu_indices": [0]}])
@@ -71,7 +73,7 @@ def test_endpoints_must_be_explicit(scn, monkeypatch):
 
 def test_grid_data_must_cover_sites(scn):
     scn.sites[0].province = "atlantis"
-    with pytest.raises(KeyError, match="atlantis"):
+    with pytest.raises(DatasetError, match="atlantis"):
         GridModel(scn)
     with pytest.raises(ValueError, match="1–12"):
         Tariff("x", "x", "", 0.5, [{"months": [1, 2, 3]}])
@@ -107,8 +109,8 @@ class Upstreams:
             if path == "/v1/clock":
                 return httpx.Response(200, json={"start": self.scn.clock.start.isoformat(), "speedup": 1.0, "epoch_wall": time.time()})
             if path == "/v1/signals":
-                t = self.scn.clock.start
-                return httpx.Response(200, json={"signals": {k: v.model_dump(mode="json") for k, v in self.grid.snapshot(t).items()}})
+                sig, missing = self.grid.snapshot(self.scn.clock.start)
+                return httpx.Response(200, json={"signals": {k: v.model_dump(mode="json") for k, v in sig.items()}, "missing": missing})
         if host == "gateway" and path == "/state":
             return httpx.Response(200, json={"rates": {"east": 1.0, "south": 1.0, "north": 1.0}})
         sid = host.removeprefix("site-")

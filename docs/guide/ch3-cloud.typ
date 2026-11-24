@@ -122,10 +122,11 @@ python3 ../../../scripts/smoke_test.py --external -e endpoints.yaml -s scenario.
 
 == 标定节点功率模型 <g-calibrate>
 
-接入真实服务器后，建议用实测数据标定仿真站点的节点参数，使仿真与真实一致：
+默认场景的节点参数由公开的功率特性数据集标定（`cpc data calibrate`，见 @g-data）。接入真实服务器后，建议用实测数据标定仿真站点的
+节点参数，使仿真与真实一致：
 
 1. 只向一个真实站点发请求，逐级提高并发（例如每级 3 分钟，rps 从 0.5 提高到饱和）：
-   `cpc loadgen -s scenario.yaml --gateway http://<站点IP>:9100 --grid http://<控制节点IP>:9000 --rps <r> --duration 180 --model cpc`；
+   `cpc loadgen -s scenario.yaml --gateway http://<站点IP>:9100 --grid http://<控制节点IP>:9000 --rate-scale <r> --duration 180 --model cpc`（逐级提高 `--rate-scale`）；
 2. 同时记录站点状态（`busy`、`gpu_power_w`）——可直接改用 `scripts/real_gpu_check.py` 的采样逻辑，或从 Prometheus 导出
    `cpc_node_busy_slots` 与 `DCGM_FI_DEV_POWER_USAGE`；
 3. 以占用率 $u = "busy" \/ "slots"$ 为横轴拟合 $P = P_"idle" + (P_"max" - P_"idle") u^alpha$，得到 `gpu_idle_w`、`gpu_max_w`、`power_exponent`；
@@ -142,7 +143,8 @@ python3 ../../../scripts/smoke_test.py --external -e endpoints.yaml -s scenario.
 == 运行实验与收集数据
 
 1. 确认信号时钟：正式实验把场景中的 `clock.speedup` 设为 1，`clock.start` 设为希望模拟的日期时刻；
-2. 在控制节点运行负载：`cpc loadgen -s scenario.yaml -e endpoints.yaml --duration 7200 --out logs/loadgen.jsonl`；
+2. 在控制节点下载负载数据集并运行负载：`cpc data fetch azure-llm-2024-conv`，
+   `cpc loadgen -s scenario.yaml -e endpoints.yaml --duration 7200 --out logs/loadgen.jsonl`；
 3. 数据位置：网关请求日志与控制器决策日志在 `control-stack/logs/`；指标在 Prometheus 中（可用 HTTP API 导出：
    `curl 'localhost:9090/api/v1/query_range?query=site:facility_power_watts:sum&start=...&end=...&step=15'`）；
 4. 实验结束后停止站点栈与控制栈（`docker compose down`），按需关机或释放实例。

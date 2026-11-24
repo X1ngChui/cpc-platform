@@ -28,8 +28,13 @@ deploy/cloud/control-stack/endpoints.yaml
 .env
 api_key*.txt
 *token*.txt
+hugging_face.txt
+hf_token*
 
 # 编辑器
 .vscode/
 .idea/
 .DS_Store
+
+# 冒烟测试生成的场景文件
+**/.scenario.smoke.yaml

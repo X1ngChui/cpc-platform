@@ -1,7 +1,8 @@
 """端到端冒烟测试：启动全部服务 → 压测 → 注入需求响应事件 → 检查指标 → 故障隔离 → 退出。
 
 用法：
-    python scripts/smoke_test.py                       # 本机：各服务以独立进程启动（含故障注入阶段）
+    python scripts/smoke_test.py                       # 本机：各服务以独立进程启动（含故障注入阶段），负载为场景的公开数据集
+    python scripts/smoke_test.py --synthetic-workload  # 同上，负载换为合成数据集（不需要下载，CI 使用）
     python scripts/smoke_test.py --external -e configs/endpoints.compose-host.yaml   # 服务已由 Compose / Kubernetes 启动，只做 1–5
 
 本机模式的场景由 configs/scenario.yaml 派生，另加一个真实后端站点 lab：其上游与功率计（http-json 传感器）
@@ -131,18 +132,19 @@ class Stub(BaseHTTPRequestHandler):
         self.wfile.write(b"data: [DONE]\n\n")
 
 
-def smoke_scenario(base: Path) -> Path:
+def smoke_scenario(base: Path, synthetic: bool) -> Path:
     raw = yaml.safe_load(base.read_text(encoding="utf-8"))
-    for k in ("tariffs", "carbon_factors"):
-        raw["grid"][k] = str((base.parent / raw["grid"][k]).resolve())
+    if synthetic:  # 合成负载（与单元测试相同的数据集与参数），到达率 6 请求/秒
+        raw["workload"] = {**yaml.safe_load((ROOT / "tests/data/scenario.yaml").read_text(encoding="utf-8"))["workload"],
+                           "rate_scale": 0.5}
     raw["sites"].append({
         "id": "lab", "name": "真实后端（桩服务）", "province": "guizhou", "lat": 26.6, "lon": 106.6, "pue": 1.2,
-        "backend": "openai", "min_active": 1,
+        "backend": "openai", "min_active": 1, "profile": next(iter(raw["node_profiles"])),
         "upstreams": [{"id": "lab-0", "url": f"http://127.0.0.1:{STUB_PORT}", "devices": ["gpu0"], "max_inflight": 32}],
         "power": {"sensors": [{"type": "http-json", "name": "meter", "url": f"http://127.0.0.1:{STUB_PORT}/meter",
                                "path": "power_w", "kind": "gpu", "device": "gpu0", "vendor": "test"}], "host": "excluded"},
     })
-    p = OUT / "scenario.smoke.yaml"
+    p = base.parent / ".scenario.smoke.yaml"  # 与基础场景同目录，场景中的相对路径保持有效
     p.write_text("# 由 scripts/smoke_test.py 生成\n" + yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return p
 
@@ -176,7 +178,8 @@ class Services:
 def basic_checks(scn, ep, args, dr_site: str, real_site: str | None) -> None:
     print("2. 压测")
     out = subprocess.run([sys.executable, "-m", "cpc", "loadgen", "-s", args.scenario_used, "--gateway", ep.gateway, "--grid", ep.grid,
-                          "--duration", str(args.duration), "--rps", str(args.rps), "--out", str(OUT / "loadgen.jsonl")],
+                          "--duration", str(args.duration), *(["--rate-scale", str(args.rate_scale)] if args.rate_scale else []),
+                          "--out", str(OUT / "loadgen.jsonl")],
                          cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
     if out.returncode != 0:
         print(out.stderr[-2000:])
@@ -253,7 +256,8 @@ def main() -> None:
     ap.add_argument("-e", "--endpoints", default=None)
     ap.add_argument("--external", action="store_true", help="不启动服务，只检查已运行的服务（检查项 1–5）")
     ap.add_argument("--duration", type=float, default=30)
-    ap.add_argument("--rps", type=float, default=8)
+    ap.add_argument("--rate-scale", type=float, default=None, help="覆盖场景负载的到达率缩放")
+    ap.add_argument("--synthetic-workload", action="store_true", help="负载换为合成数据集（不需要下载公开数据集）")
     args = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
 
@@ -269,7 +273,7 @@ def main() -> None:
     else:
         stub = ThreadingHTTPServer(("127.0.0.1", STUB_PORT), Stub)
         threading.Thread(target=stub.serve_forever, daemon=True).start()
-        path = smoke_scenario(Path(args.scenario))
+        path = smoke_scenario(Path(args.scenario), args.synthetic_workload)
         args.scenario_used = str(path)
         scn = load_scenario(path)
         ep = load_endpoints(None, scn, local=True)

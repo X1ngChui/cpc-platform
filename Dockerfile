@@ -10,15 +10,16 @@ ARG PIP_INDEX_URL=https://pypi.org/simple
 ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
     PIP_NO_CACHE_DIR=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONIOENCODING=utf-8
+    PYTHONIOENCODING=utf-8 \
+    CPC_DATA_DIR=/var/lib/cpc/datasets
 
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install ".[nvml,docker]"
+RUN pip install ".[nvml,docker,data]"
 COPY configs ./configs
-COPY data ./data
 COPY deploy ./deploy
+# 公开数据集不打包进镜像：需要时把宿主机的数据集缓存目录挂载到 $CPC_DATA_DIR
 
 EXPOSE 8080 9000 9100 9300 9400
 ENTRYPOINT ["cpc"]

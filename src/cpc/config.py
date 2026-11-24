@@ -1,12 +1,12 @@
 """场景配置（YAML）与服务地址配置。
 
 场景文件描述"实验世界"：有哪些数据中心站点、用户来源区域、节点功率/性能参数、
-电网信号数据、负载与 SLO、默认调度策略。它与部署方式无关。
+电网信号数据集、负载数据集与 SLO、默认调度策略。它与部署方式无关。
 
 地址文件（endpoints）描述"服务在哪里"：电网信号服务、网关、控制器、各站点代理的 URL。
 同一场景可用于本机单进程、Docker Compose、Kubernetes 或云服务器部署，只需换地址文件。
 
-配置错误在加载阶段报错（ConfigError）：未知字段、引用不存在的站点/节点配置、引用的文件不存在、
+配置错误在加载阶段报错（ConfigError）：未知字段、引用不存在的站点/节点配置或数据集、
 真实后端站点未声明功率来源等。相对路径一律相对于场景文件所在目录解析。
 """
 
@@ -41,7 +41,8 @@ class NodeProfile(_Strict):
 
     gpus: int = 8
     gpu_model: str = "A100-SXM4-80GB"
-    gpu_idle_w: float = 60.0  # 单卡空载功率
+    gpu_idle_w: float = 60.0  # 单卡空载功率（没有在服务的请求）
+    gpu_active_min_w: float | None = None  # 单卡在服务时的功率下限（占用率趋于 0 的外推值）；None 表示取 gpu_idle_w
     gpu_max_w: float = 400.0  # 单卡满载功率（TDP）
     host_idle_w: float = 800.0  # 主机（CPU、内存、风扇等）空载功率
     host_max_w: float = 1500.0  # 主机满载功率
@@ -130,7 +131,6 @@ class SiteConfig(_Strict):
     grid_cap_kw: float | None = None  # 并网（设施）功率上限
     backend: Literal["emulated", "openai"] = "emulated"
     upstreams: list[UpstreamConfig] = Field(default_factory=list)
-    carbon_amplitude: float = 0.1  # 合成碳强度日内波动幅度（仅 carbon_profile=synthetic 时使用）
     power: SitePowerConfig | None = None  # 真实后端必填；仿真后端的功率由功率模型给出，不可填写
 
     @property
@@ -182,30 +182,37 @@ class DREvent(_Strict):
         return self
 
 
+class SignalSource(_Strict):
+    """电网信号的数据来源：一个电网信号数据集（见 cpc data list）及其参数。
+
+    regions：站点 id → 数据集中的区域键；未列出的站点使用其 province。
+    """
+
+    dataset: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    regions: dict[str, str] = Field(default_factory=dict)
+
+
 class GridConfig(_Strict):
-    tariffs: str = "../data/grid/tou_tariffs.yaml"
-    carbon_factors: str = "../data/grid/carbon_factors_2023.csv"
-    carbon_profile: Literal["flat", "synthetic"] = "synthetic"
-    traces: str | None = None  # 可选：逐时实测/外部信号 CSV（覆盖电价与碳强度）
+    price: SignalSource  # 电价（元/kWh）
+    carbon: SignalSource  # 碳强度（kgCO2/kWh）
     dr_events: list[DREvent] = Field(default_factory=list)
 
 
-class TokenDist(_Strict):
-    """对数正态 token 长度分布（mean 为算术均值）。"""
-
-    mean: float
-    sigma: float = 0.8
-    min: int = 1
-    max: int = 8192
-
-
 class WorkloadConfig(_Strict):
-    rps: float = 5.0  # 全局平均到达率（请求/秒）
-    diurnal_amplitude: float = 0.5  # 日内波动幅度 A：λ(h) = rps × (1 + A·cos(2π(h−peak)/24))
-    peak_hour: float = 20.0
-    input_tokens: TokenDist = TokenDist(mean=800, sigma=0.8)
-    output_tokens: TokenDist = TokenDist(mean=200, sigma=0.7, max=2048)
-    trace: str | None = None  # 可选：按 Azure LLM 推理 trace 格式回放
+    """负载：一个负载数据集（见 cpc data list）及显式变换。
+
+    start_s、duration_s 为原始 trace 时间（秒）上的时间窗；time_scale > 1 表示时间压缩；
+    rate_scale 为到达率缩放（≤ 1 为稀疏化，> 1 为多个稀疏化副本叠加）；seed 用于缩放与来源区域分配。
+    变换后的 t = 0 对应场景时钟起点 clock.start。
+    """
+
+    dataset: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    start_s: float = Field(0.0, ge=0)
+    duration_s: float | None = Field(None, gt=0)
+    time_scale: float = Field(1.0, gt=0)
+    rate_scale: float = Field(1.0, gt=0)
     seed: int = 1
 
 
@@ -253,8 +260,8 @@ class Scenario(_Strict):
     sites: list[SiteConfig]
     node_profiles: dict[str, NodeProfile] = Field(default_factory=lambda: {"default": NodeProfile()})
     network: NetworkConfig = NetworkConfig()
-    grid: GridConfig = GridConfig()
-    workload: WorkloadConfig = WorkloadConfig()
+    grid: GridConfig
+    workload: WorkloadConfig
     slo: SLOConfig = SLOConfig()
     scheduler: SchedulerConfig = SchedulerConfig()
 
@@ -292,6 +299,10 @@ class Scenario(_Strict):
         for e in self.grid.dr_events:
             if e.site not in ids:
                 raise ValueError(f"需求响应事件引用了不存在的站点: {e.site}")
+        for name, src in (("grid.price", self.grid.price), ("grid.carbon", self.grid.carbon)):
+            extra = sorted(set(src.regions) - set(ids))
+            if extra:
+                raise ValueError(f"{name}.regions 引用了不存在的站点: {extra}")
         return self
 
     def site(self, site_id: str) -> SiteConfig:
@@ -310,10 +321,10 @@ class Scenario(_Strict):
         p = Path(path)
         return p if p.is_absolute() else (self.base_dir / p).resolve()
 
-    def referenced_files(self) -> dict[str, Path]:
-        refs = {"grid.tariffs": self.grid.tariffs, "grid.carbon_factors": self.grid.carbon_factors,
-                "grid.traces": self.grid.traces, "workload.trace": self.workload.trace}
-        return {k: self.resolve(v) for k, v in refs.items() if v is not None}
+    def region(self, site_id: str, quantity: str) -> str:
+        """站点在电价（price）或碳强度（carbon）数据集中的区域键。"""
+        src = self.grid.price if quantity == "price" else self.grid.carbon
+        return src.regions.get(site_id) or self.site(site_id).province
 
 
 def load_scenario(path: str | os.PathLike) -> Scenario:
@@ -327,9 +338,16 @@ def load_scenario(path: str | os.PathLike) -> Scenario:
         scn = Scenario.model_validate({**(raw or {}), "base_dir": path.parent})
     except ValidationError as e:
         raise ConfigError(f"场景文件 {path} 无效：\n{e}") from e
-    missing = {k: str(p) for k, p in scn.referenced_files().items() if not p.is_file()}
-    if missing:
-        raise ConfigError(f"场景文件 {path} 引用的文件不存在（相对路径相对于场景文件所在目录）：{missing}")
+    from .datasets import all_datasets
+
+    known = all_datasets()
+    for field_name, name, kind in (("workload.dataset", scn.workload.dataset, "workload"),
+                                   ("grid.price.dataset", scn.grid.price.dataset, "grid_signal"),
+                                   ("grid.carbon.dataset", scn.grid.carbon.dataset, "grid_signal")):
+        if name not in known:
+            raise ConfigError(f"场景文件 {path} 的 {field_name} 引用了未知数据集 {name}，可选：{sorted(known)}")
+        if known[name].manifest.kind != kind:
+            raise ConfigError(f"场景文件 {path} 的 {field_name} 须为 {kind} 类数据集，{name} 为 {known[name].manifest.kind}")
     return scn
 
 

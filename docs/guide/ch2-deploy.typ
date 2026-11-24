@@ -36,6 +36,9 @@ docker compose -f deploy/compose/docker-compose.yml run --rm loadgen        # �
 CPC_LOAD_SECONDS=1800 docker compose -f deploy/compose/docker-compose.yml run --rm loadgen
 ```
 
+负载生成器容器以只读方式挂载宿主机的数据集缓存目录（`${CPC_DATA_DIR:-~/.cache/cpc/datasets}`），须先在宿主机执行
+`cpc data fetch azure-llm-2024-conv`；到达率可用环境变量 `CPC_RATE_SCALE` 缩放。
+
 打开 Grafana 的"算电协同调度平台"仪表盘，可以看到
 设施总功率、用电成本速率、碳排放速率、请求速率、SLO 达成率，以及各站点的功率、电价、在线节点数、碳强度、请求率、
 TTFT P99、需求响应余量、每 token 能耗、排队数与 GPU 功率。请求日志与决策日志在 `logs/compose/`。

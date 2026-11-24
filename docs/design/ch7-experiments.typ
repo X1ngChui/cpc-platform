@@ -4,12 +4,9 @@
 
 == 负载生成
 
-负载生成器 `cpc loadgen` 支持两种模式：
-
-- *合成负载*：非齐次泊松到达，到达率 $lambda(h) = lambda_0 (1 + A cos(2 pi (h - h_"peak") \/ 24))$，$h$ 为信号时钟的小时数；
-  来源区域按 `share` 抽样；输入、输出 token 数服从对数正态分布（默认均值 800 / 200）。
-- *trace 回放*：读取 Azure LLM 推理 trace 格式（列 `TIMESTAMP`、`ContextTokens`、`GeneratedTokens`）@patel2024splitwise，
-  可用 `--time-scale` 压缩时间。
+负载生成器 `cpc loadgen` 与离散事件仿真器使用同一个负载数据集（场景 `workload`，@ch-data）：变换后 trace 的相对时间即请求的
+发送时刻（真实秒），来源区域按 `share` 比例分配，输入、输出 token 数取自 trace。时间窗、时间压缩与到达率缩放由场景给出，
+也可在命令行用 `--start-s`、`--duration-s`、`--time-scale`、`--rate-scale` 显式覆盖。
 
 请求体带 `max_tokens` 与 `ignore_eos: true`，使真实模型的输出长度与设定一致，这是推理压测的通行做法。
 负载生成器默认使用流式请求，记录 TTFT 与端到端时延，按 SLO 统计达成率。
@@ -35,34 +32,65 @@
 
 == 平台功能演示
 
-以下结果用于说明平台的数据通路与可观测性，*不是*调度算法的研究结论：节点参数为示意值，参考策略未经优化。
+以下结果用于说明平台的数据通路与可观测性，*不是*调度算法的研究结论：参考策略未经优化，节点参数中空载、主机与预填充部分为示意值。
 
 === 仿真：四组策略组合
 
-默认场景（4 个站点共 20 个节点，平均 12 请求/秒，日内波动 ±50%，2026 年 7 月 15 日电价，广东站点 15–17 时需求响应上限 8 kW），
-24 小时仿真结果如下（`python scripts/make_figures.py` 可复现）：
+默认场景：4 个站点共 10 台 8×H100 服务器（节点参数由 ML.ENERGY Benchmark v3 标定，@sec-calibration），负载为 Azure LLM Inference
+Trace 2024 对话服务中 2024-05-14 16:00 UTC 起的 24 小时（457.9 万个请求，平均约 53 请求/秒），2026 年 7 月 15 日分时电价与
+2023 年省级年均排放因子，广东站点 15–17 时需求响应上限 8 kW。24 小时仿真结果如下（`python scripts/make_figures.py` 可复现）：
 
 #figure(
   tbl(
     columns: (11em, 1fr, 1fr, 1fr, 1fr),
     align: (left, right, right, right, right),
     header: ("路由 + 容量策略", "电费（元）", "设施用电（kWh）", "碳排放（kg）", "SLO 达成率"),
-    [nearest + static], [847.9], [1359.0], [760.5], [100.0%],
-    [least_loaded + reactive], [606.4], [974.4], [548.1], [100.0%],
-    [cost_aware + reactive], [425.3], [987.0], [588.2], [100.0%],
-    [weighted + grid_aware], [481.7], [960.9], [558.4], [100.0%],
+    [nearest + static], [672.5], [1105.6], [622.4], [100.0%],
+    [least_loaded + reactive], [446.2], [764.0], [426.9], [100.0%],
+    [cost_aware + reactive], [321.2], [754.2], [440.0], [100.0%],
+    [weighted + grid_aware], [410.0], [711.3], [399.6], [100.0%],
   ),
-  caption: [默认场景 24 小时仿真（约 104 万个请求）],
+  caption: [默认场景 24 小时仿真（457.9 万个请求）],
 )
 
 #figure(image("../figures/comparison.png", width: 100%), caption: [四组策略组合的电费、设施用电量、碳排放与 SLO 达成率])
 
 可以读出平台能够反映的几类效应：全部节点常开（static）时空载功率占比高，用电量最大；按负载伸缩（reactive）显著减少空载能耗；
-成本感知路由把请求引向低价站点，电费明显下降，但由于低价站点（如蒙西）碳排放因子较高，碳排放反而略增——
-成本与碳排放两个目标并不总是一致，这正是算电协同研究需要权衡的地方。
+成本感知路由把请求引向低价站点，电费最低，但低价站点（蒙西）的碳排放因子较高，碳排放高于按负载均衡的组合；
+按"等效电价 × PUE"集中分配容量的 grid_aware 用电量最少。成本与碳排放两个目标并不总是一致，这正是算电协同研究需要权衡的地方。
 
 #figure(image("../figures/run-weighted__grid_aware.png", width: 92%),
-  caption: [weighted + grid_aware 组合的 24 小时运行曲线：夜间负载集中在贵州（低谷电价），午间转向蒙西（深谷电价）])
+  caption: [weighted + grid_aware 组合的 24 小时运行曲线：夜间负载集中在贵州（低谷电价），午后转向蒙西（深谷电价），22 时后部分转向上海（低谷电价）])
+
+=== 公开数据集检验
+
+`python scripts/dataset_check.py` 以默认场景为基础，逐一替换负载数据集，运行两组策略；另以美国 EIA 逐时碳强度场景
+（`configs/scenario.us-eia.yaml`）运行同样两组。结果如下（全部请求均被服务，信号覆盖率均为 1.0）：
+
+#figure(
+  tbl(
+    columns: (13em, 9em, 1fr, 1fr, 1fr, 1fr),
+    align: (left, left, right, right, right, right),
+    header: ("负载", "策略", "请求数", "SLO 达成率", "TTFT P99（s）", "设施用电（kWh）"),
+    [azure-llm-2024-conv（1 天）], [nearest + static], [4 578 859], [100.0%], [1.40], [1105.6],
+    [], [cost_aware + reactive], [], [100.0%], [1.43], [754.2],
+    [azure-llm-2024-code（1 天）], [nearest + static], [1 640 533], [100.0%], [1.58], [866.5],
+    [], [cost_aware + reactive], [], [100.0%], [1.61], [264.0],
+    [azure-llm-2023-conv（1 小时）], [nearest + static], [19 029], [99.99%], [0.87], [36.5],
+    [azure-llm-2023-code（1 小时）], [nearest + static], [8 576], [100.0%], [1.53], [20.3],
+    [burstgpt-1（第 10 天）], [nearest + static], [149 265], [100.0%], [0.65], [536.5],
+    [], [cost_aware + reactive], [], [100.0%], [0.68], [202.1],
+    [mooncake-fast25-conversation（1 小时）], [nearest + static], [11 885], [60.6%], [17.1], [38.1],
+    [mooncake-fast25-toolagent（1 小时）], [nearest + static], [23 321], [81.7%], [12.3], [38.4],
+    [美国 EIA 场景（1 天）], [nearest + static], [4 778 610], [100.0%], [1.39], [1307.7],
+    [], [cost_aware + reactive], [], [100.0%], [1.43], [733.5],
+  ),
+  caption: [公开负载数据集上的仿真检验（完整结果见 `results/dataset-check/summary.md`）],
+)
+
+Mooncake trace 的平均输入长度为 8 000–12 000 token，按场景的预填充吞吐（示意值 5 000 token/s）计算，单次预填充即需 2 s 左右，
+首 token 时延显著上升、SLO 达成率下降；这说明预填充吞吐对长上下文负载的结果有决定性影响，需要实测标定。
+美国场景中，三个平衡区的逐时碳强度来自 EIA-930 发电结构，cost_aware + reactive 的碳排放为 235.8 kg（nearest + static 为 399.0 kg）。
 
 === 虚拟化部署
 

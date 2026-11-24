@@ -2,13 +2,13 @@
 
 对外提供：
 - GET  /v1/clock                     信号时钟（其他服务据此同步）
-- GET  /v1/signals[?at=ISO时间]       各站点当前（或指定时刻）的电价、碳强度、功率上限
+- GET  /v1/signals[?at=ISO时间]       各站点当前（或指定时刻）的电价、碳强度、功率上限；信号不可用的站点列入 missing
 - GET  /v1/forecast?site=&hours=24   某站点未来若干小时的逐时信号
 - GET  /v1/events  POST /v1/events  DELETE /v1/events   需求响应事件的查询、注入与清除
 - GET  /healthz、/readyz              存活检查；就绪检查（数据加载与校验在启动时完成，服务运行即就绪）
 - GET  /metrics                      Prometheus 指标（cpc_grid_*）
 
-启动检查：电价与排放因子数据可读，且覆盖场景中全部站点的省份；分时电价的季节覆盖全年。任一不满足即启动失败。
+启动检查：电价与碳强度数据集可用且校验通过，收录场景中全部站点的区域，覆盖场景时钟起点。任一不满足即启动失败。
 """
 
 from __future__ import annotations
@@ -40,11 +40,20 @@ def create_app(scn: Scenario, clock: SimClock | None = None) -> FastAPI:
     g_pue = Gauge("cpc_site_pue", "站点 PUE", ["site"], registry=reg)
     g_eff = Gauge("cpc_grid_effective_price_yuan_per_kwh", "计入碳价后的等效电价（元/kWh）", ["site"], registry=reg)
     g_hour = Gauge("cpc_grid_signal_hour", "信号时钟的小时数（含小数）", registry=reg)
+    g_avail = Gauge("cpc_grid_signal_available", "站点当前信号是否可用（1 可用，0 数据缺失）", ["site"], registry=reg)
+    nan = float("nan")
 
     def refresh() -> None:
         now = clock.now()
         g_hour.set(now.astimezone(CST).hour + now.astimezone(CST).minute / 60)
-        for sid, s in model.snapshot(now).items():
+        signals, missing = model.snapshot(now)
+        for sid in missing:
+            g_avail.labels(sid).set(0)
+            for g in (g_price, g_carbon):
+                g.labels(sid, scn.site(sid).province).set(nan)
+            g_eff.labels(sid).set(nan)
+        for sid, s in signals.items():
+            g_avail.labels(sid).set(1)
             g_price.labels(sid, s.province).set(s.price_yuan_per_kwh)
             g_period.labels(sid).set(PERIOD_CODE.get(s.period, -1))
             g_carbon.labels(sid, s.province).set(s.carbon_kg_per_kwh)
@@ -74,7 +83,7 @@ def create_app(scn: Scenario, clock: SimClock | None = None) -> FastAPI:
 
     @app.get("/readyz")
     def readyz() -> dict:
-        return {"ready": True, "sites": len(scn.sites), "events": len(model.events)}
+        return {"ready": True, "sites": len(scn.sites), "events": len(model.events), "sources": model.sources()}
 
     @app.get("/v1/clock")
     def get_clock() -> dict:
@@ -85,7 +94,9 @@ def create_app(scn: Scenario, clock: SimClock | None = None) -> FastAPI:
         t = at or clock.now()
         if t.tzinfo is None:
             t = t.replace(tzinfo=CST)
-        return {"time": t.isoformat(), "signals": {k: v.model_dump(mode="json") for k, v in model.snapshot(t).items()}}
+        signals, missing = model.snapshot(t)
+        return {"time": t.isoformat(), "signals": {k: v.model_dump(mode="json") for k, v in signals.items()},
+                "missing": missing, "sources": model.sources()}
 
     @app.get("/v1/forecast")
     def forecast(site: str, hours: float = 24, step_min: int = 60) -> dict:
@@ -94,7 +105,8 @@ def create_app(scn: Scenario, clock: SimClock | None = None) -> FastAPI:
         except KeyError:
             raise HTTPException(404, f"unknown site {site}")
         t0 = clock.now().replace(minute=0, second=0, microsecond=0)
-        return {"site": site, "points": [s.model_dump(mode="json") for s in model.forecast(site, t0, hours, step_min)]}
+        return {"site": site, "points": [None if s is None else s.model_dump(mode="json")
+                                         for s in model.forecast(site, t0, hours, step_min)]}
 
     @app.get("/v1/events")
     def list_events() -> list[dict]:

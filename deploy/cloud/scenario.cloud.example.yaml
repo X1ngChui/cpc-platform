@@ -7,8 +7,8 @@
 #
 # 真实站点的功率来源在 power 中显式声明：NVML 读取 GPU；host: excluded 表示节点 IT 功率只含 GPU
 # （云虚拟机通常不提供 RAPL 与 BMC）。有整机读数（IPMI / Redfish / PDU）时改为 host: server 并加入相应传感器。
-# 本文件复制为 site-stack/ 与 control-stack/ 中的 scenario.yaml，在容器内挂载到 /app/cfg/scenario.yaml，
-# 相对路径 ../data/... 指向镜像内的 /app/data。
+# 本文件复制为 site-stack/ 与 control-stack/ 中的 scenario.yaml，在容器内挂载到 /app/cfg/scenario.yaml。
+# 电网信号数据集随包提供；负载数据集下载到 CPC_DATA_DIR（控制栈中挂载宿主机的 ~/.cache/cpc/datasets）。
 
 name: cloud-3real-1sim
 
@@ -94,16 +94,15 @@ network:
   default_source: east
 
 grid:
-  tariffs: ../data/grid/tou_tariffs.yaml
-  carbon_factors: ../data/grid/carbon_factors_2023.csv
-  carbon_profile: synthetic
+  price:  {dataset: cn-tou-tariffs}
+  carbon: {dataset: cn-provincial-carbon-2023}
 
-workload:
-  rps: 2
-  diurnal_amplitude: 0.5
-  peak_hour: 20
-  input_tokens:  {mean: 600, sigma: 0.8, max: 4096}
-  output_tokens: {mean: 150, sigma: 0.7, max: 512}
+workload:                      # Azure LLM Inference Trace 2024 对话服务一天，稀疏化到平均约 2.7 请求/秒
+  dataset: azure-llm-2024-conv # 控制节点运行负载生成器前须 cpc data fetch azure-llm-2024-conv
+  start_s: 230400
+  duration_s: 86400
+  rate_scale: 0.05
+  seed: 1
 
 slo:
   ttft_s: 2.0

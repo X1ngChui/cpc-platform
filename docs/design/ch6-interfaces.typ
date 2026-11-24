@@ -109,13 +109,13 @@
     header: ("字段", "说明"),
     [`clock`], [`start`（信号时间起点，带时区）、`speedup`（加速倍数）],
     [`sources[]`], [来源区域：`id`、`name`、`lat`、`lon`、`share`（请求量占比）],
-    [`sites[]`], [站点：`id`、`name`、`province`（电价与排放因子数据的键）、`lat`、`lon`、`pue`、`nodes`、`profile`、`min_active`、`grid_cap_kw`、`backend`（emulated / openai）、`upstreams[]`、`power`、`carbon_amplitude`],
+    [`sites[]`], [站点：`id`、`name`、`province`（电网信号数据集的缺省区域键）、`lat`、`lon`、`pue`、`nodes`、`profile`、`min_active`、`grid_cap_kw`、`backend`（emulated / openai）、`upstreams[]`、`power`],
     [`sites[].upstreams[]`], [真实推理实例：`id`、`url`、`gpu_indices` 或 `devices`（二者择一，必填）、`container`（可选，用于启停）、`max_inflight`、`ready_path`（默认 `/health`）],
     [`sites[].power`], [真实后端必填：`sensors`（传感器列表，同类型多个实例用 `name` 区分）、`host`（`server` / `cpu_dram` / `excluded`）],
-    [`node_profiles`], [节点功率与性能参数（@tbl-params）],
+    [`node_profiles`], [节点功率与性能参数（@tbl-params；另有 `gpu_active_min_w`，见 @sec-calibration）],
     [`network`], [`base_ms`、`route_factor`、`km_per_ms`、`emulate_wan`、`overrides`、`default_source`],
-    [`grid`], [`tariffs`、`carbon_factors`、`carbon_profile`（flat / synthetic）、`traces`、`dr_events[]`],
-    [`workload`], [`rps`、`diurnal_amplitude`、`peak_hour`、`input_tokens`、`output_tokens`（对数正态：`mean`、`sigma`、`min`、`max`）、`trace`、`seed`],
+    [`grid`], [`price`、`carbon`（各为 `dataset`、`params`、`regions`）、`dr_events[]`],
+    [`workload`], [`dataset`、`params`、`start_s`、`duration_s`、`time_scale`、`rate_scale`、`seed`（@ch-data）],
     [`slo`], [`ttft_s`、`tpot_s`],
     [`scheduler`], [`routing`、`capacity`（`policy` 与 `params`）、`control_interval_s`、`sim_control_interval_s`、`carbon_price_yuan_per_kg`、`queue_limit_per_slot`、`retry`（`max_attempts`、`retry_on`）、`state_refresh_s`、`state_stale_s`],
   ),
@@ -138,7 +138,7 @@ sites:
 地址文件由 `-e` 或环境变量 `CPC_ENDPOINTS` 指定，须覆盖场景中的全部站点。本机运行时可用 `--local` 显式使用本机模式地址
 （信号 9000、网关 8080、控制器 9300、站点按场景顺序从 9101 起编号），`cpc up` 未给出 `-e` 时使用同样的地址。
 
-=== 外部信号文件（可选）
+=== 电网信号服务的数据来源
 
-`grid.traces` 指向的 CSV 列为 `time,key,price_yuan_per_kwh,carbon_kg_per_kwh`，`key` 为站点 id 或省份键，
-按整点匹配；某列留空表示不覆盖该项。可用于接入电力现货价格或逐时碳强度。
+`/v1/signals` 的响应中，`sources` 给出电价与碳强度所用的数据集（名称 @ 版本），`missing` 列出信号不可用的站点及原因；
+指标 `cpc_grid_signal_available{site}` 标示各站点当前信号是否可用。

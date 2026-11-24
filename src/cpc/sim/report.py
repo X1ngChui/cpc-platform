@@ -147,7 +147,7 @@ def plot_power_trace(csv_path: str | Path, out: str | Path, phases: list[tuple[f
 
 
 def plot_signals(scn: Scenario, day: datetime | None, out: str | Path) -> Path:
-    from ..grid.signals import GridModel
+    from ..grid.signals import GridModel, SignalUnavailable
 
     setup_style()
     g = GridModel(scn)
@@ -157,11 +157,17 @@ def plot_signals(scn: Scenario, day: datetime | None, out: str | Path) -> Path:
     colors = _site_colors(scn)
     names = {s.id: f"{s.id}（{s.name}）" for s in scn.sites}
     fig, axes = plt.subplots(2, 1, figsize=(8.2, 5.6), sharex=True, gridspec_kw={"hspace": 0.3})
-    for key, ax, title in (("price", axes[0], "分时电价（元/kWh）"), ("carbon", axes[1], "电力碳排放因子（kgCO2/kWh，省级年均值叠加示意日内形状）")):
+    src = g.sources()
+    for key, ax, title in (("price", axes[0], f"电价（元/kWh；{src['price']}）"), ("carbon", axes[1], f"碳强度（kgCO2/kWh；{src['carbon']}）")):
         series = {}
         for sid in colors:
-            sig = [g.signal(sid, t) for t in ts]
-            ys = [x.price_yuan_per_kwh if key == "price" else x.carbon_kg_per_kwh for x in sig]
+            ys = []
+            for t in ts:
+                try:
+                    x = g.signal(sid, t)
+                    ys.append(x.price_yuan_per_kwh if key == "price" else x.carbon_kg_per_kwh)
+                except SignalUnavailable:
+                    ys.append(float("nan"))  # 数据缺失的时刻不绘制
             series[sid] = ys
             if key == "price":
                 ax.step(hours, ys, where="post", color=colors[sid], label=names[sid])

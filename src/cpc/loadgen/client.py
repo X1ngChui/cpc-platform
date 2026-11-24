@@ -1,41 +1,29 @@
-"""负载生成器：向网关发送 OpenAI 兼容请求。
+"""负载生成器：按场景的负载数据集（经显式变换）向网关发送 OpenAI 兼容请求。
 
-两种模式：
-1. 合成负载：非齐次泊松到达，λ(t) = rps × (1 + A·cos(2π(h−峰值时刻)/24))，h 取信号时钟的小时数；
-   来源区域按 share 抽样；输入/输出 token 数服从对数正态分布。
-2. Trace 回放：读取 Azure LLM 推理 trace 格式（列 TIMESTAMP, ContextTokens, GeneratedTokens）的 CSV。
+请求到达时间取变换后 trace 的相对时间（秒），按真实时间回放；来源区域按场景 sources[].share 分配。
+请求体带 max_tokens 与 ignore_eos=true（vLLM 扩展参数），使真实模型输出长度与 trace 一致，这是推理压测的通行做法。
 
-请求体带 max_tokens 与 ignore_eos=true（vLLM 扩展参数），使真实模型输出长度可控，这是推理压测的通行做法。
-
-信号时钟：给出电网信号服务地址时从其同步（失败则报错退出）；未给出时使用场景中的时钟定义。
+给出电网信号服务地址时，先确认其可达（失败则报错退出）。
 """
 
 from __future__ import annotations
 
 import asyncio
-import csv
 import json
-import math
 import random
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 import httpx
 import numpy as np
 
 from ..common import sync_clock
-from ..config import CST, Scenario, TokenDist
-from ..models import SimClock, diurnal_factor
+from ..config import Scenario
+from ..datasets.workload import WorkloadTrace, assign_sources, load_workload
 
 VOCAB = ("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau "
          "upsilon phi chi psi omega data center power grid energy carbon price route node").split()
-
-
-def lognormal(rng: np.random.Generator, d: TokenDist) -> int:
-    mu = math.log(d.mean) - d.sigma**2 / 2
-    return int(min(max(rng.lognormal(mu, d.sigma), d.min), d.max))
 
 
 @dataclass
@@ -46,41 +34,11 @@ class Arrival:
     n_out: int
 
 
-def synth_arrivals(scn: Scenario, clock: SimClock, t_begin_wall: float, duration_s: float, rps: float | None = None) -> list[Arrival]:
-    w = scn.workload
-    rng = np.random.default_rng(w.seed)
-    rps = rps if rps is not None else w.rps
-    lam_max = rps * (1 + abs(w.diurnal_amplitude))
-    srcs = [s.id for s in scn.sources]
-    shares = np.array([s.share for s in scn.sources], dtype=float)
-    shares /= shares.sum()
-    out, t = [], 0.0
-    while True:
-        t += rng.exponential(1.0 / lam_max)
-        if t >= duration_s:
-            break
-        st = clock.at_wall(t_begin_wall + t).astimezone(CST)
-        lam = rps * diurnal_factor(st.hour + st.minute / 60, w.diurnal_amplitude, w.peak_hour)
-        if rng.random() * lam_max <= lam:
-            out.append(Arrival(t, str(rng.choice(srcs, p=shares)), lognormal(rng, w.input_tokens), lognormal(rng, w.output_tokens)))
-    return out
-
-
-def trace_arrivals(scn: Scenario, path: str | Path, duration_s: float, time_scale: float = 1.0) -> list[Arrival]:
-    """Azure LLM inference trace（2023/2024）格式：TIMESTAMP,ContextTokens,GeneratedTokens。"""
-    rng = random.Random(scn.workload.seed)
-    srcs = [s.id for s in scn.sources]
-    shares = [s.share for s in scn.sources]
-    out, t0 = [], None
-    with open(path, encoding="utf-8-sig") as f:
-        for row in csv.DictReader(f):
-            ts = datetime.fromisoformat(row["TIMESTAMP"].strip()[:26]).timestamp()
-            t0 = ts if t0 is None else t0
-            t = (ts - t0) / time_scale
-            if t >= duration_s:
-                break
-            out.append(Arrival(t, rng.choices(srcs, shares)[0], int(row["ContextTokens"]), max(1, int(row["GeneratedTokens"]))))
-    return out
+def arrivals_from(trace: WorkloadTrace, scn: Scenario, duration_s: float) -> list[Arrival]:
+    keep = np.nonzero(trace.t < duration_s)[0]
+    srcs = assign_sources(len(keep), [s.id for s in scn.sources], [s.share for s in scn.sources], scn.workload.seed)
+    return [Arrival(float(trace.t[i]), str(src), max(1, int(trace.input_tokens[i])), max(1, int(trace.output_tokens[i])))
+            for i, src in zip(keep, srcs)]
 
 
 def make_body(a: Arrival, rng: random.Random, stream: bool, model: str = "cpc") -> dict:
@@ -92,17 +50,18 @@ def make_body(a: Arrival, rng: random.Random, stream: bool, model: str = "cpc") 
     return body
 
 
-async def run(gateway: str, scn: Scenario, duration_s: float, grid: str | None = None, rps: float | None = None,
-              stream: bool = True, out: str | None = None, trace: str | None = None, time_scale: float = 1.0,
-              model: str = "cpc", max_concurrency: int = 4000) -> dict:
-    clock = SimClock(start=scn.clock.start, speedup=scn.clock.speedup)
+async def run(gateway: str, scn: Scenario, duration_s: float, grid: str | None = None, stream: bool = True,
+              out: str | None = None, model: str = "cpc", max_concurrency: int = 4000) -> dict:
     async with httpx.AsyncClient(timeout=httpx.Timeout(900.0, connect=10.0),
                                  limits=httpx.Limits(max_connections=max_concurrency, max_keepalive_connections=500),
                                  trust_env=False) as client:
         if grid:
-            clock = await sync_clock(client, grid, 10.0)
+            await sync_clock(client, grid, 10.0)  # 确认平台的电网信号服务可达（与其他服务使用同一信号时钟）
+        trace = load_workload(scn)
+        if trace.duration_s < duration_s:
+            raise ValueError(f"负载 {trace.ref} 变换后只覆盖 {trace.duration_s:.0f} s，短于压测时长 {duration_s:.0f} s")
+        arrivals = arrivals_from(trace, scn, duration_s)
         t_begin = time.time()
-        arrivals = trace_arrivals(scn, trace, duration_s, time_scale) if trace else synth_arrivals(scn, clock, t_begin, duration_s, rps)
         rng = random.Random(scn.workload.seed)
         sem = asyncio.Semaphore(max_concurrency)
         results: list[dict] = []
@@ -145,6 +104,7 @@ async def run(gateway: str, scn: Scenario, duration_s: float, grid: str | None =
         await asyncio.gather(*tasks)
 
     summary = summarize(results, scn, stream)
+    summary["workload"] = trace.ref
     if out:
         p = Path(out)
         p.parent.mkdir(parents=True, exist_ok=True)

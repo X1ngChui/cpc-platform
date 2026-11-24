@@ -3,7 +3,7 @@
 前提：已按 configs/scenario.local-gpu.yaml 以本机模式启动服务（cpc up -s configs/scenario.local-gpu.yaml），
 站点 lab 的上游是本机 vLLM（容器名 cpc-vllm-local）。
 
-用法：python scripts/real_gpu_check.py [--site lab] [--rps 6] [--duration 60] [--restart]
+用法：python scripts/real_gpu_check.py [--site lab] [--rate-scale 0.4] [--duration 60] [--restart]
 输出：logs/realgpu/power_trace.csv（时间、在途请求数、GPU 功率、IT 功率）与摘要。
 """
 
@@ -42,7 +42,7 @@ async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("-s", "--scenario", default=str(ROOT / "configs/scenario.local-gpu.yaml"))
     ap.add_argument("--site", default="lab")
-    ap.add_argument("--rps", type=float, default=6)
+    ap.add_argument("--rate-scale", type=float, default=None, help="覆盖场景负载的到达率缩放")
     ap.add_argument("--duration", type=float, default=60)
     ap.add_argument("--restart", action="store_true", help="压测后用容量指令关停再重启推理实例")
     args = ap.parse_args()
@@ -54,7 +54,9 @@ async def main() -> None:
     sampler = asyncio.create_task(sample(url, stop, rows))
     await asyncio.sleep(5)  # 空载基线
     # 只压测该站点：直接向站点代理发请求（与经网关相同的 OpenAI 接口）
-    summary = await loadgen(url, scn, args.duration, rps=args.rps, stream=True, model="cpc")
+    if args.rate_scale is not None:
+        scn.workload.rate_scale = args.rate_scale
+    summary = await loadgen(url, scn, args.duration, stream=True, model="cpc")
     await asyncio.sleep(5)
     events = []
     if args.restart:

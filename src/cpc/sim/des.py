@@ -1,8 +1,11 @@
 """离散事件仿真器（仿真模式）。
 
 用途：不启动任何服务，在几十秒内仿真若干小时的跨数据中心运行，快速比较调度策略。
-它复用在线平台的全部"可替换部分"：场景配置、功率/性能模型、电网信号模型、路由策略、容量策略，
+它复用在线平台的全部"可替换部分"：场景配置、负载与电网信号数据集、功率/性能模型、路由策略、容量策略，
 因此在仿真中写好的策略可以不改代码地放到在线平台（网关/控制器）中运行。
+
+输入完整性与在线控制器一致：容量策略声明需要电网信号而某些站点的信号不可用时，跳过该控制周期并计数；
+成本与碳排放只对信号可用的时间片核算，汇总中给出按设施电量计的覆盖率。
 
 时间单位：仿真秒（从场景 clock.start 开始）。在仿真模式下不存在时间加速，所有时间均为"物理"时间。
 """
@@ -17,10 +20,10 @@ from datetime import datetime, timedelta
 
 import numpy as np
 
-from ..config import CST, NodeProfile, Scenario, SiteConfig
-from ..grid.signals import GridModel, GridSignal
-from ..loadgen.client import lognormal
-from ..models import diurnal_factor, node_idle_w, node_peak_w, node_power_w, prefill_s, rtt_matrix, service_s, tpot_s
+from ..config import NodeProfile, Scenario, SiteConfig
+from ..datasets.workload import assign_sources, load_workload
+from ..grid.signals import GridModel, GridSignal, SignalUnavailable
+from ..models import node_idle_w, node_peak_w, node_power_w, prefill_s, rtt_matrix, service_s, tpot_s
 from ..schemas import CapacityTarget, DemandSnapshot, NodeSnapshot, SiteSnapshot
 from ..sched import CapacityPolicy, ClusterView, ControlView, RequestInfo, RoutingPolicy, SiteView
 
@@ -112,16 +115,18 @@ class SimResult:
 
 class Simulator:
     def __init__(self, scn: Scenario, routing: RoutingPolicy, capacity: CapacityPolicy, hours: float = 24.0,
-                 bin_s: float = 300.0, rps: float | None = None, control_interval_s: float | None = None,
-                 initial_active: int | None = None):
+                 bin_s: float = 300.0, control_interval_s: float | None = None, initial_active: int | None = None):
         self.scn = scn
         self.routing = routing
         self.capacity = capacity
         self.horizon = hours * 3600.0
         self.bin_s = bin_s
-        self.rps = rps if rps is not None else scn.workload.rps
         self.ctl_s = control_interval_s or scn.scheduler.sim_control_interval_s
         self.grid = GridModel(scn)
+        self.trace = load_workload(scn)
+        span = self.trace.duration_s if scn.workload.duration_s is None else scn.workload.duration_s / scn.workload.time_scale
+        if span + 1e-6 < self.horizon:
+            raise ValueError(f"负载 {self.trace.ref} 变换后覆盖 {span / 3600:.2f} h，短于仿真时长 {hours} h")
         self.rtt = rtt_matrix(scn)
         self.sites = {s.id: SimSite(s, scn.profile_of(s.id), scn.scheduler.queue_limit_per_slot) for s in scn.sites}
         if initial_active is not None:
@@ -130,7 +135,6 @@ class Simulator:
                     n.state = "on" if i < initial_active else "off"
                     s.update(n)
         self.weights: dict[str, dict[str, float]] = {}
-        self.rng = np.random.default_rng(scn.workload.seed)
         self.ev: list = []
         self.seq = 0
         nb = int(math.ceil(self.horizon / bin_s))
@@ -150,6 +154,7 @@ class Simulator:
         self.rejected = 0
         self.unrouted = 0
         self.route_reasons: dict[str, int] = {}
+        self.skipped_cycles: dict[str, int] = {}
 
     # ------------------------------------------------------------ 工具
 
@@ -179,21 +184,12 @@ class Simulator:
     # ------------------------------------------------------------ 事件处理
 
     def gen_arrivals(self) -> None:
-        w = self.scn.workload
-        lam_max = self.rps * (1 + abs(w.diurnal_amplitude))
-        srcs = [s.id for s in self.scn.sources]
-        shares = np.array([s.share for s in self.scn.sources], float)
-        shares /= shares.sum()
-        t = 0.0
-        while True:
-            t += self.rng.exponential(1.0 / lam_max)
-            if t >= self.horizon:
-                break
-            lt = self.dt(t).astimezone(CST)
-            lam = self.rps * diurnal_factor(lt.hour + lt.minute / 60, w.diurnal_amplitude, w.peak_hour)
-            if self.rng.random() * lam_max <= lam:
-                src = srcs[int(self.rng.choice(len(srcs), p=shares))]
-                self.push(t, ARRIVE, (src, lognormal(self.rng, w.input_tokens), lognormal(self.rng, w.output_tokens)))
+        tr = self.trace
+        keep = tr.t < self.horizon
+        srcs = assign_sources(int(keep.sum()), [s.id for s in self.scn.sources], [s.share for s in self.scn.sources],
+                              self.scn.workload.seed)
+        for t, src, n_in, n_out in zip(tr.t[keep], srcs, tr.input_tokens[keep], tr.output_tokens[keep]):
+            self.push(float(t), ARRIVE, (str(src), int(n_in), max(1, int(n_out))))
 
     def view(self, t: float, signals: dict[str, GridSignal]) -> ClusterView:
         sv = {sid: SiteView(snap=s.snapshot(t), signal=signals.get(sid), pending=s.inflight_wan) for sid, s in self.sites.items()}
@@ -316,6 +312,12 @@ class Simulator:
         for s in self.sites.values():
             s.arrival_rate = s.arrivals_window / self.ctl_s
             s.arrivals_window = 0
+        if "signals" in self.capacity.requires and len(signals) < len(self.sites):
+            self.skipped_cycles["incomplete_signals"] = self.skipped_cycles.get("incomplete_signals", 0) + 1
+            self.src_window = {k: 0 for k in self.src_window}
+            if t + self.ctl_s < self.horizon:
+                self.push(t + self.ctl_s, CONTROL, None)
+            return
         demand = DemandSnapshot(rates={k: v / self.ctl_s for k, v in self.src_window.items()})  # 仿真中输入总是完整的
         self.src_window = {k: 0 for k in self.src_window}
         view = ControlView(now=self.dt(t), interval_s=self.ctl_s, sites={k: s.snapshot(t, True) for k, s in self.sites.items()},
@@ -341,7 +343,7 @@ class Simulator:
             if t >= self.horizon:
                 break
             if t - sig_t >= 60.0:  # 电网信号每仿真分钟刷新一次
-                signals = self.grid.snapshot(self.dt(t))
+                signals, _ = self.grid.snapshot(self.dt(t))
                 sig_t = t
             if kind == ARRIVE:
                 self.on_arrive(t, data, signals)
@@ -361,32 +363,40 @@ class Simulator:
         nb = len(next(iter(self.bin_energy.values())))
         ts, tot = [], {"it_kwh": 0.0, "facility_kwh": 0.0, "cost_yuan": 0.0, "carbon_kg": 0.0}
         per_site = {sid: {"it_kwh": 0.0, "facility_kwh": 0.0, "cost_yuan": 0.0, "carbon_kg": 0.0, "requests": 0} for sid in self.sites}
+        priced = 0.0  # 有电网信号的设施电量（kWh）
         for b in range(nb):
             t_mid = (b + 0.5) * self.bin_s
             row = {"t_h": round(b * self.bin_s / 3600, 4), "time": self.dt(b * self.bin_s).isoformat()}
             for sid, s in self.sites.items():
-                g = self.grid.signal(sid, self.dt(t_mid))
                 it_kwh = self.bin_energy[sid][b] / 3.6e6
                 fac = it_kwh * s.cfg.pue
-                cost, co2 = fac * g.price_yuan_per_kwh, fac * g.carbon_kg_per_kwh
+                try:
+                    g = self.grid.signal(sid, self.dt(t_mid))
+                except SignalUnavailable:
+                    g = None
                 for d in (tot, per_site[sid]):
                     d["it_kwh"] += it_kwh
                     d["facility_kwh"] += fac
-                    d["cost_yuan"] += cost
-                    d["carbon_kg"] += co2
+                    if g is not None:
+                        d["cost_yuan"] += fac * g.price_yuan_per_kwh
+                        d["carbon_kg"] += fac * g.carbon_kg_per_kwh
+                if g is not None:
+                    priced += fac
                 row[f"{sid}_it_kw"] = round(self.bin_energy[sid][b] / self.bin_s / 1000, 4)
                 row[f"{sid}_nodes"] = round(self.bin_nodes[sid][b] / self.bin_s, 3)
                 row[f"{sid}_rps"] = round(self.bin_arrivals[sid][b] / self.bin_s, 4)
-                row[f"{sid}_price"] = g.price_yuan_per_kwh
-                row[f"{sid}_carbon"] = g.carbon_kg_per_kwh
-                row[f"{sid}_cap_kw"] = g.power_cap_kw
+                row[f"{sid}_price"] = None if g is None else g.price_yuan_per_kwh
+                row[f"{sid}_carbon"] = None if g is None else g.carbon_kg_per_kwh
+                row[f"{sid}_cap_kw"] = None if g is None else g.power_cap_kw
             ts.append(row)
         ttft, e2e, ok = np.array(self.rec_ttft), np.array(self.rec_e2e), np.array(self.rec_ok)
         for sid in self.rec_site:
             per_site[sid]["requests"] += 1
         n = len(self.rec_site)
         summary = {
-            "routing": self.routing.name, "capacity": self.capacity.name, "hours": self.horizon / 3600, "rps": self.rps,
+            "routing": self.routing.name, "capacity": self.capacity.name, "hours": self.horizon / 3600,
+            "workload": self.trace.summary(), "grid": self.grid.sources(),
+            "rps": round(self.arrived / self.horizon, 4),
             "arrived": self.arrived, "served": n, "rejected": self.rejected, "unrouted": self.unrouted,
             "unfinished": self.arrived - n - self.rejected - self.unrouted,  # 仿真结束时仍在排队或在途
             "slo_attainment": float(ok.mean()) if n else 0.0,
@@ -397,7 +407,9 @@ class Simulator:
             "wh_per_request": round(tot["facility_kwh"] * 1000 / max(n, 1), 4),
             "sites": {k: {kk: (round(vv, 4) if isinstance(vv, float) else vv) for kk, vv in v.items()} for k, v in per_site.items()},
             "route_reasons": dict(sorted(self.route_reasons.items())),
+            "skipped_cycles": self.skipped_cycles,
             "energy_coverage": 1.0,  # 仿真中功率由模型给出，无缺失区间
+            "signal_coverage": round(priced / tot["facility_kwh"], 4) if tot["facility_kwh"] else None,  # 成本与碳排放的核算覆盖率
         }
         reqs = {"source": np.array(self.rec_src), "site": np.array(self.rec_site), "ttft": ttft, "e2e": e2e,
                 "tpot": np.array(self.rec_tpot), "ok": ok}

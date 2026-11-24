@@ -21,6 +21,7 @@ x-cpc: &cpc
     - ./scenario.yaml:/app/cfg/scenario.yaml:ro
     - ./endpoints.yaml:/app/cfg/endpoints.yaml:ro
     - ./logs:/logs
+    - ${CPC_DATA_DIR:-~/.cache/cpc/datasets}:/var/lib/cpc/datasets:ro   # 数据集缓存（控制节点上 cpc data fetch 下载）
   environment:
     CPC_ENDPOINTS: /app/cfg/endpoints.yaml
     CPC_ADMIN_TOKEN: ${CPC_ADMIN_TOKEN:?请在 .env 中设置管理接口令牌 CPC_ADMIN_TOKEN}

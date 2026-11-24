@@ -24,6 +24,7 @@
 #include "ch1-intro.typ"
 #include "ch2-arch.typ"
 #include "ch3-energy.typ"
+#include "ch-data.typ"
 #include "ch4-routing.typ"
 #include "ch5-capacity.typ"
 #include "ch6-interfaces.typ"

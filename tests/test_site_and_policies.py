@@ -189,7 +189,7 @@ def _control_view(scn, hour=15, minute=30):
     g = GridModel(scn)
     now = datetime(2026, 7, 15, hour, minute, tzinfo=CST)  # 15:30 在广东需求响应事件期间（上限 8 kW）
     sites = {s.id: make_core(scn, s.id).snapshot() for s in scn.sites}
-    return ControlView(now=now, interval_s=300, sites=sites, signals=g.snapshot(now),
+    return ControlView(now=now, interval_s=300, sites=sites, signals=g.snapshot(now)[0],
                        demand=DemandSnapshot(rates={"east": 4, "south": 4, "north": 2}),
                        rtt_ms=rtt_matrix(scn), slo=scn.slo, min_active={s.id: 1 for s in scn.sites})
 
