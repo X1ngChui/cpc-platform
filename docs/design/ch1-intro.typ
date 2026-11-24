@@ -86,7 +86,7 @@ AI 数据中心参与电网互动的实测 @colangelo2026grid 等做了大量研
 
 - *标准化*：服务之间使用 HTTP/JSON；推理接口兼容 OpenAI API；指标使用 Prometheus 格式，GPU 指标与 NVIDIA dcgm-exporter 同名；
   部署使用 Docker、Docker Compose 与 Kubernetes 原生清单；配置使用 YAML。
-- *跨平台*：Windows、Linux、macOS 上均可运行仿真与虚拟化形态；全部脚本用 Python 编写，不依赖 Shell 方言。
+- *运行环境*：服务端组件只面向 Linux（x86_64、aarch64），以同一个多架构容器镜像发布；开发环境为 Linux 或 WSL2。
 - *低门槛*：一台普通笔记本即可运行完整的四站点虚拟化环境；租用少量云服务器即可接入真实 GPU。
 - *可复现*：负载生成与仿真使用固定随机种子；电网数据与出处随仓库提供；镜像版本固定。
 - *可观测*：每个服务都提供健康检查、状态快照与指标端点，所有调度决策写入日志。

@@ -1,7 +1,7 @@
 """编译文档：docs/<name>/main.typ → docs/pdf/<name>.pdf。
 
-依赖：pip install typst（Typst 编译器的 Python 封装，跨平台，无需单独安装 Typst）。
-字体：优先使用系统中的 Times New Roman / 宋体 / 黑体；Linux 可安装 fonts-noto-cjk。
+依赖：pip install typst（Typst 编译器的 Python 封装，无需单独安装 Typst）。
+字体：Noto Serif CJK SC / Noto Sans CJK SC（Debian/Ubuntu 软件包 fonts-noto-cjk）。
 Typst 包（fletcher 等）缓存在 docs/.typst-packages，已随仓库提供，可离线编译。
 
 用法：python docs/build.py [design] [guide]

@@ -7,8 +7,7 @@ import pytest
 from cpc.config import NodeProfile, UpstreamConfig
 from cpc.sensors import EnergyIntegrator, Reading, make_sensor
 from cpc.sensors.builtin import (
-    CommandSensor, HttpJsonSensor, HwmonSensor, IpmiSensor, LibreHardwareMonitorSensor, NvidiaSmiSensor,
-    PowermetricsSensor, RaplSensor, RedfishSensor,
+    CommandSensor, HttpJsonSensor, HwmonSensor, IpmiSensor, NvidiaSmiSensor, RaplSensor, RedfishSensor,
 )
 from cpc.sensors.exporter import host_total
 from cpc.site.core import Node
@@ -21,16 +20,17 @@ def write(p: Path, text: str) -> None:
 
 
 def test_rapl_counter_and_wraparound(tmp_path, monkeypatch):
-    z = tmp_path / "intel-rapl_0"
+    # 与内核 powercap 相同的目录布局：顶层域 intel-rapl:N，子域 intel-rapl:N:M
+    z = tmp_path / "intel-rapl:0"
     write(z / "name", "package-0")
     write(z / "max_energy_range_uj", "1000000")
     write(z / "energy_uj", "900000")
-    write(tmp_path / "intel-rapl_0_0" / "name", "core")  # 子域，不应重复计入
-    write(tmp_path / "intel-rapl_0_0" / "energy_uj", "1")
-    d = tmp_path / "intel-rapl_0_2"
+    write(tmp_path / "intel-rapl:0:0" / "name", "core")  # 子域，不应重复计入
+    write(tmp_path / "intel-rapl:0:0" / "energy_uj", "1")
+    d = tmp_path / "intel-rapl:0:2"
     write(d / "name", "dram")
     write(d / "energy_uj", "0")
-    s = RaplSensor(root=str(tmp_path), sep="_")  # 真实系统为 intel-rapl:0，Windows 上无法创建含冒号的目录
+    s = RaplSensor(root=str(tmp_path))
     clock = iter([0.0, 1.0])
     monkeypatch.setattr("cpc.sensors.builtin.time.monotonic", lambda: next(clock))
     first = {r.device: r for r in s.read()}
@@ -63,12 +63,6 @@ def test_cli_parsers():
     assert rs[0].power_w == pytest.approx(312.45) and rs[1].power_w is None and rs[1].device == "gpu1"
     ipmi = "    Instantaneous power reading:                   412 Watts\n    Minimum during sampling period:  300 Watts\n"
     assert IpmiSensor.parse(ipmi) == 412.0
-    pm = "CPU Power: 1520 mW\nGPU Power: 230 mW\nANE Power: 0 mW\nCombined Power (CPU + GPU + ANE): 1750 mW\n"
-    got = {r.device: r for r in PowermetricsSensor.parse(pm)}
-    assert got["cpu"].power_w == pytest.approx(1.52) and got["gpu"].kind == "gpu" and got["ane"].kind == "npu"
-    assert LibreHardwareMonitorSensor.classify("/intelcpu/0/power/0", "CPU Package") == "cpu"
-    assert LibreHardwareMonitorSensor.classify("/intelcpu/0/power/1", "CPU Cores") == "other"
-    assert LibreHardwareMonitorSensor.classify("/gpu-nvidia/0/power/0", "GPU Package") == "gpu"
 
 
 def test_generic_adapters():

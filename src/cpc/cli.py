@@ -161,7 +161,7 @@ def cmd_sensors(args) -> None:
                 ok = "可用" if cls.detect() else ""
             except Exception:  # noqa: BLE001
                 pass
-            print(f"{name:<14s} {cls.platforms:<40s} {'已实测' if cls.verified else '按文档实现'}  {ok}")
+            print(f"{name:<14s} {cls.requires:<40s} {'已实测' if cls.verified else '按文档实现'}  {ok}")
         return
     sensors = _sensors_from_args(args)
     print("传感器：", [s.name for s in sensors] or "无")

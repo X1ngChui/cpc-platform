@@ -36,7 +36,7 @@ docker compose -f deploy/compose/docker-compose.yml run --rm loadgen        # �
 CPC_LOAD_SECONDS=1800 docker compose -f deploy/compose/docker-compose.yml run --rm loadgen
 ```
 
-（Windows PowerShell 中设置变量用 `$env:CPC_LOAD_SECONDS=1800`。）打开 Grafana 的"算电协同调度平台"仪表盘，可以看到
+打开 Grafana 的"算电协同调度平台"仪表盘，可以看到
 设施总功率、用电成本速率、碳排放速率、请求速率、SLO 达成率，以及各站点的功率、电价、在线节点数、碳强度、请求率、
 TTFT P99、需求响应余量、每 token 能耗、排队数与 GPU 功率。请求日志与决策日志在 `logs/compose/`。
 

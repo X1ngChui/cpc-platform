@@ -39,7 +39,7 @@ class Greenest(RoutingPolicy):
 ```
 
 ```bash
-# 仿真中比较（Windows PowerShell 用 $env:CPC_PLUGINS="my_policies"；需在 my_policies.py 所在目录运行）
+# 仿真中比较（需在 my_policies.py 所在目录运行）
 CPC_PLUGINS=my_policies cpc compare --runs "nearest:reactive,greenest:reactive" --hours 24
 # 在线平台中使用
 CPC_PLUGINS=my_policies cpc up --routing greenest

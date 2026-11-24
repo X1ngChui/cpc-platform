@@ -1,4 +1,4 @@
-"""一键在本机创建 kind 集群并部署平台（Windows / Linux / macOS 通用）。
+"""在本机创建 kind 集群并部署平台。
 
 前置：Docker、kind、kubectl 已安装并在 PATH 中。
 用法：
@@ -27,7 +27,7 @@ def sh(*cmd: str, check: bool = True) -> subprocess.CompletedProcess:
 
 
 def load_image(img: str) -> None:
-    """kind load docker-image 对 Docker Desktop（containerd 镜像库）中的多架构镜像会失败，
+    """Docker Engine 启用 containerd 镜像库时（Docker Desktop 的默认设置），kind load docker-image 加载多架构镜像会失败，
     失败时改为导出单一平台的镜像包再用 kind load image-archive 加载。"""
     if subprocess.run(["kind", "load", "docker-image", img, "--name", CLUSTER], cwd=ROOT).returncode == 0:
         return

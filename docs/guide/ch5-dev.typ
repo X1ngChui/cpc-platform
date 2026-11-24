@@ -35,7 +35,7 @@ python scripts/real_gpu_check.py --restart  # 有真实 GPU 站点时：压测 +
 
 仓库的 GitHub Actions 包含两个工作流：
 
-- `ci.yml`：在 Linux、Windows、macOS 上运行单元测试与冒烟测试；在 Linux 上编译文档并上传 PDF；
+- `ci.yml`：在 Linux x86_64（`ubuntu-latest`）与 aarch64（`ubuntu-24.04-arm`）上运行单元测试与冒烟测试；编译文档并上传 PDF；
 - `image.yml`：构建 amd64 与 arm64 镜像并推送到 `ghcr.io/<用户名>/cpc-platform`（推送 `main` 生成 `main` 与提交哈希标签，
   推送 `v*` 标签生成版本号标签与 `latest`）。
 
@@ -56,14 +56,14 @@ python docs/build.py            # 生成 docs/pdf/design.pdf 与 docs/pdf/guide.
 
 文档源文件为 Typst（`docs/design/`、`docs/guide/`），模板在 `docs/template/cpc-doc.typ`，示意图在 `docs/figures/diagrams.typ`，
 参考文献在 `docs/design/refs.yml`（GB/T 7714 格式输出）。Typst 包缓存在 `docs/.typst-packages`，可离线编译。
-Linux 上若缺少中文字体，安装 `fonts-noto-cjk`。
+中文字体使用 Noto CJK（`sudo apt-get install -y fonts-noto-cjk`）。
 
 = 常见问题 <g-faq>
 
 #let qa(q, a) = block(below: 1em, { set par(justify: false, first-line-indent: 0em); [#strong(q) \ #a] })
 
 #qa[端口被占用怎么办？][`cpc up` 默认使用 9000、8080、9300、9101 起的端口。可准备一个地址文件指定其他端口，用 `-e` 传入；
-Compose 部署修改 `docker-compose.yml` 中的端口映射。Windows 上用 `netstat -ano | findstr :8080` 查看占用进程。]
+Compose 部署修改 `docker-compose.yml` 中的端口映射。占用端口的进程可用 `ss -ltnp | grep :8080` 查看。]
 
 #qa[请求很慢或连接失败，且机器上设置了 HTTP 代理？][平台内部调用已不读取代理环境变量；但 `curl` 等工具仍会走代理，
 访问本机服务时加 `--noproxy '*'`。Docker 容器与 kind 节点继承的 `127.0.0.1` 代理地址在容器内不可达，见 @g-kind 的说明。]
@@ -75,7 +75,8 @@ Compose 部署修改 `docker-compose.yml` 中的端口映射。Windows 上用 `n
 演示时信号加速 60 倍，`reactive` 策略的扩容来不及跟上快速变化的日内负载是预期现象；正式实验应使用真实时间。]
 
 #qa[NVML 不可用（`pynvml` 导入失败或 `NVML Shared Library Not Found`）？][安装 `pip install nvidia-ml-py`；Linux 容器中需要
-NVIDIA Container Toolkit 并以 `--gpus all` 启动；Windows 需安装 NVIDIA 驱动。可先用 `nvidia-smi` 验证驱动。]
+NVIDIA Container Toolkit 并以 `--gpus all` 启动；WSL2 中 `libnvidia-ml.so` 由宿主机驱动经 `/usr/lib/wsl/lib` 提供。
+可先用 `nvidia-smi` 验证驱动。]
 
 #qa[RAPL 读不到？][`/sys/class/powercap/intel-rapl:*/energy_uj` 在多数发行版上仅 root 可读，且大多数云虚拟机不提供 RAPL。
 在裸金属上以 root 运行，或用 `ipmi` / `redfish` 获取整机功率。]

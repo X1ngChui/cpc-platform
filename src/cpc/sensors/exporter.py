@@ -1,4 +1,4 @@
-"""通用功率导出器（Prometheus）：把传感器层的读数以统一指标暴露出来，可部署在任何服务器/笔记本上。
+"""通用功率导出器（Prometheus）：把传感器层的读数以统一指标暴露出来，可部署在任意 Linux 主机上。
 
 统一指标（所有硬件）：
   cpc_device_power_watts{sensor,device,kind,vendor,model,host[,site]}     W

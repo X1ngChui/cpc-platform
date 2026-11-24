@@ -12,9 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    env:
-      PYTHONIOENCODING: utf-8
+        os: [ubuntu-latest, ubuntu-24.04-arm]   # 服务端只面向 Linux x86_64 与 aarch64
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6

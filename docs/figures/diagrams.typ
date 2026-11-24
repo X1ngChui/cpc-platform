@@ -58,7 +58,7 @@
 // 图：能耗感知四层
 #let sensing = diagram(
   spacing: (6mm, 7mm),
-  box-node((0, 0), [*设备层* GPU / NPU / CPU / 内存 \ NVML · nvidia-smi · AMD SMI · hwmon · RAPL · 昇腾 DCMI · powermetrics …], fill: c-ext, name: <dev>, w: 120mm),
+  box-node((0, 0), [*设备层* GPU / NPU / CPU / 内存 \ NVML · nvidia-smi · AMD SMI · hwmon · RAPL · 昇腾 DCMI …], fill: c-ext, name: <dev>, w: 120mm),
   box-node((0, 1), [*服务器层*（IT 功率） \ 加速卡实测 + 主机部分（整机 BMC：IPMI / Redfish；或 RAPL；或功率模型）], fill: c-site, name: <srv>, w: 120mm),
   box-node((0, 2), [*设施层*（设施功率 = IT 功率 × PUE）], fill: c-svc, name: <fac>, w: 120mm),
   box-node((0, 3), [*电网层* 分时电价 · 碳排放因子 · 需求响应功率上限 → 用电成本速率、碳排放速率], fill: c-grid, name: <grid>, w: 120mm),

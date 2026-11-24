@@ -1,17 +1,15 @@
-"""内置传感器。
+"""内置传感器（Linux）。
 
-| 类型          | 硬件 / 平台                                   | 接口                                         |
+| 类型          | 硬件                                          | 接口                                         |
 |---------------|-----------------------------------------------|----------------------------------------------|
-| nvml          | NVIDIA GPU（数据中心卡与消费卡）Linux/Windows | NVIDIA 官方 NVML（nvidia-ml-py）             |
-| nvidia-smi    | NVIDIA GPU，无 Python 绑定时的后备            | nvidia-smi --query-gpu                       |
-| amdsmi        | AMD Instinct / Radeon，Linux                  | AMD SMI Python 库（ROCm 自带）               |
-| hwmon         | AMD GPU（amdgpu）、Intel 独显（i915/xe），Linux| 内核 hwmon sysfs（无需额外依赖）             |
-| rapl          | Intel / AMD CPU 封装与内存，Linux             | 内核 powercap sysfs（RAPL）                  |
-| ascend-dcmi   | 华为昇腾 NPU，Linux                           | 昇腾驱动 DCMI 库（libdcmi.so，ctypes 调用）  |
+| nvml          | NVIDIA GPU（数据中心卡与消费卡）              | NVIDIA 官方 NVML（nvidia-ml-py）             |
+| nvidia-smi    | NVIDIA GPU                                    | nvidia-smi --query-gpu                       |
+| amdsmi        | AMD Instinct / Radeon                         | AMD SMI Python 库（ROCm 自带）               |
+| hwmon         | AMD GPU（amdgpu）、Intel 独显（i915/xe）      | 内核 hwmon sysfs（无需额外依赖）             |
+| rapl          | Intel / AMD CPU 封装与内存                    | 内核 powercap sysfs（RAPL）                  |
+| ascend-dcmi   | 华为昇腾 NPU                                  | 昇腾驱动 DCMI 库（libdcmi.so，ctypes 调用）  |
 | ipmi          | 服务器整机功率（本机或远程 BMC）              | ipmitool dcmi power reading                  |
 | redfish       | 服务器整机功率（BMC 的 DMTF Redfish 接口）    | HTTPS REST                                   |
-| powermetrics  | Apple Silicon（CPU/GPU），macOS               | powermetrics（需 root）                      |
-| lhm           | Windows 上的 CPU/GPU 功率                     | LibreHardwareMonitor 的 WMI 接口             |
 | prometheus    | 任意已有导出器：dcgm-exporter、Kepler、        | Prometheus HTTP API（PromQL）               |
 |               | node_exporter、ipmi_exporter、NPU-Exporter…   |                                              |
 | command       | 任意厂商命令行工具（寒武纪 cnmon、海光 hy-smi、 | 子进程 + 正则                                |
@@ -23,13 +21,11 @@ from __future__ import annotations
 
 import ctypes
 import glob
-import json
 import logging
 import os
 import re
 import shutil
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -74,7 +70,7 @@ class _CounterPower:
 
 @register_sensor("nvml")
 class NvmlSensor(Sensor):
-    platforms = "Linux / Windows"
+    requires = "NVIDIA 驱动 + nvidia-ml-py"
     verified = True
 
     def __init__(self, gpus: list[int] | None = None, **params):
@@ -128,7 +124,7 @@ class NvmlSensor(Sensor):
 
 @register_sensor("nvidia-smi")
 class NvidiaSmiSensor(Sensor):
-    platforms = "Linux / Windows"
+    requires = "NVIDIA 驱动（nvidia-smi）"
     verified = True
     QUERY = "index,name,power.draw,utilization.gpu"
 
@@ -164,7 +160,7 @@ class NvidiaSmiSensor(Sensor):
 class AmdSmiSensor(Sensor):
     """AMD SMI Python 库（ROCm 6+ 自带）。不同 ROCm 版本返回字段名略有差异，这里做了兼容。"""
 
-    platforms = "Linux（ROCm）"
+    requires = "ROCm（amdsmi）"
 
     def __init__(self, **params):
         super().__init__(**params)
@@ -234,7 +230,7 @@ class AmdSmiSensor(Sensor):
 class HwmonSensor(Sensor):
     """Linux 内核 hwmon：amdgpu（power1_average / power1_input，µW）与 Intel i915/xe（energy1_input，µJ）。"""
 
-    platforms = "Linux"
+    requires = "内核 hwmon（amdgpu / i915 / xe）"
     VENDOR = {"amdgpu": "amd", "i915": "intel", "xe": "intel"}
 
     def __init__(self, root: str = "/sys/class/hwmon", drivers: list[str] | None = None, **params):
@@ -256,8 +252,6 @@ class HwmonSensor(Sensor):
 
     @classmethod
     def detect(cls) -> bool:
-        if not sys.platform.startswith("linux"):
-            return False
         return any(_safe_read(p) in cls.VENDOR for p in glob.glob("/sys/class/hwmon/hwmon*/name"))
 
     def read(self) -> list[Reading]:
@@ -307,15 +301,15 @@ class RaplSensor(Sensor):
     core/uncore 是 package 的子集，不单独计入，避免重复。
     """
 
-    platforms = "Linux（裸金属；多数云虚拟机不提供 RAPL）"
+    requires = "内核 powercap（裸金属；多数云虚拟机不提供 RAPL）"
     KIND = {"package": "cpu", "dram": "dram", "psys": "platform"}
 
-    def __init__(self, root: str = "/sys/class/powercap", sep: str = ":", **params):
+    def __init__(self, root: str = "/sys/class/powercap", **params):
         super().__init__(**params)
         self.root = Path(root)
         self.cp = _CounterPower()
         self.zones: list[tuple[str, str, Path, float | None]] = []
-        for z in sorted(self.root.glob(f"intel-rapl{sep}*")):  # sep 仅为测试而设（Windows 目录名不能含冒号）
+        for z in sorted(self.root.glob("intel-rapl:*")):  # 顶层域 intel-rapl:N 与子域 intel-rapl:N:M
             try:
                 name = _read(z / "name")
             except OSError:
@@ -323,7 +317,7 @@ class RaplSensor(Sensor):
             base = name.split("-")[0]
             if base not in self.KIND:
                 continue
-            parent = z.name.split(sep)[1]
+            parent = z.name.split(":")[1]
             dev = name if base == "package" else f"{name}-{parent}"
             try:
                 mx = float(_read(z / "max_energy_range_uj"))
@@ -333,8 +327,6 @@ class RaplSensor(Sensor):
 
     @classmethod
     def detect(cls) -> bool:
-        if not sys.platform.startswith("linux"):
-            return False
         files = glob.glob("/sys/class/powercap/intel-rapl:*/energy_uj")
         return bool(files) and os.access(files[0], os.R_OK)
 
@@ -362,7 +354,7 @@ class AscendDcmiSensor(Sensor):
     在 Kubernetes 昇腾集群中，更推荐部署华为官方的 NPU-Exporter，再用 prometheus 传感器读取。
     """
 
-    platforms = "Linux（昇腾驱动）"
+    requires = "昇腾驱动（libdcmi.so）"
     LIB_PATHS = ["/usr/local/Ascend/driver/lib64/driver/libdcmi.so", "/usr/local/dcmi/libdcmi.so",
                  "/opt/Ascend/driver/lib64/driver/libdcmi.so"]
 
@@ -387,7 +379,7 @@ class AscendDcmiSensor(Sensor):
 
     @classmethod
     def detect(cls) -> bool:
-        return sys.platform.startswith("linux") and any(os.path.exists(p) for p in cls.LIB_PATHS)
+        return any(os.path.exists(p) for p in cls.LIB_PATHS)
 
     def read(self) -> list[Reading]:
         out = []
@@ -413,7 +405,7 @@ class IpmiSensor(Sensor):
     远程 BMC 的密码通过环境变量 IPMI_PASSWORD 传给 ipmitool（-E 选项），不出现在进程参数中。
     """
 
-    platforms = "Linux / Windows（需 ipmitool 与 BMC 支持 DCMI）"
+    requires = "ipmitool；BMC 支持 DCMI"
     PAT = re.compile(r"Instantaneous power reading:\s*([0-9.]+)\s*Watts", re.I)
 
     def __init__(self, host: str | None = None, user: str | None = None, password: str | None = None,
@@ -446,7 +438,7 @@ class RedfishSensor(Sensor):
     """整机功率：DMTF Redfish。优先读 Chassis/{id}/EnvironmentMetrics 的 PowerWatts，
     其次读旧版 Chassis/{id}/Power 的 PowerControl[0].PowerConsumedWatts。"""
 
-    platforms = "任意（通过网络访问 BMC）"
+    requires = "BMC 的 Redfish 接口（网络）"
 
     def __init__(self, url: str, username: str | None = None, password: str | None = None, verify: bool | str = True,
                  chassis: list[str] | None = None, **params):
@@ -492,80 +484,6 @@ class RedfishSensor(Sensor):
         return out
 
 
-# ======================================================================= Apple / Windows
-
-
-@register_sensor("powermetrics")
-class PowermetricsSensor(Sensor):
-    """Apple Silicon：powermetrics 输出的 CPU/GPU/ANE 功率（mW）。需要 root。"""
-
-    platforms = "macOS（Apple Silicon）"
-    PAT = re.compile(r"^(CPU|GPU|ANE) Power:\s*([0-9.]+)\s*mW", re.M)
-
-    def __init__(self, interval_ms: int = 200, **params):
-        super().__init__(**params)
-        self.cmd = ["powermetrics", "-n", "1", "-i", str(interval_ms), "--samplers", "cpu_power,gpu_power"]
-
-    @classmethod
-    def detect(cls) -> bool:
-        return sys.platform == "darwin" and shutil.which("powermetrics") is not None and os.geteuid() == 0
-
-    @classmethod
-    def parse(cls, text: str) -> list[Reading]:
-        kind = {"CPU": "cpu", "GPU": "gpu", "ANE": "npu"}
-        return [Reading("powermetrics", k.lower(), kind[k], "apple", "Apple Silicon", power_w=float(v) / 1000.0)
-                for k, v in cls.PAT.findall(text)]
-
-    def read(self) -> list[Reading]:
-        return self.parse(_run(self.cmd, 10))
-
-
-@register_sensor("lhm")
-class LibreHardwareMonitorSensor(Sensor):
-    """Windows：LibreHardwareMonitor（需以管理员运行）通过 WMI 命名空间 root/LibreHardwareMonitor 提供的功率传感器。
-
-    只把 "Package"（CPU 封装）与 GPU 总功率记为 cpu/gpu，其余子项记为 other，避免重复求和。
-    """
-
-    platforms = "Windows"
-    PS = ("Get-CimInstance -Namespace root/LibreHardwareMonitor -ClassName Sensor -ErrorAction Stop | "
-          "Where-Object { $_.SensorType -eq 'Power' } | Select-Object Identifier,Name,Value | ConvertTo-Json -Compress")
-
-    @classmethod
-    def detect(cls) -> bool:
-        if sys.platform != "win32":
-            return False
-        try:
-            return bool(cls._query())
-        except Exception:  # noqa: BLE001
-            return False
-
-    @classmethod
-    def _query(cls) -> list[dict]:
-        txt = _run(["powershell", "-NoProfile", "-Command", cls.PS], 10).strip()
-        if not txt:
-            return []
-        d = json.loads(txt)
-        return d if isinstance(d, list) else [d]
-
-    @staticmethod
-    def classify(identifier: str, name: str) -> str:
-        ident = identifier.lower()
-        if "cpu" in ident:
-            return "cpu" if "package" in name.lower() else "other"
-        if "gpu" in ident:
-            return "gpu" if any(k in name.lower() for k in ("package", "gpu power", "total")) else "other"
-        return "other"
-
-    def read(self) -> list[Reading]:
-        out = []
-        for s in self._query():
-            ident, name = s.get("Identifier", ""), s.get("Name", "")
-            out.append(Reading("lhm", ident.strip("/").replace("/", "-"), self.classify(ident, name), "generic", name,
-                               power_w=float(s["Value"]) if s.get("Value") is not None else None))
-        return out
-
-
 # ======================================================================= 通用适配器
 
 
@@ -580,7 +498,7 @@ class PrometheusSensor(Sensor):
     - 昇腾 NPU-Exporter、智能 PDU 导出器等：按其指标名填写 query
     """
 
-    platforms = "任意"
+    requires = "无（经网络或子进程访问）"
 
     def __init__(self, url: str, query: str, kind: str = "other", vendor: str = "generic", device_label: str | None = None,
                  scale: float = 1.0, name: str = "prometheus", **params):
@@ -608,7 +526,7 @@ class CommandSensor(Sensor):
       {type: command, cmd: ["cnmon", "info", "-p"], regex: "Usage\\s*:\\s*([0-9.]+)\\s*W", kind: npu, vendor: cambricon}
     """
 
-    platforms = "任意"
+    requires = "无（经网络或子进程访问）"
 
     def __init__(self, cmd: list[str] | str, regex: str, kind: str = "other", vendor: str = "generic", device: str | None = None,
                  scale: float = 1.0, name: str = "command", timeout: float = 5.0, **params):
@@ -631,7 +549,7 @@ class CommandSensor(Sensor):
 class HttpJsonSensor(Sensor):
     """HTTP JSON 接口（智能插座、PDU、自研采集板）。path 为点号分隔的字段路径，支持 [i] 下标，例如 "meters[0].power"。"""
 
-    platforms = "任意"
+    requires = "无（经网络或子进程访问）"
 
     def __init__(self, url: str, path: str, kind: str = "server", device: str = "meter", scale: float = 1.0,
                  headers: dict | None = None, name: str = "http-json", **params):

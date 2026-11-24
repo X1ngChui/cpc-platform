@@ -11,28 +11,27 @@ cpc sensors --types nvml,rapl --count 5 --interval 2
 cpc sensors --json           # JSON 输出，便于脚本处理
 ```
 
-在一台装有 NVIDIA 显卡的 Windows 笔记本上的输出示例：
+WSL2（Ubuntu 26.04，NVIDIA GeForce RTX 5070 Ti，驱动 621.24）中的输出示例：
 
 ```text
 传感器： ['nvml']
-  [nvml] gpu0   gpu   nvidia   NVIDIA GeForce RTX 5070 Ti   43.36 W   6271566.3 J   2.0 %
-  主机合计 43.36 W
+  [nvml] gpu0   gpu   nvidia   NVIDIA GeForce RTX 5070 Ti   45.62 W   6905602.1 J   1.0 %
+  主机合计 45.62 W
 ```
 
 #figure(
   tbl(
     columns: (9em, 1fr),
-    header: ("平台", "通常可用的传感器"),
-    [Linux + NVIDIA GPU], [`nvml`（需 `pip install nvidia-ml-py`）、`nvidia-smi`；裸金属另有 `rapl`、`ipmi`],
-    [Linux + AMD GPU], [`amdsmi`（ROCm 自带）或 `hwmon`（无需依赖）；`rapl`],
-    [Linux + Intel 独显], [`hwmon`（i915 / xe 驱动的能量计数器）；`rapl`],
-    [Linux + 昇腾 NPU], [`ascend-dcmi`（驱动自带 libdcmi.so）；或部署官方 NPU-Exporter 后用 `prometheus`],
-    [Windows], [`nvml`、`nvidia-smi`；CPU 功率需运行 LibreHardwareMonitor（管理员）后使用 `lhm`],
-    [macOS（Apple Silicon）], [`powermetrics`（需 `sudo`）],
+    header: ("环境", "通常可用的传感器"),
+    [NVIDIA GPU], [`nvml`（需 `pip install nvidia-ml-py`）、`nvidia-smi`；裸金属另有 `rapl`、`ipmi`],
+    [AMD GPU], [`amdsmi`（ROCm 自带）或 `hwmon`（无需依赖）；`rapl`],
+    [Intel 独显], [`hwmon`（i915 / xe 驱动的能量计数器）；`rapl`],
+    [昇腾 NPU], [`ascend-dcmi`（驱动自带 libdcmi.so）；或部署官方 NPU-Exporter 后用 `prometheus`],
     [云虚拟机], [通常只有 GPU 传感器；RAPL 与 BMC 一般不对租户开放],
+    [WSL2], [`nvml`、`nvidia-smi`（由宿主机驱动经 `/usr/lib/wsl/lib` 提供）；`rapl`、`hwmon`、`ipmi` 不可用],
     [服务器 BMC], [`ipmi`（本机或远程）、`redfish`],
   ),
-  caption: [各平台通常可用的传感器],
+  caption: [各类 Linux 环境中通常可用的传感器],
 )
 
 == 用配置文件指定传感器
@@ -80,7 +79,7 @@ from cpc.sensors import Reading, Sensor, register_sensor
 
 @register_sensor("my-accel")
 class MyAccel(Sensor):
-    platforms = "Linux"
+    requires = "厂商 SDK"         # 文档用途：依赖的驱动或库
 
     @classmethod
     def detect(cls) -> bool:          # 可选：本机是否可用

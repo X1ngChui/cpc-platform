@@ -5,7 +5,8 @@
 
 - **三种运行形态，共用一套策略代码**：离散事件仿真（24 小时约 1 分钟跑完）、容器化虚拟部署（单机 / Docker Compose / Kubernetes）、接入真实 GPU 服务器（vLLM + 硬件功率传感器），三者可混合。
 - **标准接口**：推理接口兼容 OpenAI API；指标为 Prometheus 格式，GPU 指标与 NVIDIA dcgm-exporter 同名；部署为 Docker 镜像与 Kubernetes 清单。
-- **能耗感知**：设备 → 服务器 → 设施（PUE）→ 电网四层；支持 NVIDIA（NVML / nvidia-smi）、AMD（AMD SMI / hwmon）、Intel 独显（hwmon）、CPU（RAPL）、华为昇腾（DCMI）、服务器整机（IPMI / Redfish）、Apple Silicon（powermetrics）、Windows（LibreHardwareMonitor）以及任意 Prometheus 导出器、命令行工具、HTTP 接口。
+- **能耗感知**：设备 → 服务器 → 设施（PUE）→ 电网四层；支持 NVIDIA（NVML / nvidia-smi）、AMD（AMD SMI / hwmon）、Intel 独显（hwmon）、CPU（RAPL）、华为昇腾（DCMI）、服务器整机（IPMI / Redfish）以及任意 Prometheus 导出器、命令行工具、HTTP 接口。
+- **运行环境**：服务端组件只面向 Linux（x86_64、aarch64）；开发环境为 Linux 或 WSL2（Ubuntu）。
 - **电网数据有出处**：广东、贵州、内蒙古（蒙西）、上海的分时电价时段与浮动比例取自省级发改委文件；30 个省份的 2023 年电力二氧化碳排放因子取自生态环境部、国家统计局公告（2025 年第 47 号）。
 - **策略可插拔**：路由策略、容量策略、功率传感器都是带注册装饰器的 Python 类；仓库只提供演示数据通路用的参考实现。
 
@@ -21,8 +22,8 @@
 ## 快速开始
 
 ```bash
-git clone https://github.com/X1ngChui/cpc-platform.git && cd cpc-platform
-python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\Activate.ps1
+git clone https://github.com/X1ngChui/cpc-platform.git ~/cpc-platform && cd ~/cpc-platform
+python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 
 pytest                                  # 单元测试
@@ -71,8 +72,9 @@ docs/         Typst 源文件、模板、插图与 PDF
 
 ## 已验证的环境
 
-- Windows 11 + Python 3.12：单进程、Docker Compose（Docker Desktop）、kind v0.31.0 三种部署均通过冒烟测试；
-- NVIDIA GeForce RTX 5070 Ti + vLLM v0.34.0（Qwen2.5-0.5B-Instruct）：真实站点的请求转发、就绪检查、NVML 实测功率、容器级开关机；
+- WSL2（Ubuntu 26.04）+ Python 3.12：单元测试与单进程冒烟测试通过；NVML 可读取 NVIDIA GeForce RTX 5070 Ti 的功率与能耗计数；
+- v0.1.0：单进程、Docker Compose、kind v0.31.0 三种部署均通过冒烟测试；
+- NVIDIA GeForce RTX 5070 Ti + vLLM v0.34.0（Qwen2.5-0.5B-Instruct）：真实站点的请求转发、就绪检查、NVML 实测功率、容器级开关机（v0.1.0）；
 - 发布镜像的 amd64 与 arm64 版本均可运行；容器内 NVML 可读到 GPU 功率。
 
 其余硬件的传感器依据官方接口文档实现，解析逻辑有单元测试，需在目标硬件上验证（`cpc sensors --list` 中标注）。

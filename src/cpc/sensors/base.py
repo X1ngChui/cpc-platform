@@ -4,7 +4,7 @@
     sensor   传感器类型名（nvml、rapl、ipmi……）
     device   设备标识（gpu0、package-0、npu0-0、server……），在同一 sensor 内唯一
     kind     设备类别：gpu / npu / cpu / dram / soc / server / platform / other
-    vendor   厂商：nvidia / amd / intel / huawei / apple / generic
+    vendor   厂商：nvidia / amd / intel / huawei / generic
     power_w  瞬时（或驱动给出的短时平均）功率，W
     energy_j 累计能耗计数（若硬件提供；否则由上层按功率积分），J
     util_pct 利用率（若可得）
@@ -44,7 +44,7 @@ class Sensor:
     """传感器基类。子类实现 read()；可选实现 detect()（类方法，判断本机是否可用）与 set_power_limit()。"""
 
     name = "base"
-    platforms = "any"  # 文档用途：支持的平台
+    requires = ""  # 文档用途：依赖的驱动、库或接口
     verified = False  # 是否已在真实硬件上验证（文档用途）
 
     def __init__(self, **params: Any):
@@ -95,8 +95,6 @@ AUTO_ORDER = [
     ("ascend-dcmi", None),
     ("rapl", None),
     ("ipmi", None),
-    ("powermetrics", None),
-    ("lhm", None),
 ]
 
 

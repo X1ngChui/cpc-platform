@@ -99,7 +99,7 @@ Kubernetes 部署中，每个站点对应集群中带 `topology.kubernetes.io/re
   tbl(
     columns: (8em, 9em, 1fr),
     header: ("方面", "选择", "理由"),
-    [实现语言], [Python 3.10+], [学习门槛低；科研生态（NumPy、SciPy、matplotlib）完善；跨平台。],
+    [实现语言], [Python 3.10+], [科研生态（NumPy、SciPy、matplotlib）完善；硬件厂商普遍提供 Python 管理接口（NVML、AMD SMI 等）。],
     [Web 框架], [FastAPI + Uvicorn], [异步 I/O 适合大量并发的流式请求；自动生成 OpenAPI 文档（各服务 `/docs`）。],
     [HTTP 客户端], [httpx], [同时支持同步与异步、流式响应。],
     [数据校验], [Pydantic v2], [配置与接口数据结构的类型校验。],

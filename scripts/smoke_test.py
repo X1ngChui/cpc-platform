@@ -1,4 +1,4 @@
-"""端到端冒烟测试（跨平台）：启动全部服务 → 压测 → 注入需求响应事件 → 检查指标 → 退出。
+"""端到端冒烟测试：启动全部服务 → 压测 → 注入需求响应事件 → 检查指标 → 退出。
 
 用法：
     python scripts/smoke_test.py                       # 本机单进程模式（cpc up）
@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 import time
@@ -64,11 +63,10 @@ def main() -> None:
     ep = load_endpoints(args.endpoints, scn)
     proc = None
     if not args.external:
-        env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
         cmd = [sys.executable, "-m", "cpc", "up", "-s", args.scenario, "--speedup", "60", "--interval", "5",
                "--routing", "weighted", "--capacity", "grid_aware", "--log-dir", str(ROOT / "logs/smoke")]
         print("启动：", " ".join(cmd))
-        proc = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     try:
         print("1. 健康检查")
         for name, url in [("grid", ep.grid), ("gateway", ep.gateway), ("controller", ep.controller), *ep.sites.items()]:
@@ -78,7 +76,7 @@ def main() -> None:
         print("2. 压测")
         out = subprocess.run([sys.executable, "-m", "cpc", "loadgen", "-s", args.scenario, *(["-e", args.endpoints] if args.endpoints else []),
                               "--duration", str(args.duration), "--rps", str(args.rps), "--out", str(ROOT / "logs/smoke/loadgen.jsonl")],
-                             cwd=ROOT, capture_output=True, text=True, encoding="utf-8", env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+                             cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
         summary = json.loads(out.stdout[out.stdout.index("{"):])
         print("  ", json.dumps(summary, ensure_ascii=False))
         check(summary["sent"] > 0 and summary["failed"] == 0, f"请求全部成功（{summary['ok']}/{summary['sent']}）")

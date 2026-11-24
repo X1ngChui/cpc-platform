@@ -44,38 +44,36 @@ cd cpc-platform
 
 = 环境准备 <g-setup>
 
+== 运行环境
+
+平台的服务端组件（电网信号服务、站点代理、路由网关、容量控制器、通用功率导出器）只面向 Linux（x86_64、aarch64），
+容器镜像同样提供这两种架构。开发环境为 Linux 或 WSL2（Ubuntu）；在 WSL2 中，仓库应克隆在 Linux 文件系统内（如 `~/`），
+不放在 `/mnt/*` 下，以避免跨文件系统访问的性能损失与文件权限问题。
+
 == Python 环境
 
-需要 Python 3.10 及以上（推荐 3.12）。在仓库根目录创建虚拟环境并以可编辑模式安装：
+需要 Python 3.10 及以上（CI 使用 3.12）。在仓库根目录创建虚拟环境并以可编辑模式安装：
 
 ```bash
-python -m venv .venv
-# Windows PowerShell：
-.venv\Scripts\Activate.ps1
-# Linux / macOS：
-source .venv/bin/activate
-
+python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"          # 平台 + 测试与作图依赖
 pip install -e ".[nvml,docker]"  # 可选：NVIDIA GPU 功率采集、通过 Docker 启停推理容器
 pip install -e ".[docs]"         # 可选：编译文档（Typst）
 ```
 
-也可以使用 uv：`uv venv && uv pip install -e ".[dev]"`。安装后即可使用命令 `cpc`（等价于 `python -m cpc`）。
-
-#note(title: "Windows 提示")[若 PowerShell 不允许执行激活脚本，先运行
-`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`。终端出现中文乱码时设置环境变量 `PYTHONIOENCODING=utf-8`。]
+Debian / Ubuntu 的系统 Python 需要先安装 `python3-venv`。也可以使用 uv：
+`uv venv --python 3.12 && uv pip install -e ".[dev]"`。安装后即可使用命令 `cpc`（等价于 `python -m cpc`）。
 
 == Docker
 
-Docker Compose 与 kind 部署需要 Docker：Windows / macOS 安装 Docker Desktop，Linux 安装 Docker Engine 与 Compose 插件
-（`curl -fsSL https://get.docker.com | sh`）。验证：`docker version`、`docker compose version`。
-Docker Desktop 建议分配至少 8 GB 内存（kind 部署需要运行 5 个节点容器）。
+Docker Compose 与 kind 部署需要 Docker Engine 与 Compose 插件（`curl -fsSL https://get.docker.com | sh`）。
+验证：`docker version`、`docker compose version`。kind 部署需要运行 5 个节点容器，Docker 可用内存建议不少于 8 GB。
 
 == kind 与 kubectl（可选）
 
 kind（Kubernetes in Docker）是 Kubernetes 官方的本地集群工具，单个可执行文件。从
-#link("https://kind.sigs.k8s.io/docs/user/quick-start/#installation") 下载对应平台的版本（本平台在 v0.31.0 上验证），
-放到 `PATH` 中的目录；kubectl 从 Kubernetes 官网下载，Docker Desktop 通常已自带。验证：`kind version`、`kubectl version --client`。
+#link("https://kind.sigs.k8s.io/docs/user/quick-start/#installation") 下载 Linux 版本（本平台在 v0.31.0 上验证），
+放到 `PATH` 中的目录；kubectl 从 Kubernetes 官网下载 Linux 版本。验证：`kind version`、`kubectl version --client`。
 
 == 验证安装
 
