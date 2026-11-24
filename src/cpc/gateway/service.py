@@ -80,7 +80,8 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
                log_path: str | None = None, refresh_s: float = 1.0) -> FastAPI:
     st = GatewayState(scn, ep)
     pol = {"policy": make_routing(policy or scn.scheduler.routing.policy, params if policy else scn.scheduler.routing.params)}
-    client = httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=5.0), limits=httpx.Limits(max_connections=4000, max_keepalive_connections=1000))
+    client = httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=5.0), limits=httpx.Limits(max_connections=4000, max_keepalive_connections=1000),
+                               trust_env=False)  # 内部通信不走系统代理
     writer = JsonlWriter(log_path)
     default_src = scn.sources[0].id
     emulate = scn.network.emulate_wan

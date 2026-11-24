@@ -1,0 +1,186 @@
+ndrc2021hub:
+  type: report
+  title: 全国一体化大数据中心协同创新体系算力枢纽实施方案（发改高技〔2021〕709号）
+  author:
+  - 国家发展改革委
+  - 中央网信办
+  - 工业和信息化部
+  - 国家能源局
+  date: 2021-05
+  language: zh
+ndrc2024dc:
+  type: report
+  title: 数据中心绿色低碳发展专项行动计划
+  author:
+  - 国家发展改革委
+  - 工业和信息化部
+  - 国家能源局
+  - 国家数据局
+  date: 2024-07
+  language: zh
+ndrc2021tou:
+  type: report
+  title: 关于进一步完善分时电价机制的通知（发改价格〔2021〕1093号）
+  author: 国家发展改革委
+  date: 2021-07
+  language: zh
+mee2025factors:
+  type: report
+  title: 关于发布2023年电力二氧化碳排放因子的公告（公告2025年第47号）
+  author:
+  - 生态环境部
+  - 国家统计局
+  date: 2025-12-31
+  url: https://www.mee.gov.cn/xxgk2018/xxgk/xxgk01/202512/t20251231_1139517.html
+  language: zh
+gd2021tou:
+  type: report
+  title: 关于进一步完善我省峰谷分时电价政策有关问题的通知（粤发改价格〔2021〕331号）
+  author: 广东省发展改革委
+  date: 2021-08-31
+  language: zh
+gz2023tou:
+  type: report
+  title: 关于完善峰谷分时电价机制有关事项的通知（黔发改价格〔2023〕481号）
+  author: 贵州省发展改革委
+  date: 2023-06
+  url: https://fgw.guizhou.gov.cn/zwgk2025/zcwj/zcwj/202306/t20230628_88405012.html
+  language: zh
+nm2023tou:
+  type: report
+  title: 关于完善蒙西电网工商业分时电价政策的通知（试行）
+  author: 内蒙古自治区发展改革委
+  date: 2023-12-28
+  language: zh
+sh2022tou:
+  type: report
+  title: 关于进一步完善我市分时电价机制有关事项的通知（沪发改价管〔2022〕50号）
+  author: 上海市发展改革委
+  date: 2022-12-16
+  language: zh
+sukprasert2024limits:
+  type: article
+  title: On the Limitations of Carbon-Aware Temporal and Spatial Workload Shifting
+    in the Cloud
+  author:
+  - Sukprasert, Thanathorn
+  - Souza, Abel
+  - Bashir, Noman
+  - Irwin, David
+  - Shenoy, Prashant
+  date: 2024
+  page-range: 924-941
+  serial-number:
+    doi: 10.1145/3627703.3650079
+  parent:
+    type: proceedings
+    title: Proceedings of the 19th European Conference on Computer Systems (EuroSys
+      '24)
+patel2024characterizing:
+  type: article
+  title: Characterizing Power Management Opportunities for LLMs in the Cloud
+  author:
+  - Patel, Pratyush
+  - Choukse, Esha
+  - Zhang, Chaojie
+  - Goiri, Íñigo
+  - Warrier, Brijesh
+  - Mahalingam, Nithish
+  - Bianchini, Ricardo
+  date: 2024
+  parent:
+    type: proceedings
+    title: Proceedings of the 29th ACM International Conference on Architectural Support
+      for Programming Languages and Operating Systems (ASPLOS '24)
+patel2024splitwise:
+  type: article
+  title: 'Splitwise: Efficient Generative LLM Inference Using Phase Splitting'
+  author:
+  - Patel, Pratyush
+  - Choukse, Esha
+  - Zhang, Chaojie
+  - Shah, Aashaka
+  - Goiri, Íñigo
+  - Maleki, Saeed
+  - Bianchini, Ricardo
+  date: 2024
+  parent:
+    type: proceedings
+    title: Proceedings of the 51st Annual International Symposium on Computer Architecture
+      (ISCA '24)
+stojkovic2025dynamollm:
+  type: article
+  title: 'DynamoLLM: Designing LLM Inference Clusters for Performance and Energy Efficiency'
+  author:
+  - Stojkovic, Jovan
+  - Zhang, Chaojie
+  - Goiri, Íñigo
+  - Torrellas, Josep
+  - Choukse, Esha
+  date: 2025
+  parent:
+    type: proceedings
+    title: IEEE International Symposium on High-Performance Computer Architecture
+      (HPCA 2025)
+colangelo2026grid:
+  type: article
+  title: AI data centres as grid-interactive assets
+  author:
+  - Colangelo, Philip
+  - Coskun, Ayse K.
+  - Megrue, Jack
+  - Roberts, Ciaran
+  - Sengupta, Shayan
+  - Sivaram, Varun
+  date: 2026
+  page-range: 254-261
+  serial-number:
+    doi: 10.1038/s41560-025-01927-1
+  parent:
+    type: periodical
+    title: Nature Energy
+    volume: 11
+    issue: 2
+kwon2023vllm:
+  type: article
+  title: Efficient Memory Management for Large Language Model Serving with PagedAttention
+  author:
+  - Kwon, Woosuk
+  - Li, Zhuohan
+  - Zhuang, Siyuan
+  - Sheng, Ying
+  - Zheng, Lianmin
+  - Yu, Cody Hao
+  - Gonzalez, Joseph E.
+  - Zhang, Hao
+  - Stoica, Ion
+  date: 2023
+  parent:
+    type: proceedings
+    title: Proceedings of the 29th Symposium on Operating Systems Principles (SOSP
+      '23)
+you2023zeus:
+  type: article
+  title: 'Zeus: Understanding and Optimizing GPU Energy Consumption of DNN Training'
+  author:
+  - You, Jie
+  - Chung, Jae-Won
+  - Chowdhury, Mosharaf
+  date: 2023
+  parent:
+    type: proceedings
+    title: 20th USENIX Symposium on Networked Systems Design and Implementation (NSDI
+      '23)
+yang2023parttime:
+  type: article
+  title: 'Part-time Power Measurements: nvidia-smi''s Lack of Attention'
+  author:
+  - Yang, Zeyu
+  - Adamek, Karel
+  - Armour, Wesley
+  date: 2023
+  serial-number:
+    arxiv: '2312.02741'
+  parent:
+    type: repository
+    title: arXiv preprint

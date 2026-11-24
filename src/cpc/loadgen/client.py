@@ -94,7 +94,8 @@ async def run(gateway: str, scn: Scenario, duration_s: float, grid: str | None =
               model: str = "cpc", max_concurrency: int = 4000) -> dict:
     clock = SimClock(start=scn.clock.start, speedup=scn.clock.speedup)
     async with httpx.AsyncClient(timeout=httpx.Timeout(900.0, connect=10.0),
-                                 limits=httpx.Limits(max_connections=max_concurrency, max_keepalive_connections=500)) as client:
+                                 limits=httpx.Limits(max_connections=max_concurrency, max_keepalive_connections=500),
+                                 trust_env=False) as client:
         if grid:
             try:
                 clock = SimClock.from_dict((await client.get(grid.rstrip("/") + "/v1/clock")).json())

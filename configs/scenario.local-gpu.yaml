@@ -25,7 +25,7 @@ sites:
     backend: openai
     profile: local
     upstreams:
-      - {id: lab-0, url: "http://127.0.0.1:8000", gpu_indices: [0], max_inflight: 16}
+      - {id: lab-0, url: "http://127.0.0.1:8000", gpu_indices: [0], container: cpc-vllm-local, max_inflight: 32}
   - id: emu
     name: 仿真站点
     province: guangdong

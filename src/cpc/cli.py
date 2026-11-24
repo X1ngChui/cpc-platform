@@ -303,7 +303,7 @@ def cmd_event(args) -> None:
     body = {"site": args.site, "cap_kw": args.cap_kw, "duration_min": args.duration_min, "kind": args.kind}
     from .common import admin_headers
 
-    r = httpx.post(ep.grid + "/v1/events", json=body, headers=admin_headers())
+    r = httpx.post(ep.grid + "/v1/events", json=body, headers=admin_headers(), trust_env=False)
     print(r.status_code, r.text)
 
 

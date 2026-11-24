@@ -120,6 +120,32 @@ def plot_comparison(cmp_dir: str | Path) -> Path:
     return out
 
 
+def plot_power_trace(csv_path: str | Path, out: str | Path, phases: list[tuple[float, float, str]] | None = None,
+                     title: str = "真实 GPU 站点的实测功率（NVML）") -> Path:
+    """单条功率轨迹（站点实测 GPU 功率），用浅色色带标出各阶段。"""
+    setup_style()
+    with open(csv_path, encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    t = [float(r["t"]) for r in rows]
+    p = [float(r["gpu_w"]) for r in rows]
+    fig, ax = plt.subplots(figsize=(8.2, 3.0))
+    for a, b, name in phases or []:
+        ax.axvspan(a, b, color=GRID, alpha=0.55, lw=0)
+        for x in (a, b):
+            ax.axvline(x, color=AXIS, lw=0.8, ls=(0, (3, 3)))
+        ax.text((a + b) / 2, max(p) * 1.08, name, ha="center", va="bottom", fontsize=8, color=INK2)
+    ax.plot(t, p, color=PALETTE[0])
+    ax.set_ylim(0, max(p) * 1.25)
+    ax.set_xlim(0, max(t))
+    ax.set_xlabel("时间（s）")
+    ax.set_ylabel("GPU 功率（W）")
+    ax.set_title(title)
+    out = Path(out)
+    fig.savefig(out, bbox_inches="tight")
+    plt.close(fig)
+    return out
+
+
 def plot_signals(scn: Scenario, day: datetime | None, out: str | Path) -> Path:
     from ..grid.signals import GridModel
 

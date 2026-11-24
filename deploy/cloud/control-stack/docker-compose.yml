@@ -1,7 +1,12 @@
 # 控制栈：部署在一台控制服务器上（可以是无 GPU 的小规格云主机，也可以与某个站点共用）。
 #
 # 组成：电网信号服务、路由网关、容量控制器、Prometheus、Grafana，以及场景中的仿真站点（可选）。
+# 安全：grid/gateway/controller/站点端口应只对同一 VPC 内的服务器开放（云安全组），并设置 CPC_ADMIN_TOKEN；
+#       Prometheus 与 Grafana 只绑定 127.0.0.1，通过 SSH 隧道访问。
 # 准备：
+#   printf "CPC_ADMIN_TOKEN=...
+GRAFANA_PASSWORD=...
+" > .env
 #   cp ../scenario.cloud.example.yaml scenario.yaml        # 按实验修改
 #   cp ../endpoints.cloud.example.yaml endpoints.yaml      # 填入各服务器 IP
 #   cp ../prometheus.cloud.example.yml prometheus.yml      # 填入各服务器 IP
@@ -50,18 +55,18 @@ services:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ../../prometheus/rules:/etc/prometheus/rules:ro
       - prom-data:/prometheus
-    ports: ["9090:9090"]
+    ports: ["127.0.0.1:9090:9090"]   # 仅本机访问；远程查看用 ssh -L 9090:localhost:9090 <控制节点>
 
   grafana:
     image: grafana/grafana:12.1.1
     restart: unless-stopped
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-change-me}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?请在 .env 中设置 Grafana 管理员密码 GRAFANA_PASSWORD}
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/cpc-overview.json
     volumes:
       - ../../grafana/provisioning:/etc/grafana/provisioning:ro
       - ../../grafana/dashboards:/var/lib/grafana/dashboards:ro
-    ports: ["3000:3000"]
+    ports: ["127.0.0.1:3000:3000"]   # 仅本机访问；远程查看用 ssh -L 3000:localhost:3000 <控制节点>
 
 volumes:
   prom-data:

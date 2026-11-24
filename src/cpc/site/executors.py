@@ -117,7 +117,7 @@ class OpenAIExecutor:
     """转发到真实推理实例。node.upstream.url 例如 http://127.0.0.1:8000。"""
 
     def __init__(self, timeout_s: float = 600.0):
-        self.client = httpx.AsyncClient(timeout=httpx.Timeout(timeout_s, connect=5.0))
+        self.client = httpx.AsyncClient(timeout=httpx.Timeout(timeout_s, connect=5.0), trust_env=False)
 
     async def models(self, nodes: list[Node]) -> dict:
         for n in nodes:
@@ -182,7 +182,7 @@ class RealNodeHooks:
     def __init__(self, power=None, enable_docker: bool = True, enable_power_cap: bool = False):
         self.power = power  # 功率来源；若其支持 set_power_limit(device, ratio) 则可做硬件封顶
         self.enable_power_cap = enable_power_cap
-        self.client = httpx.AsyncClient(timeout=2.0)
+        self.client = httpx.AsyncClient(timeout=2.0, trust_env=False)
         self.docker = None
         if enable_docker:
             try:

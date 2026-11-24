@@ -38,8 +38,9 @@ from .base import Reading, Sensor, register_sensor
 log = logging.getLogger("cpc.sensors")
 
 
-def _run(cmd: list[str], timeout: float = 5.0) -> str:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True).stdout
+def _run(cmd: list[str], timeout: float = 5.0, env: dict[str, str] | None = None) -> str:
+    full_env = {**os.environ, **env} if env else None
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True, env=full_env).stdout
 
 
 def _read(path: Path | str) -> str:
@@ -407,7 +408,10 @@ class AscendDcmiSensor(Sensor):
 
 @register_sensor("ipmi")
 class IpmiSensor(Sensor):
-    """整机功率：ipmitool dcmi power reading（本机 /dev/ipmi0，或通过 host/user/password 访问远程 BMC）。"""
+    """整机功率：ipmitool dcmi power reading（本机 /dev/ipmi0，或通过 host/user 访问远程 BMC）。
+
+    远程 BMC 的密码通过环境变量 IPMI_PASSWORD 传给 ipmitool（-E 选项），不出现在进程参数中。
+    """
 
     platforms = "Linux / Windows（需 ipmitool 与 BMC 支持 DCMI）"
     PAT = re.compile(r"Instantaneous power reading:\s*([0-9.]+)\s*Watts", re.I)
@@ -416,8 +420,11 @@ class IpmiSensor(Sensor):
                  interface: str = "lanplus", device: str = "server", **params):
         super().__init__(**params)
         self.cmd = ["ipmitool"]
+        self.env: dict[str, str] | None = None
         if host:
-            self.cmd += ["-I", interface, "-H", host, "-U", user or "", "-P", password or os.environ.get("IPMI_PASSWORD", "")]
+            self.cmd += ["-I", interface, "-H", host, "-U", user or "", "-E"]
+            if password:
+                self.env = {"IPMI_PASSWORD": password}
         self.cmd += ["dcmi", "power", "reading"]
         self.device = device
 
@@ -431,7 +438,7 @@ class IpmiSensor(Sensor):
         return float(m.group(1)) if m else None
 
     def read(self) -> list[Reading]:
-        return [Reading("ipmi", self.device, "server", "generic", "BMC", power_w=self.parse(_run(self.cmd, 10)))]
+        return [Reading("ipmi", self.device, "server", "generic", "BMC", power_w=self.parse(_run(self.cmd, 10, self.env)))]
 
 
 @register_sensor("redfish")
@@ -441,11 +448,14 @@ class RedfishSensor(Sensor):
 
     platforms = "任意（通过网络访问 BMC）"
 
-    def __init__(self, url: str, username: str | None = None, password: str | None = None, verify: bool = False,
+    def __init__(self, url: str, username: str | None = None, password: str | None = None, verify: bool | str = True,
                  chassis: list[str] | None = None, **params):
+        """verify：True（默认，校验证书）、CA 证书文件路径，或 False（BMC 自签名证书时显式关闭，会打印警告）。"""
         super().__init__(**params)
         import httpx
 
+        if verify is False:
+            log.warning("Redfish %s：已关闭 TLS 证书校验，仅应在可信内网中使用", url)
         auth = (username, password or os.environ.get("REDFISH_PASSWORD", "")) if username else None
         self.c = httpx.Client(base_url=url.rstrip("/"), auth=auth, verify=verify, timeout=10.0)
         self.chassis = chassis

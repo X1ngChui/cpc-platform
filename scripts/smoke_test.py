@@ -21,6 +21,8 @@ from pathlib import Path
 
 import httpx
 
+http = httpx.Client(trust_env=False, timeout=10)  # 平台内部通信不走系统代理
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -32,7 +34,7 @@ def wait_ok(url: str, timeout: float = 60) -> None:
     t0 = time.time()
     while time.time() - t0 < timeout:
         try:
-            if httpx.get(url, timeout=1).status_code == 200:
+            if http.get(url, timeout=1).status_code == 200:
                 return
         except httpx.HTTPError:
             pass
@@ -82,33 +84,33 @@ def main() -> None:
         check(summary["sent"] > 0 and summary["failed"] == 0, f"请求全部成功（{summary['ok']}/{summary['sent']}）")
 
         print("3. 控制器")
-        st = httpx.get(ep.controller + "/state").json()
+        st = http.get(ep.controller + "/state").json()
         applied = (st.get("last") or {}).get("applied", {})
         check(bool(applied) and all(applied.values()), f"容量指令下发成功：{applied}")
 
         print("4. 能耗感知指标")
         site0 = scn.sites[0].id
-        m = httpx.get(ep.sites[site0] + "/metrics").text
+        m = http.get(ep.sites[site0] + "/metrics").text
         check("DCGM_FI_DEV_POWER_USAGE{" in m, "站点导出 DCGM 兼容 GPU 功率指标")
         check("cpc_site_facility_power_watts{" in m, "站点导出设施功率指标")
-        g = httpx.get(ep.grid + "/metrics").text
+        g = http.get(ep.grid + "/metrics").text
         check("cpc_grid_price_yuan_per_kwh{" in g and "cpc_grid_carbon_kg_per_kwh{" in g, "电网信号服务导出电价与碳强度")
 
         print("5. 需求响应事件")
         target = scn.sites[-1].id
-        snap = httpx.get(ep.sites[target] + "/state").json()
+        snap = http.get(ep.sites[target] + "/state").json()
         cap_kw = round(snap["node_peak_w"] * 1.05 * snap["pue"] / 1000, 2)  # 只够 1 个节点满载
-        r = httpx.post(ep.grid + "/v1/events", json={"site": target, "cap_kw": cap_kw, "duration_min": 600}, headers=admin_headers())
+        r = http.post(ep.grid + "/v1/events", json={"site": target, "cap_kw": cap_kw, "duration_min": 600}, headers=admin_headers())
         check(r.status_code == 200, f"注入事件：站点 {target} 设施功率上限 {cap_kw} kW")
         ctl_interval = st.get("interval_s", 15)
-        httpx.post(ep.controller + "/admin/step", timeout=10, headers=admin_headers())
+        http.post(ep.controller + "/admin/step", timeout=10, headers=admin_headers())
         time.sleep(min(ctl_interval, 5) + 2)
-        snap = httpx.get(ep.sites[target] + "/state").json()
+        snap = http.get(ep.sites[target] + "/state").json()
         live = snap["nodes_on"] + snap["nodes_booting"] + snap["nodes_draining"]
         check(live <= 1 or snap["nodes_draining"] > 0, f"站点 {target} 在线节点降至 {snap['nodes_on']}（排空中 {snap['nodes_draining']}）")
         check(snap["facility_power_w"] / 1000 <= cap_kw + 1e-6 or snap["nodes_draining"] > 0,
               f"设施功率 {snap['facility_power_w'] / 1000:.2f} kW ≤ 上限 {cap_kw} kW")
-        httpx.delete(ep.grid + "/v1/events", headers=admin_headers())
+        http.delete(ep.grid + "/v1/events", headers=admin_headers())
     finally:
         if proc:
             proc.terminate()
