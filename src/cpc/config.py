@@ -58,7 +58,8 @@ class UpstreamConfig(BaseModel):
 
     id: str
     url: str  # 例如 http://127.0.0.1:8000
-    gpu_indices: list[int] = Field(default_factory=list)  # 该实例占用的本机 GPU 序号（用于 NVML 采集与封顶）
+    gpu_indices: list[int] = Field(default_factory=list)  # 该实例占用的本机 NVIDIA GPU 序号（等价于 devices: [gpu<i>]）
+    devices: list[str] = Field(default_factory=list)  # 该实例占用的加速卡在传感器层中的设备名，如 [gpu0]、[npu0-0]、[amdgpu0]
     container: str | None = None  # 若填写，开关机通过 Docker 启停该容器
     max_inflight: int = 16  # 该实例的并发上限（相当于 slots）
 
@@ -79,6 +80,8 @@ class SiteConfig(BaseModel):
     backend: Literal["emulated", "openai"] = "emulated"
     upstreams: list[UpstreamConfig] = Field(default_factory=list)
     carbon_amplitude: float = 0.1  # 合成碳强度日内波动幅度（仅 carbon_profile=synthetic 时使用）
+    # 真实后端的功率传感器列表，例如 [{type: nvml}, {type: rapl}, {type: ipmi}]；不填则自动探测本机可用传感器
+    sensors: list[dict[str, Any]] | None = None
 
     @property
     def node_count(self) -> int:

@@ -17,38 +17,44 @@ import logging
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
-from ..common import metrics_response
+from ..common import metrics_response, require_admin
 from ..config import Scenario
 from ..schemas import CapacityTarget
 from .core import Overloaded, SiteCore
 from .executors import EmulatedExecutor, ExecResult, OpenAIExecutor, RealNodeHooks
-from .power import ModelPower
+from .power import ModelPower, SensorPower, node_devices
 
 log = logging.getLogger("cpc.site")
 
 STATE_CODE = {"off": 0, "booting": 1, "on": 2, "draining": 3}
 
 
+def build_power(cfg, prof, power: str):
+    """真实后端的功率来源：场景中配置的传感器，或自动探测本机传感器；都没有时退回功率模型。"""
+    if power == "model":
+        return ModelPower(prof)
+    from ..sensors import autodetect, make_sensor
+
+    sensors = [make_sensor(s) for s in cfg.sensors] if cfg.sensors else autodetect()
+    if not sensors:
+        if power == "sensors":
+            raise RuntimeError("未找到可用的功率传感器")
+        log.warning("站点 %s 未找到功率传感器，改用功率模型", cfg.id)
+        return ModelPower(prof)
+    log.info("站点 %s 功率传感器：%s", cfg.id, [s.name for s in sensors])
+    return SensorPower(prof, sensors)
+
+
 def build_core(scn: Scenario, site_id: str, power: str = "auto", enable_power_cap: bool = False, initial_active: int | None = None):
     cfg = scn.site(site_id)
     prof = scn.profile_of(site_id)
     if cfg.backend == "openai":
-        nvml = None
-        if power in ("auto", "nvml"):
-            try:
-                from .power import NvmlPower
-
-                nvml = NvmlPower(prof)
-            except Exception as e:  # noqa: BLE001
-                if power == "nvml":
-                    raise
-                log.warning("NVML 不可用（%s），改用功率模型", e)
-        psrc = nvml or ModelPower(prof)
-        hooks = RealNodeHooks(nvml=nvml, enable_power_cap=enable_power_cap)
+        psrc = build_power(cfg, prof, power)
+        hooks = RealNodeHooks(power=psrc, enable_power_cap=enable_power_cap)
         executor = OpenAIExecutor()
     else:
         psrc = ModelPower(prof)
@@ -97,10 +103,11 @@ def create_app(scn: Scenario, site_id: str, tick_s: float = 0.5, **kw) -> FastAP
             m_node_busy.labels(cfg.id, n.id).set(n.busy)
             m_node_cap.labels(cfg.id, n.id).set(n.cap_ratio)
             m_node_e.labels(cfg.id, n.id).set(n.energy_j)
-            gidx = n.upstream.gpu_indices if (n.upstream and n.upstream.gpu_indices) else list(range(n.gpus))
+            gidx = [d.removeprefix("gpu") for d in node_devices(n)] or [str(i) for i in range(n.gpus)]
             for k, (p, u) in enumerate(zip(n.gpu_powers_w, n.gpu_utils)):
-                g = str(gidx[k]) if k < len(gidx) else str(k)
-                lbl = (g, f"GPU-{cfg.id}-{n.id}-{g}", core.profile.gpu_model, n.id, cfg.id)
+                g = gidx[k] if k < len(gidx) else str(k)
+                model = n.gpu_models[k] if k < len(n.gpu_models) else core.profile.gpu_model
+                lbl = (g, f"GPU-{cfg.id}-{n.id}-{g}", model, n.id, cfg.id)
                 m_gpu_p.labels(*lbl).set(p)
                 m_gpu_u.labels(*lbl).set(u)
                 if k < len(n.gpu_energy_mj):
@@ -141,7 +148,7 @@ def create_app(scn: Scenario, site_id: str, tick_s: float = 0.5, **kw) -> FastAP
     def state():
         return core.snapshot().model_dump()
 
-    @app.post("/admin/capacity")
+    @app.post("/admin/capacity", dependencies=[Depends(require_admin)])
     async def capacity(target: CapacityTarget):
         # 必须是 async：apply() 会在事件循环中创建开关机任务
         core.apply(target)

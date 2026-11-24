@@ -23,12 +23,15 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
+from typing import Annotated
+
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
+from pydantic import BaseModel, Field
 
-from ..common import JsonlWriter, metrics_response
+from ..common import JsonlWriter, metrics_response, require_admin
 from ..config import Endpoints, Scenario
 from ..grid.signals import GridSignal
 from ..models import SimClock, rtt_matrix
@@ -37,6 +40,17 @@ from ..sched import ClusterView, RequestInfo, SiteView, make_routing
 from ..site.executors import estimate_tokens
 
 log = logging.getLogger("cpc.gateway")
+
+
+class PolicyBody(BaseModel):
+    policy: str
+    params: dict = Field(default_factory=dict)
+
+
+class WeightsBody(BaseModel):
+    """路由权重：{来源: {站点: 非负有限权重}}。"""
+
+    weights: dict[str, dict[str, Annotated[float, Field(ge=0, allow_inf_nan=False)]]]
 
 LAT_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128)
 
@@ -259,8 +273,9 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
                 "sites": {k: {"load": round(v.load, 3), "est_wait_s": round(v.est_wait_s, 3), "available": v.available}
                           for k, v in st.view().sites.items()}}
 
-    @app.put("/admin/policy")
-    def set_policy(body: dict) -> dict:
+    @app.put("/admin/policy", dependencies=[Depends(require_admin)])
+    def set_policy(body: PolicyBody) -> dict:
+        body = body.model_dump()
         try:
             pol["policy"] = make_routing(body["policy"], body.get("params"))
         except KeyError as e:
@@ -270,9 +285,13 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
         log.info("routing policy -> %s %s", body["policy"], body.get("params"))
         return {"policy": pol["policy"].name}
 
-    @app.put("/admin/weights")
-    def set_weights(body: dict) -> dict:
-        st.weights = body.get("weights", {})
+    @app.put("/admin/weights", dependencies=[Depends(require_admin)])
+    def set_weights(body: WeightsBody) -> dict:
+        known_src, known_site = set(st.src_rate), set(ep.sites)
+        for s, row in body.weights.items():
+            if s not in known_src or not set(row) <= known_site:
+                raise HTTPException(400, f"unknown source/site in weights: {s} {sorted(row)}")
+        st.weights = body.weights
         m_w.clear()
         for s, row in st.weights.items():
             for d, w in row.items():

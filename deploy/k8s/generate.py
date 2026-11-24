@@ -117,7 +117,7 @@ def main() -> None:
         ],
         "30-monitoring.yaml": [
             deploy("prometheus", "prom/prometheus:v3.5.0",
-                   ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=2d", "--web.enable-lifecycle"], 9090,
+                   ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=2d"], 9090,
                    volumes=[{"name": "config", "configMap": {"name": "prometheus-config"}},
                             {"name": "rules", "configMap": {"name": "prometheus-rules"}}],
                    mounts=[{"name": "config", "mountPath": "/etc/prometheus/prometheus.yml", "subPath": "prometheus.yml"},
@@ -132,8 +132,7 @@ def main() -> None:
                            {"name": "dbp", "mountPath": "/etc/grafana/provisioning/dashboards"},
                            {"name": "dash", "mountPath": "/var/lib/grafana/dashboards"}],
                    env=[{"name": "GF_AUTH_ANONYMOUS_ENABLED", "value": "true"},
-                        {"name": "GF_AUTH_ANONYMOUS_ORG_ROLE", "value": "Admin"},
-                        {"name": "GF_AUTH_DISABLE_LOGIN_FORM", "value": "true"},
+                        {"name": "GF_AUTH_ANONYMOUS_ORG_ROLE", "value": "Viewer"},  # 匿名只读；管理员 admin/admin（首次登录后修改）
                         {"name": "GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH", "value": "/var/lib/grafana/dashboards/cpc-overview.json"}],
                    probe="/api/health"),
             svc("grafana", 3000, 30300),
@@ -160,6 +159,14 @@ def main() -> None:
     }
     (HERE / "kind-cluster.yaml").write_text("# 由 generate.py 生成\n" + yaml.safe_dump(kind, sort_keys=False), encoding="utf-8")
     print(f"written {HERE / 'kind-cluster.yaml'}")
+
+    # 从宿主机访问 kind 中各服务的地址文件（供冒烟测试、负载生成器使用）
+    host_ep = {"grid": "http://127.0.0.1:30900", "gateway": "http://127.0.0.1:30080", "controller": "http://127.0.0.1:30930",
+               "sites": {s: f"http://127.0.0.1:{p}" for s, p in site_ports.items()}}
+    ep_file = ROOT / "configs" / "endpoints.kind-host.yaml"
+    ep_file.write_text("# 从宿主机访问 kind 集群中的服务（NodePort）；由 deploy/k8s/generate.py 生成\n"
+                       + yaml.safe_dump(host_ep, sort_keys=False), encoding="utf-8")
+    print(f"written {ep_file}")
 
 
 if __name__ == "__main__":

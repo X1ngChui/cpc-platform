@@ -10,6 +10,11 @@ groups:
       # ---- 设备层：GPU 功率（与 dcgm-exporter 同名指标，仿真站点与真实站点通用）
       - record: site:gpu_power_watts:sum
         expr: sum by (site) (DCGM_FI_DEV_POWER_USAGE)
+      # ---- 设备层（通用导出器 cpc exporter，覆盖 NVIDIA/AMD/Intel/昇腾/CPU RAPL/整机 BMC 等）
+      - record: host_kind:device_power_watts:sum
+        expr: sum by (host, kind) (cpc_device_power_watts)
+      - record: host:device_energy_joules:rate1m
+        expr: sum by (host) (rate(cpc_device_energy_joules_total[1m]))
       # ---- 服务器层：IT 功率（GPU + 主机）
       - record: site:it_power_watts:sum
         expr: sum by (site) (cpc_site_it_power_watts)

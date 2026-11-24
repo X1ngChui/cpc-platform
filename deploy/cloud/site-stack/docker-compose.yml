@@ -58,6 +58,8 @@ services:
       - ./scenario.yaml:/cfg/scenario.yaml:ro
       - ./endpoints.yaml:/cfg/endpoints.yaml:ro
       - /var/run/docker.sock:/var/run/docker.sock   # 用于启停 vLLM 容器（节点开关）
+    environment:
+      CPC_ADMIN_TOKEN: ${CPC_ADMIN_TOKEN:?请在 .env 中设置与控制栈相同的 CPC_ADMIN_TOKEN}
     deploy:
       resources:
         reservations:
@@ -81,5 +83,5 @@ services:
     restart: unless-stopped
     pid: host
     network_mode: host
-    command: ["--path.rootfs=/host"]
+    command: ["--path.rootfs=/host", "--web.listen-address=:9101"]   # 避开站点代理的 9100 端口
     volumes: ["/:/host:ro,rslave"]

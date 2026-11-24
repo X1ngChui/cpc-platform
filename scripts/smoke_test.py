@@ -24,6 +24,7 @@ import httpx
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from cpc.common import admin_headers  # noqa: E402
 from cpc.config import load_endpoints, load_scenario  # noqa: E402
 
 
@@ -97,17 +98,17 @@ def main() -> None:
         target = scn.sites[-1].id
         snap = httpx.get(ep.sites[target] + "/state").json()
         cap_kw = round(snap["node_peak_w"] * 1.05 * snap["pue"] / 1000, 2)  # 只够 1 个节点满载
-        r = httpx.post(ep.grid + "/v1/events", json={"site": target, "cap_kw": cap_kw, "duration_min": 600})
+        r = httpx.post(ep.grid + "/v1/events", json={"site": target, "cap_kw": cap_kw, "duration_min": 600}, headers=admin_headers())
         check(r.status_code == 200, f"注入事件：站点 {target} 设施功率上限 {cap_kw} kW")
         ctl_interval = st.get("interval_s", 15)
-        httpx.post(ep.controller + "/admin/step", timeout=10)
+        httpx.post(ep.controller + "/admin/step", timeout=10, headers=admin_headers())
         time.sleep(min(ctl_interval, 5) + 2)
         snap = httpx.get(ep.sites[target] + "/state").json()
         live = snap["nodes_on"] + snap["nodes_booting"] + snap["nodes_draining"]
         check(live <= 1 or snap["nodes_draining"] > 0, f"站点 {target} 在线节点降至 {snap['nodes_on']}（排空中 {snap['nodes_draining']}）")
         check(snap["facility_power_w"] / 1000 <= cap_kw + 1e-6 or snap["nodes_draining"] > 0,
               f"设施功率 {snap['facility_power_w'] / 1000:.2f} kW ≤ 上限 {cap_kw} kW")
-        httpx.delete(ep.grid + "/v1/events")
+        httpx.delete(ep.grid + "/v1/events", headers=admin_headers())
     finally:
         if proc:
             proc.terminate()

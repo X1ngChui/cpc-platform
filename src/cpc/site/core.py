@@ -37,6 +37,7 @@ class Node:
     gpu_power_w: float = 0.0
     gpu_powers_w: list[float] = field(default_factory=list)
     gpu_utils: list[float] = field(default_factory=list)
+    gpu_models: list[str] = field(default_factory=list)
     power_source: str = "model"
     # 累计能耗
     energy_j: float = 0.0

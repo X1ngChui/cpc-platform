@@ -1,19 +1,26 @@
-"""功率来源（能耗感知的设备层）。
+"""站点的功率来源（能耗感知的设备层 → 节点）。
 
 - ModelPower：按节点状态与占用率用功率模型计算（仿真后端）。
-- NvmlPower：通过 NVIDIA 官方 NVML 绑定（nvidia-ml-py）读取真实 GPU 功率；
-  主机（CPU、内存等）部分仍用模型估计，除非另行接入 IPMI/Redfish 等整机功率。
+- SensorPower：从传感器层（cpc.sensors）读取实测功率并归属到节点（真实后端）：
+    * 加速卡（gpu/npu/soc）读数按 upstream.devices 归属到各节点（推理实例）；
+    * 若有整机读数（server：IPMI/Redfish/PDU），主机部分 = 整机 − 全部加速卡；
+      否则若有 CPU/内存读数（RAPL 等），主机部分 = 其和；都没有时用功率模型估计主机部分；
+    * 主机部分在本机在线节点之间平均分摊。
 """
 
 from __future__ import annotations
 
 import logging
+import time
 
 from ..config import NodeProfile
 from ..models import host_power_w, node_power_w
+from ..sensors.base import EnergyIntegrator, Reading, Sensor
 from .core import Node
 
 log = logging.getLogger("cpc.site.power")
+
+ACCEL = ("gpu", "npu", "soc")
 
 
 class ModelPower:
@@ -31,64 +38,72 @@ class ModelPower:
             n.gpu_powers_w = [per] * n.gpus
             util = 100.0 * occ if n.state in ("on", "draining") else 0.0
             n.gpu_utils = [util] * n.gpus
+            n.gpu_models = [self.p.gpu_model] * n.gpus
             n.power_source = "model"
 
 
-class NvmlPower:
-    """真实 GPU 功率。每个节点的 GPU 由 UpstreamConfig.gpu_indices 指定。
+def node_devices(n: Node) -> list[str]:
+    if n.upstream is None:
+        return []
+    if n.upstream.devices:
+        return list(n.upstream.devices)
+    return [f"gpu{i}" for i in n.upstream.gpu_indices]
 
-    注意：消费级显卡（GeForce）也支持 NVML 的功率读数；DCGM 则主要面向数据中心显卡。
-    """
 
-    name = "nvml"
+class SensorPower:
+    name = "sensors"
 
-    def __init__(self, profile: NodeProfile):
-        import pynvml  # 来自 nvidia-ml-py
-
-        self.nv = pynvml
-        self.nv.nvmlInit()
+    def __init__(self, profile: NodeProfile, sensors: list[Sensor]):
         self.p = profile
-        self._handles: dict[int, object] = {}
+        self.sensors = sensors
+        self.integ = EnergyIntegrator()
+        self.readings: list[Reading] = []
+        self._warned: dict[str, float] = {}
 
-    def handle(self, idx: int):
-        if idx not in self._handles:
-            self._handles[idx] = self.nv.nvmlDeviceGetHandleByIndex(idx)
-        return self._handles[idx]
-
-    def read_gpu(self, idx: int) -> tuple[float, float]:
-        h = self.handle(idx)
-        p = self.nv.nvmlDeviceGetPowerUsage(h) / 1000.0  # mW → W
-        u = float(self.nv.nvmlDeviceGetUtilizationRates(h).gpu)
-        return p, u
+    def read_all(self) -> list[Reading]:
+        out: list[Reading] = []
+        for s in self.sensors:
+            try:
+                out += s.read()
+            except Exception as e:  # noqa: BLE001 —— 单个传感器失败不影响服务
+                if time.monotonic() - self._warned.get(s.name, -1e9) > 60:
+                    log.warning("传感器 %s 读取失败：%s", s.name, e)
+                    self._warned[s.name] = time.monotonic()
+        return self.integ.update(out)
 
     def sample(self, nodes: list[Node]) -> None:
+        self.readings = rs = self.read_all()
+        accel = {r.device: r for r in rs if r.kind in ACCEL}
+        server = sum(r.power_w or 0.0 for r in rs if r.kind in ("server", "platform"))
+        parts = sum(r.power_w or 0.0 for r in rs if r.kind in ("cpu", "dram"))
+        has_server = any(r.kind in ("server", "platform") and r.power_w is not None for r in rs)
+        has_parts = any(r.kind in ("cpu", "dram") and r.power_w is not None for r in rs)
         for n in nodes:
-            idxs = n.upstream.gpu_indices if n.upstream else []
-            occ = n.busy / n.slots if n.slots else 0.0
-            if not idxs:  # 未绑定 GPU：退化为模型
-                it, gpu = node_power_w(self.p, n.state, occ, n.cap_ratio)
-                n.it_power_w, n.gpu_power_w, n.power_source = it, gpu, "model"
-                n.gpu_powers_w, n.gpu_utils = [gpu], [100.0 * occ]
-                continue
-            powers, utils = [], []
-            for i in idxs:
-                try:
-                    p, u = self.read_gpu(i)
-                except Exception as e:  # noqa: BLE001 —— 采集失败不应中断服务
-                    log.warning("NVML 读取 GPU %s 失败：%s", i, e)
-                    p, u = 0.0, 0.0
-                powers.append(p)
-                utils.append(u)
-            n.gpu_powers_w, n.gpu_utils = powers, utils
-            n.gpu_power_w = sum(powers)
-            # 主机部分：多个实例共用一台主机时，按实例数均摊由使用者在 profile 中设定
-            host = 0.0 if n.state == "off" else host_power_w(self.p, occ)
-            n.it_power_w = n.gpu_power_w + host
-            n.power_source = "nvml+model"
+            devs = [d for d in node_devices(n) if d in accel]
+            n.gpu_powers_w = [accel[d].power_w or 0.0 for d in devs]
+            n.gpu_utils = [accel[d].util_pct or 0.0 for d in devs]
+            n.gpu_models = [accel[d].model for d in devs]
+            n.gpu_power_w = sum(n.gpu_powers_w)
+            n.power_source = "sensors"
+        live = [n for n in nodes if n.state != "off"] or nodes[:1]
+        if has_server:
+            host_total = max(0.0, server - sum(r.power_w or 0.0 for r in accel.values()))
+        elif has_parts:
+            host_total = parts
+        else:
+            host_total = None
+        for n in nodes:
+            if host_total is not None:
+                share = host_total / len(live) if n in live else 0.0
+            else:
+                occ = n.busy / n.slots if n.slots else 0.0
+                share = 0.0 if n.state == "off" else host_power_w(self.p, occ)
+                n.power_source = "sensors+model"
+            n.it_power_w = n.gpu_power_w + share
 
-    def set_power_limit(self, idx: int, ratio: float) -> None:
-        """设置 GPU 功率上限（需要 root/管理员权限）。"""
-        h = self.handle(idx)
-        lo, hi = self.nv.nvmlDeviceGetPowerManagementLimitConstraints(h)
-        target = int(max(lo, min(hi, ratio * hi)))
-        self.nv.nvmlDeviceSetPowerManagementLimit(h, target)
+    def set_power_limit(self, device: str, ratio: float) -> None:
+        for s in self.sensors:
+            if any(r.device == device for r in self.readings if r.sensor == s.name):
+                s.set_power_limit(device, ratio)
+                return
+        raise KeyError(f"没有传感器管理设备 {device}")

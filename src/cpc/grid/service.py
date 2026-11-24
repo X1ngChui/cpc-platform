@@ -14,10 +14,10 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from prometheus_client import CollectorRegistry, Gauge
 
-from ..common import metrics_response
+from ..common import metrics_response, require_admin
 from ..config import CST, DREvent, Scenario
 from ..models import SimClock
 from .signals import GridModel
@@ -93,7 +93,7 @@ def create_app(scn: Scenario, clock: SimClock | None = None) -> FastAPI:
     def list_events() -> list[dict]:
         return [e.model_dump(mode="json") for e in model.events]
 
-    @app.post("/v1/events")
+    @app.post("/v1/events", dependencies=[Depends(require_admin)])
     def add_event(body: dict) -> dict:
         """注入需求响应事件。可给出 start/end（ISO），或给出 duration_min（从当前信号时间开始）。"""
         now = clock.now()
@@ -109,7 +109,7 @@ def create_app(scn: Scenario, clock: SimClock | None = None) -> FastAPI:
         refresh()
         return ev.model_dump(mode="json")
 
-    @app.delete("/v1/events")
+    @app.delete("/v1/events", dependencies=[Depends(require_admin)])
     def clear_events(site: str | None = None) -> dict:
         model.clear_events(site)
         refresh()

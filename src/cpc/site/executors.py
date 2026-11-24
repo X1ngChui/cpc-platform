@@ -175,12 +175,12 @@ class RealNodeHooks:
 
     - 开关机：若 upstream.container 已配置且安装了 docker SDK，则启停该容器；否则为"逻辑开关"
       （只停止向其派发请求，GPU 仍处于空载供电状态——测得的功率会如实反映这一点）。
-    - 功率封顶：若提供 NvmlPower 且进程有权限，调用 nvmlDeviceSetPowerManagementLimit。
+    - 功率封顶：若功率来源中的传感器支持（如 NVML）且进程有权限，设置设备功率上限。
     - 就绪检查：GET {url}/health（vLLM 提供），失败再试 /v1/models。
     """
 
-    def __init__(self, nvml=None, enable_docker: bool = True, enable_power_cap: bool = False):
-        self.nvml = nvml
+    def __init__(self, power=None, enable_docker: bool = True, enable_power_cap: bool = False):
+        self.power = power  # 功率来源；若其支持 set_power_limit(device, ratio) 则可做硬件封顶
         self.enable_power_cap = enable_power_cap
         self.client = httpx.AsyncClient(timeout=2.0)
         self.docker = None
@@ -203,14 +203,17 @@ class RealNodeHooks:
             log.info("已停止容器 %s", node.upstream.container)
 
     async def set_cap(self, node: Node, ratio: float) -> None:
-        if not (self.enable_power_cap and self.nvml and node.upstream):
+        setter = getattr(self.power, "set_power_limit", None)
+        if not (self.enable_power_cap and setter and node.upstream):
             log.info("节点 %s 功率封顶比例 %.2f（未启用硬件封顶，仅记录）", node.id, ratio)
             return
-        for i in node.upstream.gpu_indices:
+        from .power import node_devices
+
+        for dev in node_devices(node):
             try:
-                await asyncio.to_thread(self.nvml.set_power_limit, i, ratio)
+                await asyncio.to_thread(setter, dev, ratio)
             except Exception as e:  # noqa: BLE001
-                log.warning("设置 GPU %s 功率上限失败（通常需要 root 权限）：%s", i, e)
+                log.warning("设置设备 %s 功率上限失败（通常需要 root 权限）：%s", dev, e)
 
     async def is_ready(self, node: Node) -> bool:
         if not node.upstream:

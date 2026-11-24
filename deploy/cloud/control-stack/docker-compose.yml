@@ -1,0 +1,67 @@
+# 控制栈：部署在一台控制服务器上（可以是无 GPU 的小规格云主机，也可以与某个站点共用）。
+#
+# 组成：电网信号服务、路由网关、容量控制器、Prometheus、Grafana，以及场景中的仿真站点（可选）。
+# 准备：
+#   cp ../scenario.cloud.example.yaml scenario.yaml        # 按实验修改
+#   cp ../endpoints.cloud.example.yaml endpoints.yaml      # 填入各服务器 IP
+#   cp ../prometheus.cloud.example.yml prometheus.yml      # 填入各服务器 IP
+#   docker compose up -d
+
+name: cpc-control
+
+x-cpc: &cpc
+  image: ${CPC_IMAGE:-cpc-platform:latest}
+  restart: unless-stopped
+  volumes:
+    - ./scenario.yaml:/cfg/scenario.yaml:ro
+    - ./endpoints.yaml:/cfg/endpoints.yaml:ro
+    - ./logs:/logs
+  environment:
+    CPC_ENDPOINTS: /cfg/endpoints.yaml
+    CPC_ADMIN_TOKEN: ${CPC_ADMIN_TOKEN:?请在 .env 中设置管理接口令牌 CPC_ADMIN_TOKEN}
+
+services:
+  grid:
+    <<: *cpc
+    command: ["grid", "-s", "/cfg/scenario.yaml", "--host", "0.0.0.0", "--port", "9000"]
+    ports: ["9000:9000"]
+
+  gateway:
+    <<: *cpc
+    command: ["gateway", "-s", "/cfg/scenario.yaml", "--host", "0.0.0.0", "--port", "8080", "--log", "/logs/gateway.jsonl"]
+    ports: ["8080:8080"]
+
+  controller:
+    <<: *cpc
+    command: ["controller", "-s", "/cfg/scenario.yaml", "--host", "0.0.0.0", "--port", "9300", "--log", "/logs/controller.jsonl"]
+    ports: ["9300:9300"]
+
+  # 场景中的仿真站点（示例 gd）；没有仿真站点时删除
+  site-gd:
+    <<: *cpc
+    command: ["site", "-s", "/cfg/scenario.yaml", "--site", "gd", "--host", "0.0.0.0", "--port", "9104"]
+    ports: ["9104:9104"]
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=30d"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../../prometheus/rules:/etc/prometheus/rules:ro
+      - prom-data:/prometheus
+    ports: ["9090:9090"]
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-change-me}
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/cpc-overview.json
+    volumes:
+      - ../../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../../grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+
+volumes:
+  prom-data:

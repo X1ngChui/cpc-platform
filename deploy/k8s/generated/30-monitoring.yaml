@@ -27,7 +27,6 @@ spec:
         args:
         - --config.file=/etc/prometheus/prometheus.yml
         - --storage.tsdb.retention.time=2d
-        - --web.enable-lifecycle
         ports:
         - containerPort: 9090
           name: http
@@ -110,9 +109,7 @@ spec:
         - name: GF_AUTH_ANONYMOUS_ENABLED
           value: 'true'
         - name: GF_AUTH_ANONYMOUS_ORG_ROLE
-          value: Admin
-        - name: GF_AUTH_DISABLE_LOGIN_FORM
-          value: 'true'
+          value: Viewer
         - name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH
           value: /var/lib/grafana/dashboards/cpc-overview.json
         volumeMounts:

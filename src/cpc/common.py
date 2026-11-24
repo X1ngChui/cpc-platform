@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import Response
+from fastapi import HTTPException, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, generate_latest
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -19,6 +20,33 @@ def setup_logging(level: str | None = None) -> None:
     logging.basicConfig(level=(level or os.environ.get("CPC_LOG_LEVEL", "INFO")).upper(), format=LOG_FORMAT)
     for noisy in ("httpx", "httpcore", "uvicorn.access"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+def admin_token() -> str | None:
+    """管理接口的共享令牌（环境变量 CPC_ADMIN_TOKEN）。未设置时管理接口不鉴权，仅适合本机/内网开发。"""
+    return os.environ.get("CPC_ADMIN_TOKEN") or None
+
+
+def admin_headers() -> dict[str, str]:
+    """调用其他服务管理接口时携带的请求头。"""
+    tok = admin_token()
+    return {"Authorization": f"Bearer {tok}"} if tok else {}
+
+
+def require_admin(request: Request) -> None:
+    """FastAPI 依赖：校验 Authorization: Bearer <CPC_ADMIN_TOKEN>。"""
+    tok = admin_token()
+    if tok is None:
+        return
+    got = request.headers.get("authorization", "")
+    if not hmac.compare_digest(got.encode(), f"Bearer {tok}".encode()):
+        raise HTTPException(status_code=401, detail="admin token required")
+
+
+def warn_if_open(service: str, host: str) -> None:
+    if admin_token() is None and host not in ("127.0.0.1", "localhost", "::1"):
+        logging.getLogger("cpc").warning(
+            "%s 监听 %s 且未设置 CPC_ADMIN_TOKEN：/admin/* 管理接口无鉴权。公网/云服务器部署请务必设置该环境变量。", service, host)
 
 
 def metrics_response(registry: CollectorRegistry) -> Response:

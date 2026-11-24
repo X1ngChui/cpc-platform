@@ -17,10 +17,10 @@ import time
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from prometheus_client import CollectorRegistry, Counter, Gauge
 
-from ..common import JsonlWriter, metrics_response
+from ..common import JsonlWriter, admin_headers, metrics_response, require_admin
 from ..config import Endpoints, Scenario
 from ..grid.signals import GridSignal
 from ..models import SimClock, rtt_matrix
@@ -36,7 +36,7 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
                k8s_namespace: str = "cpc", k8s_template: str = "vllm-{site}") -> FastAPI:
     pol = {"policy": make_capacity(policy or scn.scheduler.capacity.policy, params if policy else scn.scheduler.capacity.params)}
     interval = interval_s or scn.scheduler.control_interval_s
-    client = httpx.AsyncClient(timeout=5.0)
+    client = httpx.AsyncClient(timeout=5.0, headers=admin_headers())  # 调用站点/网关管理接口时携带令牌
     act = KubernetesActuator(k8s_namespace, k8s_template) if actuator == "kubernetes" else SiteAgentActuator(ep.sites, client)
     writer = JsonlWriter(log_path)
     rtt = rtt_matrix(scn)
@@ -152,11 +152,11 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
     def state() -> dict:
         return {"policy": pol["policy"].name, "interval_s": interval, "actuator": act.name, "last": last["plan"]}
 
-    @app.post("/admin/step")
+    @app.post("/admin/step", dependencies=[Depends(require_admin)])
     async def force_step() -> dict:
         return await step()
 
-    @app.put("/admin/policy")
+    @app.put("/admin/policy", dependencies=[Depends(require_admin)])
     def set_policy(body: dict) -> dict:
         try:
             pol["policy"] = make_capacity(body["policy"], body.get("params"))

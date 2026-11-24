@@ -1,6 +1,7 @@
 """命令行入口：python -m cpc <子命令> 或 cpc <子命令>。
 
-服务类：grid / site / gateway / controller / up（本机单进程启动全部服务）/ nvml-exporter
+服务类：grid / site / gateway / controller / up（本机单进程启动全部服务）/ exporter（通用功率导出器）
+工具类（能耗感知）：sensors（探测本机功率传感器）
 工具类：loadgen / sim / compare / report / signals / rtt / event
 """
 
@@ -34,6 +35,9 @@ def _ep(args, scn: Scenario) -> Endpoints:
 def _serve(app, host: str, port: int) -> None:
     import uvicorn
 
+    from .common import warn_if_open
+
+    warn_if_open(app.title, host)
     uvicorn.run(app, host=host, port=port, log_level="warning", access_log=False)
 
 
@@ -122,10 +126,65 @@ def cmd_up(args) -> None:
         pass
 
 
-def cmd_nvml(args) -> None:
-    from .sensors.nvml_exporter import serve
+def _sensors_from_args(args):
+    import yaml
 
-    serve(args.port, args.host or "0.0.0.0", args.site)
+    from .sensors import autodetect, make_sensor
+
+    if getattr(args, "spec", None):
+        with open(args.spec, encoding="utf-8") as f:
+            return [make_sensor(s) for s in yaml.safe_load(f)["sensors"]]
+    if getattr(args, "types", None):
+        return [make_sensor(t) for t in args.types.split(",")]
+    return autodetect()
+
+
+def cmd_exporter(args) -> None:
+    from .sensors.exporter import serve
+
+    sensors = _sensors_from_args(args)
+    if not sensors:
+        raise SystemExit("未探测到可用传感器；可用 --types 或 --spec 显式指定")
+    serve(sensors, args.port, args.host or "0.0.0.0", args.site, args.interval)
+
+
+def cmd_sensors(args) -> None:
+    """列出可用传感器类型、探测本机传感器并打印读数。"""
+    from .sensors import SENSORS
+    from .sensors.base import EnergyIntegrator
+    from .sensors.exporter import host_total
+
+    if args.list:
+        for name, cls in SENSORS.items():
+            ok = ""
+            try:
+                ok = "可用" if cls.detect() else ""
+            except Exception:  # noqa: BLE001
+                pass
+            print(f"{name:<14s} {cls.platforms:<40s} {'已实测' if cls.verified else '按文档实现'}  {ok}")
+        return
+    sensors = _sensors_from_args(args)
+    print("传感器：", [s.name for s in sensors] or "无")
+    integ = EnergyIntegrator()
+    for k in range(args.count):
+        rs = []
+        for s in sensors:
+            try:
+                rs += s.read()
+            except Exception as e:  # noqa: BLE001
+                print(f"  {s.name} 读取失败：{e}")
+        integ.update(rs)
+        if args.json:
+            print(json.dumps([r.to_dict() for r in rs], ensure_ascii=False))
+        else:
+            for r in rs:
+                pw = "-" if r.power_w is None else f"{r.power_w:8.2f} W"
+                en = "-" if r.energy_j is None else f"{r.energy_j:12.1f} J"
+                ut = "" if r.util_pct is None else f"{r.util_pct:5.1f} %"
+                print(f"  [{r.sensor}] {r.device:<14s} {r.kind:<8s} {r.vendor:<8s} {r.model[:28]:<28s} {pw:>11s} {en:>15s} {ut}")
+            print(f"  主机合计 {host_total(rs):.2f} W")
+        if k + 1 < args.count:
+            time.sleep(args.interval)
 
 
 # ------------------------------------------------------------------ 工具
@@ -242,7 +301,9 @@ def cmd_event(args) -> None:
     scn = _scn(args)
     ep = _ep(args, scn)
     body = {"site": args.site, "cap_kw": args.cap_kw, "duration_min": args.duration_min, "kind": args.kind}
-    r = httpx.post(ep.grid + "/v1/events", json=body)
+    from .common import admin_headers
+
+    r = httpx.post(ep.grid + "/v1/events", json=body, headers=admin_headers())
     print(r.status_code, r.text)
 
 
@@ -267,7 +328,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = common(sub.add_parser("site", help="站点代理"))
     sp.add_argument("--site", required=True)
-    sp.add_argument("--power", choices=["auto", "model", "nvml"], default="auto", help="真实后端的功率来源")
+    sp.add_argument("--power", choices=["auto", "model", "sensors"], default="auto",
+                    help="真实后端的功率来源：auto=场景配置或自动探测的传感器，失败时退回模型")
     sp.add_argument("--enable-power-cap", action="store_true", help="允许通过 NVML 设置 GPU 功率上限（需 root）")
     sp.add_argument("--initial-active", type=int, default=None)
     sp.set_defaults(fn=cmd_site)
@@ -298,11 +360,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--log-dir", default="logs")
     sp.set_defaults(fn=cmd_up)
 
-    sp = sub.add_parser("nvml-exporter", help="NVML GPU 功率导出器（DCGM 兼容指标名）")
+    sp = sub.add_parser("exporter", help="通用功率导出器（多硬件；NVIDIA 另含 DCGM 兼容指标名）")
     sp.add_argument("--port", type=int, default=9400)
     sp.add_argument("--host", default=None)
     sp.add_argument("--site", default=None, help="附加 site 标签")
-    sp.set_defaults(fn=cmd_nvml)
+    sp.add_argument("--types", default=None, help="逗号分隔的传感器类型，如 nvml,rapl；缺省自动探测")
+    sp.add_argument("--spec", default=None, help="传感器配置 YAML（含参数，如 ipmi 远程地址）")
+    sp.add_argument("--interval", type=float, default=1.0, help="采样周期（秒）")
+    sp.set_defaults(fn=cmd_exporter)
+
+    sp = sub.add_parser("sensors", help="探测本机功率传感器并打印读数")
+    sp.add_argument("--list", action="store_true", help="列出全部传感器类型及本机可用性")
+    sp.add_argument("--types", default=None)
+    sp.add_argument("--spec", default=None)
+    sp.add_argument("--count", type=int, default=3)
+    sp.add_argument("--interval", type=float, default=1.0)
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(fn=cmd_sensors)
 
     sp = common(sub.add_parser("loadgen", help="负载生成器"))
     sp.add_argument("--duration", type=float, default=60)
