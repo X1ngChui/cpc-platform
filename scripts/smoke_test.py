@@ -1,11 +1,11 @@
 """端到端冒烟测试：启动全部服务 → 压测 → 注入需求响应事件 → 检查指标 → 故障隔离 → 退出。
 
 用法：
-    python scripts/smoke_test.py                       # 本机：各服务以独立进程启动（含故障注入阶段），负载为场景的公开数据集
-    python scripts/smoke_test.py --synthetic-workload  # 同上，负载换为合成数据集（不需要下载，CI 使用）
+    python scripts/smoke_test.py            # 本机：各服务以独立进程启动（含故障注入阶段），场景为 configs/scenario.yaml（数据集须已准备）
+    python scripts/smoke_test.py --offline  # 同上，场景为 tests/data/scenario.yaml（合成负载 + 随测试提交的电网数据，CI 使用）
     python scripts/smoke_test.py --external -e configs/endpoints.compose-host.yaml   # 服务已由 Compose / Kubernetes 启动，只做 1–5
 
-本机模式的场景由 configs/scenario.yaml 派生，另加一个真实后端站点 lab：其上游与功率计（http-json 传感器）
+本机模式的场景由基础场景派生，另加一个只有真实服务器的站点 lab：其推理实例与功率计（http-json 传感器）
 由本脚本内置的桩服务提供，用于注入传感器故障。
 
 检查项：
@@ -13,7 +13,7 @@
 2. 压测请求全部成功；
 3. 控制器完成决策并下发指令；
 4. 站点导出 DCGM 兼容功率指标、设施功率指标，电网信号服务导出电价与碳强度，真实站点传感器正常；
-5. 需求响应事件生效后站点在线节点与设施功率不超过上限；
+5. 需求响应事件生效后站点在线服务器与设施功率不超过上限；
 6. 传感器故障：lab 的功率标记为缺失并在状态与指标中报告，lab 仍正常服务；
 7. 站点故障：停止站点 sh 的进程后，网关与控制器将其标记为不可用并排除，其余站点正常服务。
 """
@@ -132,17 +132,20 @@ class Stub(BaseHTTPRequestHandler):
         self.wfile.write(b"data: [DONE]\n\n")
 
 
-def smoke_scenario(base: Path, synthetic: bool) -> Path:
+def smoke_scenario(base: Path, offline: bool) -> Path:
     raw = yaml.safe_load(base.read_text(encoding="utf-8"))
-    if synthetic:  # 合成负载（与单元测试相同的数据集与参数），到达率 6 请求/秒
-        raw["workload"] = {**yaml.safe_load((ROOT / "tests/data/scenario.yaml").read_text(encoding="utf-8"))["workload"],
-                           "rate_scale": 0.5}
+    if offline:  # 合成负载 12 请求/秒 × 0.5
+        sys.path.insert(0, str(ROOT / "tests"))
+        from conftest import ensure_test_workload
+
+        ensure_test_workload()
+        raw["workload"]["rate_scale"] = 0.5
     raw["sites"].append({
-        "id": "lab", "name": "真实后端（桩服务）", "province": "guizhou", "lat": 26.6, "lon": 106.6, "pue": 1.2,
-        "backend": "openai", "min_active": 1, "profile": next(iter(raw["node_profiles"])),
-        "upstreams": [{"id": "lab-0", "url": f"http://127.0.0.1:{STUB_PORT}", "devices": ["gpu0"], "max_inflight": 32}],
-        "power": {"sensors": [{"type": "http-json", "name": "meter", "url": f"http://127.0.0.1:{STUB_PORT}/meter",
-                               "path": "power_w", "kind": "gpu", "device": "gpu0", "vendor": "test"}], "host": "excluded"},
+        "id": "lab", "name": "真实服务器（桩服务）", "region": "guizhou", "lat": 26.6, "lon": 106.6, "pue": 1.2, "min_active": 1,
+        "pools": [{"id": "gpu", "profile": next(iter(raw["node_profiles"])), "backend": "openai",
+                   "upstreams": [{"id": "lab-0", "url": f"http://127.0.0.1:{STUB_PORT}", "devices": ["gpu0"], "max_inflight": 32}]}],
+        "measurement": {"sensors": [{"type": "http-json", "name": "meter", "url": f"http://127.0.0.1:{STUB_PORT}/meter",
+                                     "path": "power_w", "kind": "gpu", "device": "gpu0", "vendor": "test"}], "host": "excluded"},
     })
     p = base.parent / ".scenario.smoke.yaml"  # 与基础场景同目录，场景中的相对路径保持有效
     p.write_text("# 由 scripts/smoke_test.py 生成\n" + yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
@@ -198,13 +201,13 @@ def basic_checks(scn, ep, args, dr_site: str, real_site: str | None) -> None:
     check("DCGM_FI_DEV_POWER_USAGE{" in m, "站点导出 DCGM 兼容 GPU 功率指标")
     check("cpc_site_facility_power_watts{" in m, "站点导出设施功率指标")
     g = http.get(ep.grid + "/metrics").text
-    check("cpc_grid_price_yuan_per_kwh{" in g and "cpc_grid_carbon_kg_per_kwh{" in g, "电网信号服务导出电价与碳强度")
+    check("cpc_grid_price_per_kwh{" in g and "cpc_grid_carbon_intensity_kg_per_kwh{" in g, "电网信号服务导出电价与碳强度")
     if real_site:
         check(metric(ep.sites[real_site], "cpc_sensor_up", site=real_site, sensor="meter") == 1, f"真实站点 {real_site} 的功率计正常")
 
     print("5. 需求响应事件")
     snap = http.get(ep.sites[dr_site] + "/state").json()
-    cap_kw = round(snap["node_peak_w"] * 1.05 * snap["pue"] / 1000, 2)  # 只够 1 个节点满载
+    cap_kw = round(snap["node_peak_w"] * 1.05 * snap["pue"] / 1000, 2)  # 只够 1 台服务器满载
     r = http.post(ep.grid + "/v1/events", json={"site": dr_site, "cap_kw": cap_kw, "duration_min": 600}, headers=admin_headers())
     check(r.status_code == 200, f"注入事件：站点 {dr_site} 设施功率上限 {cap_kw} kW")
     time.sleep(2.5)  # 网关与控制器刷新电网信号
@@ -212,7 +215,7 @@ def basic_checks(scn, ep, args, dr_site: str, real_site: str | None) -> None:
     time.sleep(2)
     snap = http.get(ep.sites[dr_site] + "/state").json()
     live = snap["nodes_on"] + snap["nodes_booting"] + snap["nodes_draining"]
-    check(live <= 1 or snap["nodes_draining"] > 0, f"站点 {dr_site} 在线节点降至 {snap['nodes_on']}（排空中 {snap['nodes_draining']}）")
+    check(live <= 1 or snap["nodes_draining"] > 0, f"站点 {dr_site} 在线服务器降至 {snap['nodes_on']}（排空中 {snap['nodes_draining']}）")
     check(snap["facility_power_w"] / 1000 <= cap_kw + 1e-6 or snap["nodes_draining"] > 0,
           f"设施功率 {snap['facility_power_w'] / 1000:.2f} kW ≤ 上限 {cap_kw} kW")
     http.delete(ep.grid + "/v1/events", headers=admin_headers())
@@ -222,7 +225,7 @@ def fault_checks(scn, ep, svc: Services) -> None:
     print("6. 传感器故障（lab 的功率计不可用）")
     Stub.meter_fail = True
     st = wait_until(lambda: (s := http.get(ep.sites["lab"] + "/state").json())["it_power_w"] is None and s, 10)
-    check(bool(st) and st["nodes"][0]["power_missing"] == ["device:gpu0"], "lab 节点功率标记为缺失（device:gpu0），未以其他值替代")
+    check(bool(st) and st["nodes"][0]["power_missing"] == ["device:gpu0"], "lab 服务器功率标记为缺失（device:gpu0），未以其他值替代")
     check(bool(st) and st["components"]["sensors"]["meter"]["up"] is False, "lab 的 /state 报告功率计故障及原因")
     check(metric(ep.sites["lab"], "cpc_sensor_up", site="lab", sensor="meter") == 0, "指标 cpc_sensor_up{sensor=meter} = 0")
     check((metric(ep.sites["lab"], "cpc_sensor_errors_total", site="lab", sensor="meter") or 0) >= 1, "指标 cpc_sensor_errors_total 递增")
@@ -257,7 +260,7 @@ def main() -> None:
     ap.add_argument("--external", action="store_true", help="不启动服务，只检查已运行的服务（检查项 1–5）")
     ap.add_argument("--duration", type=float, default=30)
     ap.add_argument("--rate-scale", type=float, default=None, help="覆盖场景负载的到达率缩放")
-    ap.add_argument("--synthetic-workload", action="store_true", help="负载换为合成数据集（不需要下载公开数据集）")
+    ap.add_argument("--offline", action="store_true", help="以测试场景为基础（合成负载与随测试提交的电网数据，不需要下载）")
     args = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
 
@@ -268,12 +271,13 @@ def main() -> None:
         print("1. 就绪检查")
         for name, url in [("grid", ep.grid), ("gateway", ep.gateway), ("controller", ep.controller), *ep.sites.items()]:
             wait_ready(name, url)
-        emulated = [s.id for s in scn.sites if s.backend == "emulated"]
+        emulated = [s.id for s in scn.sites if not s.real]
         basic_checks(scn, ep, args, emulated[-1], None)
     else:
         stub = ThreadingHTTPServer(("127.0.0.1", STUB_PORT), Stub)
         threading.Thread(target=stub.serve_forever, daemon=True).start()
-        path = smoke_scenario(Path(args.scenario), args.synthetic_workload)
+        base = ROOT / "tests/data/scenario.yaml" if args.offline else Path(args.scenario)
+        path = smoke_scenario(base, args.offline)
         args.scenario_used = str(path)
         scn = load_scenario(path)
         ep = load_endpoints(None, scn, local=True)

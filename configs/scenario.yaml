@@ -1,35 +1,29 @@
-# 默认场景：东西部 4 个数据中心站点 + 3 个用户来源区域。
-# 场景描述"实验世界"，与部署方式无关；服务地址见地址文件（configs/endpoints.*.yaml）。
+# 默认场景：东西部 4 个数据中心站点、3 个用户来源区域；服务器由公开测量数据标定。
+# 场景描述实验对象，与运行方式（仿真 / 实验）和部署方式无关；实验时的服务地址见地址文件（configs/endpoints.*.yaml）。
 #
-# 数据来源（cpc data list 查看；cpc data fetch <名称> 下载）：
-#   负载      azure-llm-2024-conv        Azure LLM Inference Trace 2024（对话服务，CC-BY-4.0）
-#   电价      cn-tou-tariffs             各省发展改革委分时电价文件（随包提供）
-#   碳强度    cn-provincial-carbon-2023  生态环境部、国家统计局 2023 年省级电力排放因子（随包提供）
-#   节点参数  mlenergy-benchmark-v3-llm  ML.ENERGY Benchmark v3 标定（见 node_profiles 注释）
+# 数据准备（原始数据下载与转换，见 examples/datasets/README.md）：
+#   python examples/datasets/azure_llm.py --variant 2024-conv --zero-output fail     # 负载
+#   python examples/datasets/cn_grid/convert.py --start 2026-01-01 --end 2027-01-01   # 电价与碳强度
+#   python examples/datasets/mlenergy.py                                               # 服务器标定（可选，需 HF_TOKEN）
+# 数据集路径中的 ${CPC_DATA_DIR} 未设置时为 ~/.cache/cpc/datasets。
 
 name: east-west-4dc
 
 clock:
   start: "2026-07-15T00:00:00+08:00"   # 信号时间起点（夏季工作日，含尖峰时段）
-  speedup: 1                           # 1 = 真实时间；演示时可用 60（真实 1 分钟 = 信号 1 小时）
+  speedup: 1                           # 实验中信号时钟的加速倍数（1 为真实时间）
 
-sources:                               # 用户请求来源区域；请求按 share 比例随机分配到来源区域
+sources:                               # 用户请求来源区域；请求按 share 比例随机分配
   - {id: east,  name: 上海,  lat: 31.23, lon: 121.47, share: 0.40}
   - {id: south, name: 广州,  lat: 23.13, lon: 113.26, share: 0.35}
   - {id: north, name: 北京,  lat: 39.90, lon: 116.40, share: 0.25}
 
-sites:                                 # 数据中心站点；节点 = 一台 8×H100 推理服务器
-  - {id: sh, name: 长三角·上海,     province: shanghai,       lat: 31.15, lon: 121.12, pue: 1.25, nodes: 2, profile: h100x8}
-  - {id: gd, name: 粤港澳·韶关,     province: guangdong,      lat: 24.81, lon: 113.60, pue: 1.25, nodes: 2, profile: h100x8}
-  - {id: gz, name: 贵州·贵安,       province: guizhou,        lat: 26.40, lon: 106.40, pue: 1.20, nodes: 3, profile: h100x8}
-  - {id: nm, name: 内蒙古·和林格尔, province: inner_mongolia, lat: 40.38, lon: 111.82, pue: 1.20, nodes: 3, profile: h100x8}
-
 node_profiles:
   h100x8:
-    # 由 ML.ENERGY Benchmark v3（mlenergy-benchmark-v3-llm@f4db020）标定：
-    #   cpc data calibrate mlenergy-benchmark-v3-llm --model meta-llama/Llama-3.1-405B-Instruct-FP8 \
-    #       --gpu H100 --task lm-arena-chat --num-gpus 8 --slots 128
-    #   拟合 6 次稳定运行（max_num_seqs 8–128），单卡功率 RMSE 5.4 W，token 间隔 RMSE 0.69 ms。
+    # 8×H100 服务器运行 Llama-3.1-405B-Instruct-FP8。在服务时的功率与 token 间隔由 ML.ENERGY Benchmark v3 标定：
+    #   cpc data calibrate ${CPC_DATA_DIR}/mlenergy-benchmark-v3-llm --slots 128 --where device=H100 device_count=8 \
+    #       model=meta-llama/Llama-3.1-405B-Instruct-FP8 task=lm-arena-chat
+    #   6 次测量（并发 8–128），单卡功率 RMSE 5.4 W，token 间隔 RMSE 0.69 ms。
     gpus: 8
     gpu_model: H100
     slots: 128
@@ -38,7 +32,7 @@ node_profiles:
     power_exponent: 0.38
     decode_s_per_token: 0.03163
     decode_slowdown: 1.039
-    # 以下参数不在上述数据集中，为示意值，接入真实服务器后应实测标定：
+    # 以下参数不在测量数据中，为示意值：
     gpu_idle_w: 70                     # 单卡空载功率（无请求）
     host_idle_w: 800                   # 主机部分（CPU、内存、风扇等）
     host_max_w: 1600
@@ -46,24 +40,78 @@ node_profiles:
     cap_min_ratio: 0.5
     cap_perf_exponent: 0.4
     boot_s: 180                        # 开机并加载模型到可服务的时间
+  b200x4:
+    # 4×B200 服务器运行同一模型（Llama-3.1-405B-Instruct-FP8），标定方法同上（device=B200 device_count=4）：
+    #   5 次测量（并发 8–128），单卡功率 RMSE 8.9 W，token 间隔 RMSE 0.61 ms。
+    gpus: 4
+    gpu_model: B200
+    slots: 128
+    gpu_active_min_w: 836.2
+    gpu_max_w: 964.7
+    power_exponent: 0.73
+    decode_s_per_token: 0.02913
+    decode_slowdown: 0.987
+    # 示意值：
+    gpu_idle_w: 140
+    host_idle_w: 600
+    host_max_w: 1200
+    prefill_tokens_per_s: 8000
+    cap_min_ratio: 0.5
+    cap_perf_exponent: 0.4
+    boot_s: 180
+
+sites:
+  - id: sh
+    name: 长三角·上海
+    region: shanghai                   # 电网区域：电网信号数据集中的区域键
+    lat: 31.15
+    lon: 121.12
+    pue: 1.25
+    pools: [{id: h100, profile: h100x8, count: 2}]
+  - id: gd
+    name: 粤港澳·韶关
+    region: guangdong
+    lat: 24.81
+    lon: 113.60
+    pue: 1.25
+    pools: [{id: h100, profile: h100x8, count: 2}]
+  - id: gz
+    name: 贵州·贵安
+    region: guizhou
+    lat: 26.40
+    lon: 106.40
+    pue: 1.20
+    pools: [{id: h100, profile: h100x8, count: 3}]
+  - id: nm
+    name: 内蒙古·和林格尔
+    region: inner_mongolia
+    lat: 40.38
+    lon: 111.82
+    pue: 1.20
+    pools:                             # 异构服务器池：站内调度优先使用单位并发槽满载功率低的服务器
+      - {id: h100, profile: h100x8, count: 2}
+      - {id: b200, profile: b200x4, count: 2}
+    scheduler:
+      dispatch: {policy: efficient_first}
+      power: {policy: efficient}
 
 network:
   base_ms: 4
   route_factor: 1.5
   km_per_ms: 200
-  emulate_wan: true                    # 网关按 RTT 注入时延，模拟跨数据中心访问
+  emulate_wan: true                    # 实验中网关按 RTT 注入时延，模拟跨数据中心访问
   default_source: east                 # 未携带 x-cpc-source 请求头的请求归属的来源区域
 
 grid:
-  price:  {dataset: cn-tou-tariffs}             # 区域键为站点的 province
-  carbon: {dataset: cn-provincial-carbon-2023}
+  price:  {dataset: "${CPC_DATA_DIR}/cn-grid-2026", signal: price}
+  carbon: {dataset: "${CPC_DATA_DIR}/cn-grid-2026", signal: carbon_intensity}
   dr_events:                           # 示例：广东站点 15:00–17:00 削峰（约容纳 1 台满载服务器）
     - {site: gd, start: "2026-07-15T15:00:00+08:00", end: "2026-07-15T17:00:00+08:00", cap_kw: 8}
 
 workload:
-  dataset: azure-llm-2024-conv
-  # 时间窗：2024-05-14（周二）16:00 UTC 起 24 小时。trace 的 t = 0 对应场景时钟起点
-  # 2026-07-15 00:00（北京时间，即 16:00 UTC），保持 UTC 时刻对应。平均约 54 请求/秒。
+  dataset: "${CPC_DATA_DIR}/azure-llm-2024-conv"
+  # 时间窗：2024-05-14（周二）16:00 UTC 起 24 小时，trace 的 t = 0 对应场景时钟起点 2026-07-15 00:00（北京时间，
+  # 即 16:00 UTC），保持 UTC 时刻对应。平均约 54 请求/秒。
   start_s: 230400
   duration_s: 86400
   seed: 1
@@ -77,5 +125,5 @@ scheduler:
   capacity: {policy: reactive, params: {target_util: 0.6}}
   control_interval_s: 15
   sim_control_interval_s: 300
-  carbon_price_yuan_per_kg: 0.1
+  carbon_price_per_kg: 0.1             # CNY/kgCO2，与电价同一货币
   queue_limit_per_slot: 4

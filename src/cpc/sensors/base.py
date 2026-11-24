@@ -26,6 +26,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
 from ..health import describe
+from ..registry import Registry
 
 log = logging.getLogger("cpc.sensors")
 
@@ -97,16 +98,8 @@ class Sensor:
             r.errors[attr] = describe(e)
 
 
-SENSORS: dict[str, type[Sensor]] = {}
-
-
-def register_sensor(name: str) -> Callable[[type[Sensor]], type[Sensor]]:
-    def deco(cls: type[Sensor]) -> type[Sensor]:
-        cls.name = name
-        SENSORS[name] = cls
-        return cls
-
-    return deco
+SENSORS: Registry[Sensor] = Registry("sensors")
+register_sensor = SENSORS.register
 
 
 def make_sensor(spec: dict | str) -> Sensor:
@@ -119,10 +112,9 @@ def make_sensor(spec: dict | str) -> Sensor:
     spec = dict(spec)
     typ = spec.pop("type")
     inst = spec.pop("name", None) or typ
-    if typ not in SENSORS:
-        raise KeyError(f"未知传感器类型 {typ}，可选：{sorted(SENSORS)}")
+    cls = SENSORS.get(typ)
     try:
-        s = SENSORS[typ](**spec)
+        s = cls(**spec)
     except Exception as e:  # noqa: BLE001 —— 构造阶段的任何失败都使启动失败，并带上传感器名
         msg = str(e) if isinstance(e, SensorError) else describe(e)
         raise SensorError(f"传感器 {inst}（{typ}）初始化失败：{msg}") from e

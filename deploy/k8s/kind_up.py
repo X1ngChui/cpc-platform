@@ -10,10 +10,13 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
-import tempfile
 import sys
+import tempfile
 from pathlib import Path
+
+import yaml
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -63,7 +66,15 @@ def main() -> None:
     sh(sys.executable, str(HERE / "generate.py"))
     clusters = subprocess.run(["kind", "get", "clusters"], capture_output=True, text=True).stdout.split()
     if CLUSTER not in clusters:
-        sh("kind", "create", "cluster", "--config", str(HERE / "kind-cluster.yaml"), "--wait", "120s")
+        # 控制面节点挂载宿主机的数据集目录（电网信号服务读取电网信号数据集）
+        data = Path(os.environ.get("CPC_DATA_DIR") or Path.home() / ".cache" / "cpc" / "datasets").resolve()
+        if not data.is_dir():
+            raise SystemExit(f"数据集目录 {data} 不存在：请先按 examples/datasets/README.md 准备场景所需的数据集")
+        cfg = yaml.safe_load((HERE / "kind-cluster.yaml").read_text(encoding="utf-8"))
+        cfg["nodes"][0]["extraMounts"] = [{"hostPath": str(data), "containerPath": "/var/lib/cpc/datasets", "readOnly": True}]
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False, encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, sort_keys=False)
+        sh("kind", "create", "cluster", "--config", f.name, "--wait", "120s")
     if not args.skip_build:
         sh("docker", "build", "-t", "cpc-platform:latest", ".")
     # 所有镜像都在宿主机准备好后加载进 kind 节点，节点本身不需要访问镜像仓库

@@ -38,3 +38,6 @@ hf_token*
 
 # 冒烟测试生成的场景文件
 **/.scenario.smoke.yaml
+
+# 测试时生成的合成负载数据集
+tests/data/datasets/workload-synthetic/

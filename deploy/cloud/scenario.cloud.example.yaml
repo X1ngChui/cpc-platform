@@ -1,14 +1,14 @@
-# 云服务器实验场景示例：3 台租用 GPU 服务器分别扮演 3 个站点，另加 1 个纯仿真站点。
+# 云服务器实验场景示例：3 台租用 GPU 服务器分别作为 3 个站点的真实服务器，另加 1 个只有仿真服务器的站点。
 #
-# - 真实站点（backend: openai）：节点 = vLLM 实例，功率来自 NVML 实测；
-# - 仿真站点（backend: emulated）：节点由功率/性能模型模拟，可与真实站点混合使用；
+# - 真实服务器池（backend: openai）：每个 upstream 为一个 vLLM 实例，功率来自站点 measurement 中的传感器（NVML）；
+# - 仿真服务器池（backend: emulated）：服务器由服务器模型仿真，可与真实服务器在同一实验中共存；
 # - 租用的服务器通常在同一地域，跨数据中心时延由网关注入（network.emulate_wan: true）；
 #   若服务器确实分布在不同地域，改为 false，并可在 network.overrides 中填入实测 RTT。
 #
-# 真实站点的功率来源在 power 中显式声明：NVML 读取 GPU；host: excluded 表示节点 IT 功率只含 GPU
-# （云虚拟机通常不提供 RAPL 与 BMC）。有整机读数（IPMI / Redfish / PDU）时改为 host: server 并加入相应传感器。
+# measurement.host: excluded 表示服务器 IT 功率只含 GPU（云虚拟机通常不提供 RAPL 与 BMC）；
+# 有整机读数（IPMI / Redfish / PDU）时改为 host: server 并加入相应传感器。
 # 本文件复制为 site-stack/ 与 control-stack/ 中的 scenario.yaml，在容器内挂载到 /app/cfg/scenario.yaml。
-# 电网信号数据集随包提供；负载数据集下载到 CPC_DATA_DIR（控制栈中挂载宿主机的 ~/.cache/cpc/datasets）。
+# 数据集放在控制节点的 CPC_DATA_DIR 中（电网信号服务与负载生成器使用），准备方法见 examples/datasets/README.md。
 
 name: cloud-3real-1sim
 
@@ -21,63 +21,14 @@ sources:
   - {id: south, name: 广州, lat: 23.13, lon: 113.26, share: 0.35}
   - {id: north, name: 北京, lat: 39.90, lon: 116.40, share: 0.25}
 
-sites:
-  - id: sh
-    name: 长三角·上海（真实服务器 A）
-    province: shanghai
-    lat: 31.15
-    lon: 121.12
-    pue: 1.25
-    backend: openai
-    profile: gpu-server
-    upstreams:
-      - {id: sh-vllm0, url: "http://vllm-0:8000", gpu_indices: [0], container: cpc-vllm-0, max_inflight: 32}
-    power:
-      sensors: [{type: nvml}]
-      host: excluded
-  - id: gz
-    name: 贵州·贵安（真实服务器 B）
-    province: guizhou
-    lat: 26.40
-    lon: 106.40
-    pue: 1.20
-    backend: openai
-    profile: gpu-server
-    upstreams:
-      - {id: gz-vllm0, url: "http://vllm-0:8000", gpu_indices: [0], container: cpc-vllm-0, max_inflight: 32}
-    power:
-      sensors: [{type: nvml}]
-      host: excluded
-  - id: nm
-    name: 内蒙古·和林格尔（真实服务器 C）
-    province: inner_mongolia
-    lat: 40.38
-    lon: 111.82
-    pue: 1.20
-    backend: openai
-    profile: gpu-server
-    upstreams:
-      - {id: nm-vllm0, url: "http://vllm-0:8000", gpu_indices: [0], container: cpc-vllm-0, max_inflight: 32}
-    power:
-      sensors: [{type: nvml}]
-      host: excluded
-  - id: gd
-    name: 粤港澳·韶关（仿真）
-    province: guangdong
-    lat: 24.81
-    lon: 113.60
-    pue: 1.25
-    nodes: 2
-    profile: emulated-a10
-
 node_profiles:
-  gpu-server:              # 真实服务器：GPU 功率实测；以下主机参数只用于容量策略的节点功率估计
+  gpu-server:              # 真实服务器：GPU 功率实测；以下参数只用于全局策略的容量与功率估计
     gpus: 1
     gpu_model: measured
     host_idle_w: 150
     host_max_w: 250
     cap_min_ratio: 0.6
-  emulated-a10:            # 仿真站点：与真实服务器同级别的单卡节点（示意参数，建议用真实站点的实测数据标定）
+  emulated-a10:            # 仿真服务器：与真实服务器同级别的单卡服务器（示意参数，宜用真实服务器的测量数据标定）
     gpus: 1
     gpu_model: A10-24GB
     gpu_idle_w: 20
@@ -89,16 +40,61 @@ node_profiles:
     decode_s_per_token: 0.03
     boot_s: 90
 
+sites:
+  - id: sh
+    name: 长三角·上海（真实服务器 A）
+    region: shanghai
+    lat: 31.15
+    lon: 121.12
+    pue: 1.25
+    pools:
+      - id: gpu
+        profile: gpu-server
+        backend: openai
+        upstreams: [{id: sh-vllm0, url: "http://vllm-0:8000", gpu_indices: [0], container: cpc-vllm-0, max_inflight: 32}]
+    measurement: {sensors: [{type: nvml}], host: excluded}
+  - id: gz
+    name: 贵州·贵安（真实服务器 B）
+    region: guizhou
+    lat: 26.40
+    lon: 106.40
+    pue: 1.20
+    pools:
+      - id: gpu
+        profile: gpu-server
+        backend: openai
+        upstreams: [{id: gz-vllm0, url: "http://vllm-0:8000", gpu_indices: [0], container: cpc-vllm-0, max_inflight: 32}]
+    measurement: {sensors: [{type: nvml}], host: excluded}
+  - id: nm
+    name: 内蒙古·和林格尔（真实服务器 C）
+    region: inner_mongolia
+    lat: 40.38
+    lon: 111.82
+    pue: 1.20
+    pools:
+      - id: gpu
+        profile: gpu-server
+        backend: openai
+        upstreams: [{id: nm-vllm0, url: "http://vllm-0:8000", gpu_indices: [0], container: cpc-vllm-0, max_inflight: 32}]
+    measurement: {sensors: [{type: nvml}], host: excluded}
+  - id: gd
+    name: 粤港澳·韶关（仿真）
+    region: guangdong
+    lat: 24.81
+    lon: 113.60
+    pue: 1.25
+    pools: [{id: main, profile: emulated-a10, count: 2}]
+
 network:
   emulate_wan: true
   default_source: east
 
 grid:
-  price:  {dataset: cn-tou-tariffs}
-  carbon: {dataset: cn-provincial-carbon-2023}
+  price:  {dataset: "${CPC_DATA_DIR}/cn-grid-2026", signal: price}
+  carbon: {dataset: "${CPC_DATA_DIR}/cn-grid-2026", signal: carbon_intensity}
 
 workload:                      # Azure LLM Inference Trace 2024 对话服务一天，稀疏化到平均约 2.7 请求/秒
-  dataset: azure-llm-2024-conv # 控制节点运行负载生成器前须 cpc data fetch azure-llm-2024-conv
+  dataset: "${CPC_DATA_DIR}/azure-llm-2024-conv"
   start_s: 230400
   duration_s: 86400
   rate_scale: 0.05

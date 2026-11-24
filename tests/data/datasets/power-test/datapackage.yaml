@@ -1,0 +1,20 @@
+# 测试用功率特性数据集（合成数据，只用于单元测试）。
+name: power-test
+version: "1"
+title: 合成功率特性（测试用）
+licenses: [{name: CC0-1.0}]
+cpc: {kind: power_profile, profile: 1, synthetic: true}
+resources:
+  - name: measurements
+    type: table
+    path: measurements.csv
+    format: csv
+    schema:
+      fields:
+        - {name: device, type: string}
+        - {name: device_count, type: integer}
+        - {name: model, type: string}
+        - {name: concurrency, type: number}
+        - {name: power_w, type: number, unit: W}
+        - {name: itl_s, type: number, unit: s}
+        - {name: task, type: string}

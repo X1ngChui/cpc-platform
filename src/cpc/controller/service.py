@@ -184,7 +184,7 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
                              "it_kw": None if s.it_power_w is None else round(s.it_power_w / 1000, 3),
                              "energy_coverage": s.energy_coverage, "arrival_rate": s.arrival_rate}
                          for k, s in view.sites.items()},
-            "signals": {k: {"price": g.price_yuan_per_kwh, "period": g.period, "carbon": g.carbon_kg_per_kwh, "cap_kw": g.power_cap_kw}
+            "signals": {k: {"price": g.price, "price_label": g.price_label, "carbon_intensity": g.carbon_intensity, "cap_kw": g.power_cap_kw}
                         for k, g in view.signals.items()},
             "demand": view.demand.rates if view.demand else None,
         })

@@ -8,7 +8,7 @@
 - GET  /healthz、/readyz              存活检查；就绪检查（数据加载与校验在启动时完成，服务运行即就绪）
 - GET  /metrics                      Prometheus 指标（cpc_grid_*）
 
-启动检查：电价与碳强度数据集可用且校验通过，收录场景中全部站点的区域，覆盖场景时钟起点。任一不满足即启动失败。
+启动检查：电价、碳强度与扩展信号的数据集符合规范，收录场景中全部站点的区域，覆盖场景时钟起点。任一不满足即启动失败。
 """
 
 from __future__ import annotations
@@ -21,46 +21,44 @@ from fastapi import Depends, FastAPI, HTTPException
 from prometheus_client import CollectorRegistry, Gauge
 
 from ..common import metrics_response, require_admin
-from ..config import CST, DREvent, Scenario
+from ..config import DREvent, Scenario
 from ..models import SimClock
 from .signals import GridModel
-
-PERIOD_CODE = {"deep_valley": 0, "valley": 1, "flat": 2, "peak": 3, "sharp": 4, "trace": -1}
-
 
 def create_app(scn: Scenario, clock: SimClock | None = None) -> FastAPI:
     model = GridModel(scn)
     clock = clock or SimClock(start=scn.clock.start, speedup=scn.clock.speedup)
     reg = CollectorRegistry()
-    g_price = Gauge("cpc_grid_price_yuan_per_kwh", "分时电价（元/kWh）", ["site", "province"], registry=reg)
-    g_period = Gauge("cpc_grid_price_period", "电价时段编码：0深谷 1低谷 2平 3峰 4尖峰", ["site"], registry=reg)
-    g_carbon = Gauge("cpc_grid_carbon_kg_per_kwh", "电力碳排放因子（kgCO2/kWh）", ["site", "province"], registry=reg)
+    cur = model.currency
+    g_price = Gauge("cpc_grid_price_per_kwh", f"电价（{cur}/kWh）", ["site", "region", "currency"], registry=reg)
+    g_carbon = Gauge("cpc_grid_carbon_intensity_kg_per_kwh", "电力碳强度（kgCO2/kWh）", ["site", "region"], registry=reg)
+    g_extra = Gauge("cpc_grid_extra_signal", "扩展信号（单位见数据集描述）", ["site", "signal"], registry=reg)
     g_cap = Gauge("cpc_grid_power_cap_kw", "站点设施功率上限（kW，无上限时为 -1）", ["site"], registry=reg)
     g_dr = Gauge("cpc_grid_dr_event_active", "需求响应事件是否生效", ["site"], registry=reg)
-    g_pue = Gauge("cpc_site_pue", "站点 PUE", ["site"], registry=reg)
-    g_eff = Gauge("cpc_grid_effective_price_yuan_per_kwh", "计入碳价后的等效电价（元/kWh）", ["site"], registry=reg)
-    g_hour = Gauge("cpc_grid_signal_hour", "信号时钟的小时数（含小数）", registry=reg)
+    g_eff = Gauge("cpc_grid_effective_price_per_kwh", f"计入碳价后的等效电价（{cur}/kWh）", ["site", "currency"], registry=reg)
     g_avail = Gauge("cpc_grid_signal_available", "站点当前信号是否可用（1 可用，0 数据缺失）", ["site"], registry=reg)
+    g_time = Gauge("cpc_grid_signal_time_seconds", "信号时钟（Unix 时间）", registry=reg)
     nan = float("nan")
 
     def refresh() -> None:
         now = clock.now()
-        g_hour.set(now.astimezone(CST).hour + now.astimezone(CST).minute / 60)
+        g_time.set(now.timestamp())
         signals, missing = model.snapshot(now)
         for sid in missing:
             g_avail.labels(sid).set(0)
-            for g in (g_price, g_carbon):
-                g.labels(sid, scn.site(sid).province).set(nan)
-            g_eff.labels(sid).set(nan)
+            g_price.labels(sid, scn.site(sid).region, cur).set(nan)
+            g_carbon.labels(sid, scn.site(sid).region).set(nan)
+            g_eff.labels(sid, cur).set(nan)
         for sid, s in signals.items():
+            region = scn.site(sid).region
             g_avail.labels(sid).set(1)
-            g_price.labels(sid, s.province).set(s.price_yuan_per_kwh)
-            g_period.labels(sid).set(PERIOD_CODE.get(s.period, -1))
-            g_carbon.labels(sid, s.province).set(s.carbon_kg_per_kwh)
+            g_price.labels(sid, region, cur).set(s.price)
+            g_carbon.labels(sid, region).set(s.carbon_intensity)
+            for k, v in s.extra.items():
+                g_extra.labels(sid, k).set(nan if v is None else v)
             g_cap.labels(sid).set(-1 if s.power_cap_kw is None else s.power_cap_kw)
             g_dr.labels(sid).set(1 if s.dr_event else 0)
-            g_pue.labels(sid).set(s.pue)
-            g_eff.labels(sid).set(s.effective_price)
+            g_eff.labels(sid, cur).set(s.effective_price)
 
     async def ticker() -> None:
         while True:
@@ -93,7 +91,7 @@ def create_app(scn: Scenario, clock: SimClock | None = None) -> FastAPI:
     def signals(at: datetime | None = None) -> dict:
         t = at or clock.now()
         if t.tzinfo is None:
-            t = t.replace(tzinfo=CST)
+            raise HTTPException(400, "参数 at 须带时区（RFC 3339）")
         signals, missing = model.snapshot(t)
         return {"time": t.isoformat(), "signals": {k: v.model_dump(mode="json") for k, v in signals.items()},
                 "missing": missing, "sources": model.sources()}

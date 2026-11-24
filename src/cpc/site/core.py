@@ -1,349 +1,137 @@
-"""站点核心：节点池状态机、并发槽与排队、容量指令执行、能耗积分。
+"""站点代理的运行时驱动：以真实时间（time.monotonic）驱动数据中心运行时（cpc.datacenter.Datacenter）。
 
-一个站点 = 若干节点；一个节点 = 一台推理服务器（仿真后端）或一个推理实例（真实后端，如一个 vLLM 进程）。
-节点状态：off（关机/停服）→ booting（启动中）→ on（服务中）→ draining（停止接新请求，等待在途请求完成）→ off。
-
-能耗积分按功率分段恒定（左端点）进行；节点功率缺失（None）的区间不积分，计入缺失时长，
-站点快照中的 energy_coverage 给出功率有效时长占比。开关机与功率封顶操作失败时，错误记入节点的 last_error
-与 actuation_errors 计数；开机失败的节点回到 off。
+与离散事件仿真器共用状态机、派发与电源管理策略；本模块只负责实验特有的部分：
+- 请求：acquire() 把请求提交给运行时并等待派发（Future），release() 在执行器完成后通知运行时；
+- 动作：仿真服务器的开机在 boot_until 时刻完成；真实服务器通过执行器钩子启停、设置功率上限，并以就绪检查判断启动完成。
+  钩子失败时记入服务器的 last_error 与失败计数，开机失败的服务器回到 off；
+- 测量：真实服务器的功率由传感器周期性采样后写入（site/power.py）；仿真服务器的功率由服务器模型给出。
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import time
-from collections import deque
-from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Protocol
+from typing import Awaitable, Protocol
 
-from ..config import NodeProfile, SiteConfig, UpstreamConfig
-from ..models import node_idle_w, node_peak_w, service_s
+from ..config import Scenario
+from ..datacenter import Action, Datacenter, Job, Overloaded, Server
 from ..health import describe
-from ..schemas import CapacityTarget, NodeSnapshot, SiteSnapshot
+from ..sched.local import make_dispatch, make_power
+from ..sched.routing import RequestInfo
+from ..schemas import CapacityTarget, SiteSnapshot
 
 log = logging.getLogger("cpc.site")
 
-
-class Overloaded(Exception):
-    """排队已满（或没有可用节点），站点拒绝请求。"""
-
-
-@dataclass
-class Node:
-    id: str
-    slots: int
-    gpus: int
-    state: str = "on"
-    busy: int = 0
-    cap_ratio: float = 1.0
-    boot_until: float = 0.0
-    upstream: UpstreamConfig | None = None
-    # 最近一次功率采样（缺失为 None，缺失项见 power_missing）
-    it_power_w: float | None = 0.0
-    gpu_power_w: float | None = 0.0
-    gpu_powers_w: list[float | None] = field(default_factory=list)
-    gpu_utils: list[float | None] = field(default_factory=list)
-    gpu_models: list[str] = field(default_factory=list)
-    power_source: str = "model"
-    power_missing: list[str] = field(default_factory=list)
-    # 累计能耗（功率有效区间内积分）与功率有效 / 缺失时长
-    energy_j: float = 0.0
-    energy_measured_s: float = 0.0
-    energy_missing_s: float = 0.0
-    gpu_energy_mj: list[float | None] = field(default_factory=list)
-    last_error: str | None = None
-
-    @property
-    def accepting(self) -> bool:
-        return self.state == "on" and self.busy < self.slots
-
-    def snapshot(self) -> NodeSnapshot:
-        return NodeSnapshot(
-            id=self.id,
-            state=self.state,
-            slots=self.slots,
-            busy=self.busy,
-            cap_ratio=self.cap_ratio,
-            it_power_w=None if self.it_power_w is None else round(self.it_power_w, 2),
-            gpu_power_w=None if self.gpu_power_w is None else round(self.gpu_power_w, 2),
-            power_source=self.power_source,
-            power_missing=list(self.power_missing),
-            last_error=self.last_error,
-        )
-
-
-class PowerSource(Protocol):
-    """功率来源：模型计算（仿真）或硬件采集（NVML 等），见 site/power.py。"""
-
-    name: str
-    scope: str
-    gpu_energy_from_source: bool
-
-    def start(self, nodes: list[Node]) -> None: ...
-
-    def sample(self, nodes: list[Node]) -> None: ...
-
-    def status(self) -> dict: ...
+__all__ = ["NodeHooks", "Overloaded", "SiteAgent"]
 
 
 class NodeHooks(Protocol):
-    """节点执行器钩子：真实后端在这里启停容器、设置功率上限、检查就绪。"""
+    """真实服务器的执行器钩子：启停推理实例、设置功率上限、就绪检查。"""
 
-    async def power_on(self, node: Node) -> None: ...
+    async def power_on(self, server: Server) -> None: ...
 
-    async def power_off(self, node: Node) -> None: ...
+    async def power_off(self, server: Server) -> None: ...
 
-    async def set_cap(self, node: Node, ratio: float) -> None: ...
+    async def set_cap(self, server: Server, ratio: float) -> None: ...
 
-    async def is_ready(self, node: Node) -> bool: ...
-
-
-class NoopHooks:
-    async def power_on(self, node: Node) -> None:
-        return None
-
-    async def power_off(self, node: Node) -> None:
-        return None
-
-    async def set_cap(self, node: Node, ratio: float) -> None:
-        return None
-
-    async def is_ready(self, node: Node) -> bool:
-        return time.monotonic() >= node.boot_until
+    async def is_ready(self, server: Server) -> bool: ...
 
 
-class SiteCore:
-    def __init__(
-        self,
-        cfg: SiteConfig,
-        profile: NodeProfile,
-        power: PowerSource,
-        hooks: NodeHooks | None = None,
-        queue_limit_per_slot: float = 4.0,
-        initial_active: int | None = None,
-    ):
+class SiteAgent:
+    def __init__(self, scn: Scenario, site_id: str, hooks: NodeHooks | None = None, initial_active: int | None = None):
+        cfg = scn.site(site_id)
         self.cfg = cfg
-        self.profile = profile
-        self.power = power
-        self.hooks: NodeHooks = hooks or NoopHooks()
-        self.queue_limit_per_slot = queue_limit_per_slot
-        if cfg.backend == "openai":
-            self.nodes = [
-                Node(id=u.id, slots=u.max_inflight, gpus=len(u.device_names), upstream=u) for u in cfg.upstreams
-            ]
+        self.hooks = hooks
+        self.dc = Datacenter(
+            cfg, scn.node_profiles, dispatch=make_dispatch(cfg.scheduler.dispatch.policy, cfg.scheduler.dispatch.params),
+            power=make_power(cfg.scheduler.power.policy, cfg.scheduler.power.params),
+            queue_limit_per_slot=scn.scheduler.queue_limit_per_slot, rate_window_s=scn.scheduler.rate_window_s,
+            now=time.monotonic(), initial_active=initial_active, on_start=self._on_start, on_action=self._on_action)
+        if cfg.real and hooks is None:
+            raise ValueError(f"站点 {cfg.id} 有真实服务器，需要执行器钩子")
+        self.meter = None  # 真实服务器的功率来源（site.power.SensorPower），由 service 设置
+        self._tasks: set[asyncio.Task] = set()
+
+    @property
+    def servers(self) -> list[Server]:
+        return self.dc.servers
+
+    # ------------------------------------------------------------ 请求
+
+    def _on_start(self, job: Job, server: Server, now: float) -> None:
+        fut: asyncio.Future = job.payload
+        if fut.done():  # 等待方已取消：立即归还并发槽（推迟到当前派发结束之后）
+            asyncio.get_running_loop().call_soon(self.release, server, None)
         else:
-            self.nodes = [Node(id=f"{cfg.id}-n{i:02d}", slots=profile.slots, gpus=profile.gpus) for i in range(cfg.nodes)]
-        for n in self.nodes:
-            n.gpu_energy_mj = [0.0] * n.gpus
-        n_on = len(self.nodes) if initial_active is None else max(0, min(initial_active, len(self.nodes)))
-        # 真实后端的实例启动时先处于 booting，通过就绪检查（/health）后才接收请求
-        first = "booting" if cfg.backend == "openai" else "on"
-        for i, n in enumerate(self.nodes):
-            n.state = first if i < n_on else "off"
-        self._waiters: deque[asyncio.Future] = deque()
-        self._last_t = time.monotonic()
-        self._rate_t = self._last_t
-        self._arrivals = 0
-        self.arrival_rate = 0.0
-        self.est_service_s = service_s(profile, 800, 200, 0.5)  # 初值：典型请求长度下的服务时间
-        self.target = CapacityTarget(active_nodes=n_on, cap_ratio=1.0)
-        self._pending_tasks: set[asyncio.Task] = set()
-        self.actuation_errors: dict[tuple[str, str], int] = {}  # (节点, 操作) → 失败次数
-        self.power.start(self.nodes)
-        self.power.sample(self.nodes)
+            fut.set_result(server)
 
-    # ------------------------------------------------------------ 并发槽与排队
-
-    @property
-    def slots_on(self) -> int:
-        return sum(n.slots for n in self.nodes if n.state == "on")
-
-    @property
-    def queue_limit(self) -> int:
-        base = max(self.slots_on, self.profile.slots if self.cfg.backend == "emulated" else 1)
-        return max(1, math.ceil(base * self.queue_limit_per_slot))
-
-    def _free_node(self) -> Node | None:
-        cands = [n for n in self.nodes if n.accepting]
-        if not cands:
-            return None
-        return min(cands, key=lambda n: n.busy / n.slots)  # 站内最少负载
-
-    async def acquire(self) -> Node:
-        self._arrivals += 1
-        node = self._free_node()
-        if node is not None and not self._waiters:
-            node.busy += 1
-            return node
-        if len(self._waiters) >= self.queue_limit or not any(n.state in ("on", "booting") for n in self.nodes):
-            raise Overloaded()
+    async def acquire(self, info: RequestInfo) -> Server:
+        """提交请求并等待派发；数据中心拒绝时抛出 Overloaded。"""
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._waiters.append(fut)
+        job = Job(info, fut)
+        self.dc.submit(job, time.monotonic())
         try:
             return await fut
         except asyncio.CancelledError:
             if fut.done() and not fut.cancelled():
                 self.release(fut.result(), None)
             else:
-                try:
-                    self._waiters.remove(fut)
-                except ValueError:
-                    pass
+                self.dc.cancel(job)
             raise
 
-    def release(self, node: Node, service_s: float | None) -> None:
-        node.busy = max(0, node.busy - 1)
-        if service_s is not None:
-            self.est_service_s = 0.95 * self.est_service_s + 0.05 * service_s
-        if node.state == "draining" and node.busy == 0:
-            self._set_off(node)
-            self.resample()
-        self._dispatch()
+    def release(self, server: Server, service_s: float | None) -> None:
+        self.dc.finish(server, time.monotonic(), service_s)
 
-    def _dispatch(self) -> None:
-        while self._waiters:
-            node = self._free_node()
-            if node is None:
-                return
-            fut = self._waiters.popleft()
-            if fut.cancelled():
-                continue
-            node.busy += 1
-            fut.set_result(node)
+    # ------------------------------------------------------------ 动作
 
-    # ------------------------------------------------------------ 容量执行
-
-    def _spawn(self, coro: Awaitable, node: Node, action: str) -> None:
+    def _spawn(self, coro: Awaitable, server: Server, action: str) -> None:
         task = asyncio.ensure_future(coro)
-        self._pending_tasks.add(task)
+        self._tasks.add(task)
 
         def done(t: asyncio.Task) -> None:
-            self._pending_tasks.discard(t)
-            if t.cancelled():
+            self._tasks.discard(t)
+            if t.cancelled() or t.exception() is None:
                 return
-            e = t.exception()
-            if e is None:
-                return
-            node.last_error = f"{action}: {describe(e)}"
-            key = (node.id, action)
-            self.actuation_errors[key] = self.actuation_errors.get(key, 0) + 1
-            log.error("站点 %s 节点 %s 的 %s 操作失败：%s", self.cfg.id, node.id, action, describe(e),
-                      extra={"event": "node_actuation_failed", "site": self.cfg.id, "node": node.id, "action": action})
-            if action == "power_on" and node.state == "booting":
-                node.state = "off"
+            err = describe(t.exception())
+            self.dc.actuation_failed(server, action, err, time.monotonic())
+            log.error("站点 %s 服务器 %s 的 %s 操作失败：%s", self.cfg.id, server.id, action, err,
+                      extra={"event": "node_actuation_failed", "site": self.cfg.id, "node": server.id, "action": action})
 
         task.add_done_callback(done)
 
-    def _set_off(self, node: Node) -> None:
-        node.state = "off"
-        self._spawn(self.hooks.power_off(node), node, "power_off")
+    def _on_action(self, a: Action) -> None:
+        if a.server.upstream is None or self.hooks is None:
+            return  # 仿真服务器：状态与功率由运行时和服务器模型给出
+        if a.kind == "power_on":
+            self._spawn(self.hooks.power_on(a.server), a.server, "power_on")
+        elif a.kind == "power_off":
+            self._spawn(self.hooks.power_off(a.server), a.server, "power_off")
+        elif a.kind == "set_cap":
+            self._spawn(self.hooks.set_cap(a.server, a.ratio), a.server, "set_cap")
 
     def apply(self, target: CapacityTarget) -> None:
-        """执行容量指令。开机：off→booting（经 boot_s 或就绪检查后转 on）；关机：先排空再关。"""
-        if target.cap_ratio is not None:
-            ratio = min(1.0, max(self.profile.cap_min_ratio, float(target.cap_ratio)))
-            self.target.cap_ratio = ratio
-            for n in self.nodes:
-                if n.cap_ratio != ratio:
-                    n.cap_ratio = ratio
-                    self._spawn(self.hooks.set_cap(n, ratio), n, "set_cap")
-        if target.active_nodes is None:
-            return
-        want = max(0, min(int(target.active_nodes), len(self.nodes)))
-        self.target.active_nodes = want
-        live = [n for n in self.nodes if n.state in ("on", "booting")]
-        if want > len(live):
-            # 优先恢复正在排空的节点（无需重启），再开启关机节点
-            need = want - len(live)
-            for n in [n for n in self.nodes if n.state == "draining"][:need]:
-                n.state = "on"
-                need -= 1
-            for n in [n for n in self.nodes if n.state == "off"][:need]:
-                n.state = "booting"
-                n.boot_until = time.monotonic() + self.profile.boot_s
-                self._spawn(self.hooks.power_on(n), n, "power_on")
-        elif want < len(live):
-            drop = len(live) - want
-            # 先取消启动中的，再排空负载最轻的
-            for n in [n for n in live if n.state == "booting"][:drop]:
-                self._set_off(n)
-                drop -= 1
-            for n in sorted([n for n in live if n.state == "on"], key=lambda n: n.busy)[:drop]:
-                if n.busy == 0:
-                    self._set_off(n)
-                else:
-                    n.state = "draining"
-        self._dispatch()
-        self.resample()  # 立即刷新功率，使状态快照与指令一致
+        self.dc.apply(target, time.monotonic())
 
-    def resample(self) -> None:
-        """先把上次采样以来的能耗按旧功率积分（功率分段恒定），再重新采样功率。"""
-        now = time.monotonic()
-        dt = now - self._last_t
-        self._last_t = now
-        for n in self.nodes:
-            if n.it_power_w is None:
-                n.energy_missing_s += dt
-            else:
-                n.energy_j += n.it_power_w * dt
-                n.energy_measured_s += dt
-            if not self.power.gpu_energy_from_source:
-                for i, p in enumerate(n.gpu_powers_w):
-                    n.gpu_energy_mj[i] += p * dt * 1000.0
-        self.power.sample(self.nodes)
+    # ------------------------------------------------------------ 周期任务
 
     async def tick(self) -> None:
-        """周期调用：推进启动/排空状态、积分能耗并重新采样功率、更新到达率。"""
-        for n in self.nodes:
-            if n.state == "booting" and await self.hooks.is_ready(n):
-                n.state = "on"
-            if n.state == "draining" and n.busy == 0:
-                self._set_off(n)
-        self._dispatch()
-        self.resample()
+        """推进启动中的服务器、采样实测功率、更新到达率。"""
+        for s in self.dc.servers:
+            if s.state != "booting":
+                continue
+            if s.upstream is None:
+                if time.monotonic() >= s.boot_until:
+                    self.dc.boot_complete(s, time.monotonic())
+            elif await self.hooks.is_ready(s):
+                self.dc.boot_complete(s, time.monotonic())
         now = time.monotonic()
-        dt = now - self._rate_t
-        if dt > 0:
-            self.arrival_rate = 0.8 * self.arrival_rate + 0.2 * (self._arrivals / dt)
-        self._rate_t = now
-        self._arrivals = 0
-
-    # ------------------------------------------------------------ 状态
+        self.dc.advance(now)
+        if self.meter is not None:
+            self.meter.sample([s for s in self.dc.servers if not s.model_power])
+        self.dc.update_rate(now)
 
     def snapshot(self) -> SiteSnapshot:
-        it = None if any(n.it_power_w is None for n in self.nodes) else sum(n.it_power_w for n in self.nodes)
-        measured = sum(n.energy_measured_s for n in self.nodes)
-        missing = sum(n.energy_missing_s for n in self.nodes)
-        return SiteSnapshot(
-            site=self.cfg.id,
-            ts=time.time(),
-            backend=self.cfg.backend,
-            nodes_total=len(self.nodes),
-            nodes_on=sum(n.state == "on" for n in self.nodes),
-            nodes_booting=sum(n.state == "booting" for n in self.nodes),
-            nodes_draining=sum(n.state == "draining" for n in self.nodes),
-            slots_per_node=self.nodes[0].slots if self.nodes else 0,
-            slots_on=self.slots_on,
-            busy=sum(n.busy for n in self.nodes),
-            queue_len=len(self._waiters),
-            queue_limit=self.queue_limit,
-            cap_ratio=self.target.cap_ratio if self.target.cap_ratio is not None else 1.0,
-            cap_min_ratio=self.profile.cap_min_ratio,
-            it_power_w=None if it is None else round(it, 2),
-            facility_power_w=None if it is None else round(it * self.cfg.pue, 2),
-            pue=self.cfg.pue,
-            power_scope=self.power.scope,
-            energy_it_j=round(sum(n.energy_j for n in self.nodes), 1),
-            energy_coverage=None if measured + missing == 0 else round(measured / (measured + missing), 4),
-            est_service_s=round(self.est_service_s, 3),
-            arrival_rate=round(self.arrival_rate, 3),
-            node_idle_w=node_idle_w(self.profile),
-            node_peak_w=node_peak_w(self.profile),
-            nodes=[n.snapshot() for n in self.nodes],
-            components=self.power.status(),
-        )
-
-
-TickFn = Callable[[], Awaitable[None]]
+        snap = self.dc.summary(time.monotonic(), ts=time.time())
+        snap.components = self.meter.status() if self.meter is not None else {}
+        return snap

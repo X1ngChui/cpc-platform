@@ -2,6 +2,7 @@
 
 请求到达时间取变换后 trace 的相对时间（秒），按真实时间回放；来源区域按场景 sources[].share 分配。
 请求体带 max_tokens 与 ignore_eos=true（vLLM 扩展参数），使真实模型输出长度与 trace 一致，这是推理压测的通行做法。
+场景 workload.attributes 选定的扩展字段以 x-cpc-attr-<字段名> 请求头发送，与仿真中策略可见的请求属性一致。
 
 给出电网信号服务地址时，先确认其可达（失败则报错退出）。
 """
@@ -18,7 +19,7 @@ from pathlib import Path
 import httpx
 import numpy as np
 
-from ..common import sync_clock
+from ..common import attr_headers, sync_clock
 from ..config import Scenario
 from ..datasets.workload import WorkloadTrace, assign_sources, load_workload
 
@@ -32,13 +33,18 @@ class Arrival:
     source: str
     n_in: int
     n_out: int
+    attrs: dict
+
+    def headers(self) -> dict[str, str]:
+        return {"x-cpc-source": self.source, **attr_headers(self.attrs)}
 
 
 def arrivals_from(trace: WorkloadTrace, scn: Scenario, duration_s: float) -> list[Arrival]:
+    """与仿真器相同的来源分配（同一种子）。"""
     keep = np.nonzero(trace.t < duration_s)[0]
     srcs = assign_sources(len(keep), [s.id for s in scn.sources], [s.share for s in scn.sources], scn.workload.seed)
-    return [Arrival(float(trace.t[i]), str(src), max(1, int(trace.input_tokens[i])), max(1, int(trace.output_tokens[i])))
-            for i, src in zip(keep, srcs)]
+    return [Arrival(float(trace.t[i]), str(src), max(1, int(trace.input_tokens[i])), max(1, int(trace.output_tokens[i])),
+                    trace.attrs_of(i)) for i, src in zip(keep, srcs)]
 
 
 def make_body(a: Arrival, rng: random.Random, stream: bool, model: str = "cpc") -> dict:
@@ -75,7 +81,7 @@ async def run(gateway: str, scn: Scenario, duration_s: float, grid: str | None =
                 try:
                     if stream:
                         ttft = None
-                        async with client.stream("POST", url, json=body, headers={"x-cpc-source": a.source}) as r:
+                        async with client.stream("POST", url, json=body, headers=a.headers()) as r:
                             rec["status"] = r.status_code
                             rec["site"] = r.headers.get("x-cpc-site")
                             rec["route_reason"] = r.headers.get("x-cpc-route-reason")
@@ -84,7 +90,7 @@ async def run(gateway: str, scn: Scenario, duration_s: float, grid: str | None =
                                     ttft = time.monotonic() - t0
                         rec["ttft_s"] = ttft
                     else:
-                        r = await client.post(url, json=body, headers={"x-cpc-source": a.source})
+                        r = await client.post(url, json=body, headers=a.headers())
                         rec["status"] = r.status_code
                         rec["site"] = r.headers.get("x-cpc-site")
                         if "x-cpc-energy-est-j" in r.headers:

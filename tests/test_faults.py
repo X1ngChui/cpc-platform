@@ -19,11 +19,10 @@ from cpc.config import ConfigError, default_local_endpoints, load_endpoints, loa
 from cpc.controller.service import create_app as controller_app
 from cpc.gateway.service import create_app as gateway_app
 from cpc.grid.service import create_app as grid_app
+from cpc.datacenter import Datacenter
 from cpc.datasets import DatasetError
-from cpc.datasets.grid import Tariff
 from cpc.grid.signals import GridModel
-from cpc.site.core import SiteCore
-from cpc.site.power import ModelPower
+from cpc.sched import make_dispatch, make_power
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -32,7 +31,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def write_scenario(tmp_path: Path, mutate) -> Path:
+    """复制测试场景（数据集路径改为绝对路径）并按 mutate 修改。"""
     raw = yaml.safe_load((ROOT / "tests/data/scenario.yaml").read_text(encoding="utf-8"))
+    for src in (raw["grid"]["price"], raw["grid"]["carbon"], raw["workload"]):
+        src["dataset"] = str(ROOT / "tests/data" / src["dataset"])
     mutate(raw)
     p = tmp_path / "scenario.yaml"
     p.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
@@ -46,20 +48,28 @@ def test_config_rejects_unknown_and_obsolete_fields(tmp_path):
         load_scenario(write_scenario(tmp_path, lambda r: r["workload"].update(rpss=3)))
 
 
-def test_config_unknown_dataset_and_power_declaration(tmp_path):
-    with pytest.raises(ConfigError, match="未知数据集"):
-        load_scenario(write_scenario(tmp_path, lambda r: r["workload"].update(dataset="no-such-trace")))
-    with pytest.raises(ConfigError, match="grid_signal"):
-        load_scenario(write_scenario(tmp_path, lambda r: r["grid"]["price"].update(dataset="azure-llm-2023-conv")))
+def test_config_pools_and_measurement(tmp_path):
+    def real_site_without_measurement(r):
+        r["sites"][0]["pools"] = [{"id": "gpu", "profile": "a100x8", "backend": "openai",
+                                   "upstreams": [{"id": "u0", "url": "http://x", "gpu_indices": [0]}]}]
 
-    def real_site_without_power(r):
-        r["sites"][0].update(backend="openai", upstreams=[{"id": "u0", "url": "http://x", "gpu_indices": [0]}])
-        r["sites"][0].pop("nodes")
+    with pytest.raises(ConfigError, match="measurement"):
+        load_scenario(write_scenario(tmp_path, real_site_without_measurement))
+    with pytest.raises(ConfigError, match="measurement"):
+        load_scenario(write_scenario(tmp_path, lambda r: r["sites"][0].update(measurement={"sensors": [], "host": "excluded"})))
+    with pytest.raises(ConfigError, match="count"):
+        load_scenario(write_scenario(tmp_path, lambda r: r["sites"][0]["pools"][0].update(count=0)))
+    with pytest.raises(ConfigError, match="node profile"):
+        load_scenario(write_scenario(tmp_path, lambda r: r["sites"][0]["pools"][0].update(profile="h200")))
 
-    with pytest.raises(ConfigError, match="power"):
-        load_scenario(write_scenario(tmp_path, real_site_without_power))
-    with pytest.raises(ConfigError, match="仿真后端"):
-        load_scenario(write_scenario(tmp_path, lambda r: r["sites"][0].update(power={"sensors": [], "host": "excluded"})))
+
+def test_missing_dataset_is_reported(tmp_path):
+    from cpc.sim.des import Simulator
+    from cpc.sched import make_capacity, make_routing
+
+    scn = load_scenario(write_scenario(tmp_path, lambda r: r["workload"].update(dataset=str(tmp_path / "nowhere"))))
+    with pytest.raises(DatasetError, match="nowhere"):
+        Simulator(scn, make_routing("nearest"), make_capacity("static"), hours=1)
 
 
 def test_endpoints_must_be_explicit(scn, monkeypatch):
@@ -72,11 +82,9 @@ def test_endpoints_must_be_explicit(scn, monkeypatch):
 
 
 def test_grid_data_must_cover_sites(scn):
-    scn.sites[0].province = "atlantis"
+    scn.sites[0].region = "atlantis"
     with pytest.raises(DatasetError, match="atlantis"):
         GridModel(scn)
-    with pytest.raises(ValueError, match="1–12"):
-        Tariff("x", "x", "", 0.5, [{"months": [1, 2, 3]}])
 
 
 # ------------------------------------------------------------------ 伪造的上游服务
@@ -88,8 +96,8 @@ class Upstreams:
     def __init__(self, scn):
         self.scn = scn
         self.grid = GridModel(scn)
-        self.snaps = {s.id: SiteCore(s, scn.profile_of(s.id), ModelPower(scn.profile_of(s.id))).snapshot().model_dump()
-                      for s in scn.sites}
+        self.snaps = {s.id: Datacenter(s, scn.node_profiles, dispatch=make_dispatch("least_loaded"), power=make_power("ordered"))
+                      .summary(0.0).model_dump() for s in scn.sites}
         self.faults: dict[str, str] = {}  # 目标 → connect / http500 / overloaded / read_timeout
         self.calls: list[str] = []
         self.capacity: dict[str, dict] = {}
@@ -297,9 +305,9 @@ class FakeMeter(Sensor):
 
 def test_real_site_reports_sensor_failure(tmp_path):
     def real(r):
-        r["sites"][0].update(backend="openai", upstreams=[{"id": "u0", "url": "http://127.0.0.1:9", "devices": ["gpu0"]}],
-                             power={"sensors": [{"type": "test-meter"}], "host": "excluded"})
-        r["sites"][0].pop("nodes")
+        r["sites"][0].update(pools=[{"id": "gpu", "profile": "a100x8", "backend": "openai",
+                                     "upstreams": [{"id": "u0", "url": "http://127.0.0.1:9", "devices": ["gpu0"]}]}],
+                             measurement={"sensors": [{"type": "test-meter"}], "host": "excluded"})
 
     scn = load_scenario(write_scenario(tmp_path, real))
     FakeMeter.broken = False
@@ -325,9 +333,9 @@ def test_real_site_fails_to_start_when_sensor_unavailable(tmp_path):
     from cpc.sensors import SensorError
 
     def real(r):
-        r["sites"][0].update(backend="openai", upstreams=[{"id": "u0", "url": "http://127.0.0.1:9", "devices": ["gpu7"]}],
-                             power={"sensors": [{"type": "test-meter"}], "host": "excluded"})
-        r["sites"][0].pop("nodes")
+        r["sites"][0].update(pools=[{"id": "gpu", "profile": "a100x8", "backend": "openai",
+                                     "upstreams": [{"id": "u0", "url": "http://127.0.0.1:9", "devices": ["gpu7"]}]}],
+                             measurement={"sensors": [{"type": "test-meter"}], "host": "excluded"})
 
     FakeMeter.broken = False
     with pytest.raises(SensorError, match="gpu7"):

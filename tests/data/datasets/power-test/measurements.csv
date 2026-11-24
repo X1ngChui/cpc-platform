@@ -1,0 +1,6 @@
+device,device_count,model,concurrency,power_w,itl_s,task
+X1,4,toy-7b,8,1600.0,0.0210,chat
+X1,4,toy-7b,16,1810.0,0.0231,chat
+X1,4,toy-7b,32,2060.0,0.0262,chat
+X1,4,toy-7b,64,2350.0,0.0330,chat
+X2,8,toy-70b,16,4100.0,0.0400,chat

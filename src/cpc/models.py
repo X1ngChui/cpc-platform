@@ -1,6 +1,6 @@
-"""基础模型：节点功率模型、推理性能（时延）模型、广域网时延模型、信号时钟。
+"""基础模型：服务器功率模型、推理性能（时延）模型、广域网时延模型、信号时钟。
 
-这些函数在"仿真站点"和"离散事件仿真器"中共用，保证两种模式下的物理假设一致。
+服务器模型由数据中心运行时调用，仿真器与站点代理（仿真服务器）共用，保证两种运行方式下的物理假设一致。
 """
 
 from __future__ import annotations
@@ -15,12 +15,33 @@ from .config import NetworkConfig, NodeProfile, Scenario, SiteConfig, SourceRegi
 # ---------------------------------------------------------------- 功率模型
 
 
+def interp(curve: list[tuple[float, float]], x: float) -> float:
+    """分段线性插值；超出曲线范围时取端点值。"""
+    if x <= curve[0][0]:
+        return curve[0][1]
+    for (x0, y0), (x1, y1) in zip(curve, curve[1:]):
+        if x <= x1:
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return curve[-1][1]
+
+
 def gpu_power_w(p: NodeProfile, occupancy: float, cap_ratio: float = 1.0) -> float:
-    """单卡功率。占用率为 0 时为空载功率 P_idle；否则 P = P_a + (P_cap − P_a)·occ^α，
-    其中 P_a 为在服务时的功率下限 gpu_active_min_w（未给出时取 P_idle），P_cap = max(P_a, cap·P_max)。"""
+    """单卡功率。占用率为 0 时为空载功率 P_idle。
+    参数式：P = P_a + (P_cap − P_a)·occ^α，P_a 为在服务时的功率下限 gpu_active_min_w（未给出时取 P_idle），
+    P_cap = max(P_a, cap·P_max)。
+    查表式：P = P_a + (C(occ) − P_a)·(P_cap − P_a)/(P_max − P_a)，C 为 gpu_power_curve，P_a、P_max 为曲线的最小、最大值
+    （功率封顶按比例压缩动态部分）。"""
     occ = min(max(occupancy, 0.0), 1.0)
     if occ == 0.0:
         return p.gpu_idle_w
+    if p.gpu_power_curve is not None:
+        ys = [y for _, y in p.gpu_power_curve]
+        base, top = min(ys), max(ys)
+        val = interp(p.gpu_power_curve, occ)
+        if cap_ratio >= 1.0 or top <= base:
+            return val
+        p_cap = max(base, cap_ratio * top)
+        return base + (val - base) * (p_cap - base) / (top - base)
     base = p.gpu_idle_w if p.gpu_active_min_w is None else p.gpu_active_min_w
     p_cap = max(base, cap_ratio * p.gpu_max_w)
     return base + (p_cap - base) * occ**p.power_exponent
@@ -32,7 +53,7 @@ def host_power_w(p: NodeProfile, occupancy: float) -> float:
 
 
 def node_power_w(p: NodeProfile, state: str, occupancy: float, cap_ratio: float = 1.0) -> tuple[float, float]:
-    """返回 (节点 IT 功率, 其中 GPU 总功率)。state ∈ {off, booting, on, draining}。"""
+    """返回 (服务器 IT 功率, 其中 GPU 总功率)。state ∈ {off, booting, on, draining}。"""
     if state == "off":
         return p.standby_w, 0.0
     if state == "booting":
@@ -64,8 +85,10 @@ def prefill_s(p: NodeProfile, input_tokens: int, cap_ratio: float = 1.0) -> floa
 
 
 def tpot_s(p: NodeProfile, occupancy: float, cap_ratio: float = 1.0) -> float:
+    """token 间隔。参数式：d0·(1 + k·occ)；查表式：tpot_curve(occ)。功率封顶时除以相对速度。"""
     occ = min(max(occupancy, 0.0), 1.0)
-    return p.decode_s_per_token * (1.0 + p.decode_slowdown * occ) / speed_factor(p, cap_ratio)
+    base = interp(p.tpot_curve, occ) if p.tpot_curve is not None else p.decode_s_per_token * (1.0 + p.decode_slowdown * occ)
+    return base / speed_factor(p, cap_ratio)
 
 
 def service_s(p: NodeProfile, input_tokens: int, output_tokens: int, occupancy: float, cap_ratio: float = 1.0) -> float:

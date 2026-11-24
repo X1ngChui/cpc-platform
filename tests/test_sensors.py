@@ -5,12 +5,12 @@ from pathlib import Path
 import pytest
 from prometheus_client import CollectorRegistry
 
-from cpc.config import SitePowerConfig, UpstreamConfig
+from cpc.config import MeasurementConfig, NodeProfile, UpstreamConfig
+from cpc.datacenter import Server
 from cpc.health import HealthBoard
 from cpc.sensors import EnergyIntegrator, Reading, Sensor, SensorError, make_sensor
 from cpc.sensors.builtin import CommandSensor, HttpJsonSensor, HwmonSensor, IpmiSensor, NvidiaSmiSensor, RaplSensor, RedfishSensor
 from cpc.sensors.exporter import read_all
-from cpc.site.core import Node
 from cpc.site.power import SensorPower
 
 
@@ -163,7 +163,8 @@ class FakeSensor(Sensor):
 
 
 def two_nodes():
-    return [Node(id=f"n{i}", slots=8, gpus=1, upstream=UpstreamConfig(id=f"n{i}", url="http://x", gpu_indices=[i])) for i in range(2)]
+    return [Server(id=f"n{i}", pool="p", profile=NodeProfile(), slots=8, gpus=1, model_power=False, state="on",
+                   upstream=UpstreamConfig(id=f"n{i}", url="http://x", gpu_indices=[i])) for i in range(2)]
 
 
 def readings(gpu0=250.0, gpu1=150.0, server=700.0):
@@ -172,7 +173,7 @@ def readings(gpu0=250.0, gpu1=150.0, server=700.0):
 
 
 def make_power(host, sensors, reg=None):
-    return SensorPower("lab", SitePowerConfig(sensors=[], host=host), reg, sensors=sensors)
+    return SensorPower("lab", MeasurementConfig(sensors=[], host=host), reg, sensors=sensors)
 
 
 def test_sensor_power_attribution_server_host():
@@ -194,7 +195,7 @@ def test_sensor_power_missing_device_and_host():
     p.sample(nodes)
     # gpu1 缺失：节点 n1 功率缺失；整机减加速卡无法计算，主机部分也缺失；n0 的 GPU 读数仍保留
     assert nodes[0].gpu_power_w == pytest.approx(250.0) and nodes[0].it_power_w is None
-    assert nodes[1].gpu_powers_w == [None] and nodes[1].power_missing == ["device:gpu1", "host"]
+    assert nodes[1].detail["power_w"] == [None] and nodes[1].power_missing == ["device:gpu1", "host"]
 
 
 def test_sensor_power_isolates_failed_sensor():

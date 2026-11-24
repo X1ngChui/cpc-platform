@@ -1,7 +1,9 @@
 """根据场景文件生成 Kubernetes 清单（deploy/k8s/generated/*.yaml）。
 
-拓扑：每个虚拟数据中心站点对应集群中带 topology.kubernetes.io/region=<站点 id> 标签的节点（kind 中为一个 worker），
-站点代理 Pod 通过 nodeSelector 固定在该节点上；电网信号服务、网关、控制器、Prometheus、Grafana 放在控制面所在节点之外的任意节点。
+拓扑：每个数据中心站点对应集群中带 topology.kubernetes.io/region=<站点 id> 标签的节点（kind 中为一个 worker），
+站点代理 Pod 通过 nodeSelector 固定在该节点上；网关、控制器、Prometheus、Grafana 放在任意节点。
+电网信号服务读取电网信号数据集：Pod 固定在控制面节点，以 hostPath 挂载该节点的 /var/lib/cpc/datasets
+（kind_up.py 创建集群时把宿主机的数据集目录 ${CPC_DATA_DIR} 挂载到该路径）。
 
 用法：python deploy/k8s/generate.py [-s configs/scenario.yaml] [--image cpc-platform:latest]
 然后：kubectl apply -f deploy/k8s/generated/
@@ -17,6 +19,7 @@ import yaml
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 NS = "cpc"
+DATA_IN_NODE = "/var/lib/cpc/datasets"  # 节点上的数据集目录；与镜像中的 CPC_DATA_DIR 相同
 
 
 def svc(name: str, port: int, node_port: int | None = None) -> dict:
@@ -29,7 +32,7 @@ def svc(name: str, port: int, node_port: int | None = None) -> dict:
 
 def deploy(name: str, image: str, args: list[str], port: int, node_selector: dict | None = None, extra: dict | None = None,
            volumes: list | None = None, mounts: list | None = None, env: list | None = None, probe: str = "/readyz",
-           liveness: str | None = "/healthz") -> dict:
+           liveness: str | None = "/healthz", pod_extra: dict | None = None) -> dict:
     c = {
         "name": name, "image": image, "imagePullPolicy": "IfNotPresent", "args": args,
         "ports": [{"containerPort": port, "name": "http"}],
@@ -48,6 +51,7 @@ def deploy(name: str, image: str, args: list[str], port: int, node_selector: dic
     }
     if node_selector:
         pod["nodeSelector"] = node_selector
+    pod.update(pod_extra or {})
     return {
         "apiVersion": "apps/v1", "kind": "Deployment",
         "metadata": {"name": name, "namespace": NS, "labels": {"app": name, "app.kubernetes.io/part-of": "cpc"}},
@@ -106,7 +110,14 @@ def main() -> None:
             cm("grafana-dashboards", {"cpc-overview.json": dash}),
         ],
         "20-grid.yaml": [
-            deploy("grid", args.image, ["grid", "-s", scn_in_image, "--host", "0.0.0.0", "--speedup", args.speedup], 9000),
+            deploy("grid", args.image, ["grid", "-s", scn_in_image, "--host", "0.0.0.0", "--speedup", args.speedup], 9000,
+                   node_selector={"node-role.kubernetes.io/control-plane": ""},
+                   volumes=[{"name": "cpc-endpoints", "configMap": {"name": "cpc-endpoints"}},
+                            {"name": "datasets", "hostPath": {"path": DATA_IN_NODE, "type": "Directory"}}],
+                   mounts=[{"name": "cpc-endpoints", "mountPath": "/etc/cpc"},
+                           {"name": "datasets", "mountPath": DATA_IN_NODE, "readOnly": True}],
+                   pod_extra={"tolerations": [{"key": "node-role.kubernetes.io/control-plane", "operator": "Exists",
+                                               "effect": "NoSchedule"}]}),
             svc("grid", 9000, 30900),
         ],
         "21-sites.yaml": [],
@@ -152,7 +163,8 @@ def main() -> None:
         (out / fn).write_text("---\n".join(yaml.safe_dump(o, sort_keys=False, allow_unicode=True) for o in objs), encoding="utf-8")
         print(f"written {out / fn}")
 
-    # kind 集群配置：一个控制面 + 每个站点一个 worker（带 region 标签）；NodePort 映射到宿主机
+    # kind 集群配置：一个控制面 + 每个站点一个 worker（带 region 标签）；NodePort 映射到宿主机。
+    # 数据集目录的挂载（extraMounts）含宿主机路径，由 kind_up.py 在创建集群时加入，不写入本文件。
     kind = {
         "kind": "Cluster", "apiVersion": "kind.x-k8s.io/v1alpha4", "name": "cpc",
         "nodes": [{"role": "control-plane", "extraPortMappings": [

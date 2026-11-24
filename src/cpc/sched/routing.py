@@ -1,4 +1,4 @@
-"""请求路由策略（插件）。
+"""跨站点路由策略（全局调度，插件）。
 
 网关对每个请求调用 policy.choose(req, view, exclude)，得到结构化的路由决策 RouteDecision：
 选择的站点（或 None 表示拒绝）及原因。原因写入请求日志与指标 cpc_gateway_route_decisions_total{policy,reason}。
@@ -7,8 +7,8 @@
 视图中只包含状态可用的站点（网关在站点状态拉取失败或过期时将其移出视图）；
 电网信号缺失时 SiteView.signal 为 None，依赖信号的策略须把这类站点排除在外，而不是按缺省值计算。
 
-新增策略：继承 RoutingPolicy，实现 choose()，并用 @register_routing("名字") 注册（或通过 entry points 提供）。
-这里给出的都是简单的参考实现，用来演示接口与数据通路，不代表推荐算法。
+新增策略：继承 RoutingPolicy，实现 choose()；在自己的包中以 entry point（组 cpc.routing）提供，见 cpc.registry。
+内置策略是用于演示接口与数据通路的参考实现。
 """
 
 from __future__ import annotations
@@ -17,19 +17,23 @@ import itertools
 import random
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable, Iterable, Literal
+from typing import Iterable, Literal
 
 from ..config import SLOConfig
 from ..grid.signals import GridSignal
+from ..registry import Registry
 from ..schemas import SiteSnapshot
 
 
 @dataclass
 class RequestInfo:
+    """策略可见的请求信息。attrs 为负载数据集的扩展字段（场景 workload.attributes 选定），实验中由 x-cpc-attr-* 请求头携带。"""
+
     source: str
-    input_tokens: int = 0  # 近似值（见 site.executors.approx_prompt_tokens）
+    input_tokens: int = 0  # 实验中为近似值（见 site.executors.approx_prompt_tokens）
     output_tokens: int | None = None  # 请求给出的输出上限；未给出时为 None
     id: str = ""
+    attrs: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -132,22 +136,12 @@ class RoutingPolicy:
         return RouteDecision.to(sid, f"overflow_{cause}") if sid else RouteDecision.reject("no_available_site")
 
 
-ROUTING_POLICIES: dict[str, type[RoutingPolicy]] = {}
-
-
-def register_routing(name: str) -> Callable[[type[RoutingPolicy]], type[RoutingPolicy]]:
-    def deco(cls: type[RoutingPolicy]) -> type[RoutingPolicy]:
-        cls.name = name
-        ROUTING_POLICIES[name] = cls
-        return cls
-
-    return deco
+ROUTING: Registry[RoutingPolicy] = Registry("routing")
+register_routing = ROUTING.register
 
 
 def make_routing(name: str, params: dict | None = None) -> RoutingPolicy:
-    if name not in ROUTING_POLICIES:
-        raise KeyError(f"未知路由策略 {name}，可选：{sorted(ROUTING_POLICIES)}")
-    return ROUTING_POLICIES[name](**(params or {}))
+    return ROUTING.get(name)(**(params or {}))
 
 
 def _check_overflow(v: str) -> Overflow:
@@ -220,7 +214,7 @@ class CostAware(RoutingPolicy):
     """能耗成本感知的贪心示例：在有电网信号、满足 TTFT 预算与负载上限的站点中，选单位请求边际成本最低者。
 
     边际成本 = 等效电价（电价 + 碳价×碳强度）× PUE × 单请求边际能耗 + latency_weight × 估计 TTFT。
-    单请求边际能耗 ≈ (节点满载功率 − 空载功率) / 并发槽数 × 平均服务时间。
+    单请求边际能耗 ≈ (服务器满载功率 − 空载功率) / 并发槽数 × 平均服务时间（取站点内服务器的平均值）。
     没有站点满足条件时按 overflow 处理；原因区分"无电网信号"（no_signal）与"预算或负载不满足"（over_budget）。
     """
 
@@ -229,7 +223,7 @@ class CostAware(RoutingPolicy):
         super().__init__(**params)
         self.max_load = max_load
         self.ttft_budget = ttft_budget  # 占 SLO 的比例
-        self.latency_weight = latency_weight  # 元/秒
+        self.latency_weight = latency_weight  # 货币单位/秒
         self.mode = _check_overflow(overflow)
 
     @staticmethod

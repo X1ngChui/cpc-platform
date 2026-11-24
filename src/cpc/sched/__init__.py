@@ -1,23 +1,16 @@
-"""调度策略插件。外部策略模块可通过环境变量 CPC_PLUGINS（逗号分隔的模块名）在启动时导入注册。"""
+"""调度策略。
 
-import importlib
-import os
+全局（跨数据中心）：路由策略 RoutingPolicy（逐请求选择站点）、容量策略 CapacityPolicy（周期性给出各站点的指令与路由权重）。
+本地（数据中心内部）：派发策略 DispatchPolicy（逐请求选择服务器）、电源管理策略 PowerPolicy（服务器开关）。
+内置实现以装饰器注册；第三方实现以 entry points 提供（见 cpc.registry）。
+"""
 
-from .capacity import CAPACITY_POLICIES, CapacityPlan, CapacityPolicy, ControlView, make_capacity, register_capacity
-from .routing import (
-    ROUTING_POLICIES, ClusterView, RequestInfo, RouteDecision, RoutingPolicy, SiteView, make_routing, register_routing,
-)
-
-
-def load_plugins(modules: str | None = None) -> list[str]:
-    mods = [m.strip() for m in (modules or os.environ.get("CPC_PLUGINS", "")).split(",") if m.strip()]
-    for m in mods:
-        importlib.import_module(m)
-    return mods
-
+from .capacity import CAPACITY, CapacityPlan, CapacityPolicy, ControlView, make_capacity, register_capacity
+from .local import DISPATCH, POWER, DispatchPolicy, PowerPolicy, ServerView, make_dispatch, make_power
+from .routing import ROUTING, ClusterView, RequestInfo, RouteDecision, RoutingPolicy, SiteView, make_routing, register_routing
 
 __all__ = [
-    "CAPACITY_POLICIES", "ROUTING_POLICIES", "CapacityPlan", "CapacityPolicy", "ClusterView", "ControlView",
-    "RequestInfo", "RouteDecision", "RoutingPolicy", "SiteView", "load_plugins", "make_capacity", "make_routing",
-    "register_capacity", "register_routing",
+    "CAPACITY", "DISPATCH", "POWER", "ROUTING", "CapacityPlan", "CapacityPolicy", "ClusterView", "ControlView", "DispatchPolicy",
+    "PowerPolicy", "RequestInfo", "RouteDecision", "RoutingPolicy", "ServerView", "SiteView", "make_capacity", "make_dispatch",
+    "make_power", "make_routing", "register_capacity", "register_routing",
 ]

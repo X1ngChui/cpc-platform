@@ -63,7 +63,7 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "用电成本速率（元/小时）",
+      "title": "用电成本速率（每小时）",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -78,7 +78,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "global:energy_cost_yuan_per_hour",
+          "expr": "global:energy_cost_per_hour",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -414,7 +414,7 @@
     {
       "id": 11,
       "type": "timeseries",
-      "title": "分时电价（元/kWh）",
+      "title": "电价（每 kWh）",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -429,7 +429,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "max by (site) (cpc_grid_price_yuan_per_kwh)",
+          "expr": "max by (site) (cpc_grid_price_per_kwh)",
           "legendFormat": "{{site}}",
           "datasource": {
             "type": "prometheus",
@@ -530,7 +530,7 @@
     {
       "id": 12,
       "type": "timeseries",
-      "title": "在线节点数",
+      "title": "在线服务器数",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -646,7 +646,7 @@
     {
       "id": 13,
       "type": "timeseries",
-      "title": "电力碳排放因子（kgCO2/kWh）",
+      "title": "电力碳强度（kgCO2/kWh）",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -661,7 +661,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "max by (site) (cpc_grid_carbon_kg_per_kwh)",
+          "expr": "max by (site) (cpc_grid_carbon_intensity_kg_per_kwh)",
           "legendFormat": "{{site}}",
           "datasource": {
             "type": "prometheus",

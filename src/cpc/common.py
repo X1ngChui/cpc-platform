@@ -147,3 +147,24 @@ class JsonlWriter:
             return
         self._q.put_nowait(None)  # type: ignore[arg-type]
         await self._task
+
+
+ATTR_PREFIX = "x-cpc-attr-"
+
+
+def attr_headers(attrs: dict) -> dict[str, str]:
+    """把请求扩展属性编码为请求头：x-cpc-attr-<字段名>: <JSON 值>（字段名按 HTTP 惯例不区分大小写）。"""
+    return {ATTR_PREFIX + k.lower(): json.dumps(v, ensure_ascii=True, separators=(",", ":")) for k, v in attrs.items() if v is not None}
+
+
+def request_attrs(headers) -> dict:
+    """从请求头解析扩展属性；值不是合法 JSON 时按字符串处理。"""
+    out = {}
+    for k, v in headers.items():
+        k = k.lower()
+        if k.startswith(ATTR_PREFIX):
+            try:
+                out[k[len(ATTR_PREFIX):]] = json.loads(v)
+            except ValueError:
+                out[k[len(ATTR_PREFIX):]] = v
+    return out

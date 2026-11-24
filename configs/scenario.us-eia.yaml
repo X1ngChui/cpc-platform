@@ -1,10 +1,10 @@
 # 示例场景：美国 3 个平衡区（加州 CISO、得州 ERCO、PJM）的逐时碳强度 + Azure 2024 对话负载，日期一致（2024-05-14）。
 #
-# 碳强度：eia930-carbon-2024h1（EIA-930 逐时分燃料净发电量）× 分燃料生命周期排放因子。
-#   排放因子取 Electricity Maps 默认生命周期因子（config/defaults.yaml，提交 0b6b5c6）：
-#   煤 820、天然气 490、核电 12、水电 24、光伏 45、风电 11（IPCC 2014），石油 650（UK POST 2014），
-#   未知燃料 700（该文件给出的热电假设）。EIA 的 "Other Fuel Sources" 主要为生物质、地热等，此处取生物质的 230（IPCC 2014），属于假设。
-# 电价：fixed-price（统一示意电价，非实测）。本场景用于研究碳强度感知调度，成本结果不具实际意义。
+# 数据准备（见 examples/datasets/README.md）：
+#   python examples/datasets/azure_llm.py --variant 2024-conv --zero-output fail
+#   python examples/datasets/eia930.py --series adjusted          # 碳强度：EIA-930 分燃料发电量 × 生命周期排放因子
+#   python examples/datasets/constant_signal.py --name us-flat-price --signal price --unit USD/kWh #       --values CISO=0.08 ERCO=0.08 PJM=0.08 --start 2024-01-01T00:00:00Z --end 2025-01-01T00:00:00Z
+# 电价为统一的示意值（非实测）：本场景用于研究碳强度感知调度，成本结果不具实际意义。
 
 name: us-eia-3ba
 
@@ -17,17 +17,12 @@ sources:
   - {id: central, name: Dallas,      lat: 32.78, lon: -96.80,  share: 0.25}
   - {id: east,    name: New York,    lat: 40.71, lon: -74.01,  share: 0.40}
 
-sites:
-  - {id: ciso, name: California (CISO), province: california, lat: 37.34, lon: -121.89, pue: 1.2, nodes: 3, profile: h100x8}
-  - {id: erco, name: Texas (ERCO),      province: texas,      lat: 32.90, lon: -97.04,  pue: 1.2, nodes: 3, profile: h100x8}
-  - {id: pjm,  name: Virginia (PJM),    province: virginia,   lat: 39.04, lon: -77.49,  pue: 1.2, nodes: 4, profile: h100x8}
-
 node_profiles:
-  h100x8:   # 同 configs/scenario.yaml
-    # 由 ML.ENERGY Benchmark v3（mlenergy-benchmark-v3-llm@f4db020）标定：
-    #   cpc data calibrate mlenergy-benchmark-v3-llm --model meta-llama/Llama-3.1-405B-Instruct-FP8 \
-    #       --gpu H100 --task lm-arena-chat --num-gpus 8 --slots 128
-    #   拟合 6 次稳定运行（max_num_seqs 8–128），单卡功率 RMSE 5.4 W，token 间隔 RMSE 0.69 ms。
+  h100x8:
+    # 8×H100 服务器运行 Llama-3.1-405B-Instruct-FP8。在服务时的功率与 token 间隔由 ML.ENERGY Benchmark v3 标定：
+    #   cpc data calibrate ${CPC_DATA_DIR}/mlenergy-benchmark-v3-llm --slots 128 --where device=H100 device_count=8 \
+    #       model=meta-llama/Llama-3.1-405B-Instruct-FP8 task=lm-arena-chat
+    #   6 次测量（并发 8–128），单卡功率 RMSE 5.4 W，token 间隔 RMSE 0.69 ms。
     gpus: 8
     gpu_model: H100
     slots: 128
@@ -36,7 +31,7 @@ node_profiles:
     power_exponent: 0.38
     decode_s_per_token: 0.03163
     decode_slowdown: 1.039
-    # 以下参数不在上述数据集中，为示意值，接入真实服务器后应实测标定：
+    # 以下参数不在测量数据中，为示意值：
     gpu_idle_w: 70                     # 单卡空载功率（无请求）
     host_idle_w: 800                   # 主机部分（CPU、内存、风扇等）
     host_max_w: 1600
@@ -44,27 +39,42 @@ node_profiles:
     cap_min_ratio: 0.5
     cap_perf_exponent: 0.4
     boot_s: 180                        # 开机并加载模型到可服务的时间
+  b200x4:
+    # 4×B200 服务器运行同一模型（Llama-3.1-405B-Instruct-FP8），标定方法同上（device=B200 device_count=4）：
+    #   5 次测量（并发 8–128），单卡功率 RMSE 8.9 W，token 间隔 RMSE 0.61 ms。
+    gpus: 4
+    gpu_model: B200
+    slots: 128
+    gpu_active_min_w: 836.2
+    gpu_max_w: 964.7
+    power_exponent: 0.73
+    decode_s_per_token: 0.02913
+    decode_slowdown: 0.987
+    # 示意值：
+    gpu_idle_w: 140
+    host_idle_w: 600
+    host_max_w: 1200
+    prefill_tokens_per_s: 8000
+    cap_min_ratio: 0.5
+    cap_perf_exponent: 0.4
+    boot_s: 180
+
+sites:
+  - {id: ciso, name: California (CISO), region: CISO, lat: 37.34, lon: -121.89, pue: 1.2, pools: [{id: h100, profile: h100x8, count: 3}]}
+  - {id: erco, name: Texas (ERCO),      region: ERCO, lat: 32.90, lon: -97.04,  pue: 1.2, pools: [{id: h100, profile: h100x8, count: 3}]}
+  - {id: pjm,  name: Virginia (PJM),    region: PJM,  lat: 39.04, lon: -77.49,  pue: 1.2, pools: [{id: h100, profile: h100x8, count: 4}]}
 
 network:
   emulate_wan: true
   default_source: east
 
 grid:
-  price:
-    dataset: fixed-price
-    params: {prices: {CISO: 0.6, ERCO: 0.6, PJM: 0.6}}
-    regions: {ciso: CISO, erco: ERCO, pjm: PJM}
-  carbon:
-    dataset: eia930-carbon-2024h1
-    params:
-      series: adjusted
-      factors_g_per_kwh: {coal: 820, natural_gas: 490, nuclear: 12, hydro: 24, solar: 45, wind: 11,
-                          petroleum: 650, other: 230, unknown: 700}
-    regions: {ciso: CISO, erco: ERCO, pjm: PJM}
+  price:  {dataset: "${CPC_DATA_DIR}/us-flat-price", signal: price}
+  carbon: {dataset: "${CPC_DATA_DIR}/eia930-carbon-2024h1", signal: carbon_intensity}
 
 workload:
-  dataset: azure-llm-2024-conv
-  start_s: 172800        # 2024-05-14 00:00 UTC，与电网数据的日期一致
+  dataset: "${CPC_DATA_DIR}/azure-llm-2024-conv"
+  start_s: 172800        # 2024-05-14 00:00 UTC（trace 起点为 2024-05-12 00:00 UTC），与电网数据的日期一致
   duration_s: 86400
   seed: 1
 
@@ -72,4 +82,4 @@ scheduler:
   routing:  {policy: nearest, params: {max_wait_s: 0.5}}
   capacity: {policy: reactive, params: {target_util: 0.6}}
   sim_control_interval_s: 300
-  carbon_price_yuan_per_kg: 0.1
+  carbon_price_per_kg: 0.05    # USD/kgCO2（示意值）

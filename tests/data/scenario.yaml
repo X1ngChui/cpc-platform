@@ -1,5 +1,7 @@
-# 单元测试与离线冒烟测试用场景：负载为合成数据集（不需要下载），电网信号为随包提供的数据集。
-# 节点参数为示意值（8 卡 A100 级服务器），只用于检验平台行为，不作为实验配置。
+# 单元测试与冒烟测试用场景。
+# 负载为合成数据集（tests/conftest.py 与 scripts/smoke_test.py 在首次使用时用 examples/datasets/synthetic_workload.py 生成）；
+# 电网信号为 examples/datasets/cn_grid/convert.py 转换得到的 2026 年 7 月数据（随测试提交）。
+# 服务器参数为示意值（8 卡 A100 级服务器），只用于检验平台行为。
 
 name: test-4dc
 
@@ -12,14 +14,8 @@ sources:
   - {id: south, name: 广州,  lat: 23.13, lon: 113.26, share: 0.35}
   - {id: north, name: 北京,  lat: 39.90, lon: 116.40, share: 0.25}
 
-sites:
-  - {id: sh, name: 长三角·上海,     province: shanghai,       lat: 31.15, lon: 121.12, pue: 1.25, nodes: 4}
-  - {id: gd, name: 粤港澳·韶关,     province: guangdong,      lat: 24.81, lon: 113.60, pue: 1.25, nodes: 4}
-  - {id: gz, name: 贵州·贵安,       province: guizhou,        lat: 26.40, lon: 106.40, pue: 1.20, nodes: 6}
-  - {id: nm, name: 内蒙古·和林格尔, province: inner_mongolia, lat: 40.38, lon: 111.82, pue: 1.20, nodes: 6}
-
 node_profiles:
-  default:
+  a100x8:
     gpus: 8
     gpu_model: A100-SXM4-80GB
     gpu_idle_w: 60
@@ -35,26 +31,48 @@ node_profiles:
     cap_perf_exponent: 0.4
     boot_s: 60
 
+sites:
+  - id: sh
+    name: 长三角·上海
+    region: shanghai
+    lat: 31.15
+    lon: 121.12
+    pue: 1.25
+    pools: [{id: main, profile: a100x8, count: 4}]
+  - id: gd
+    name: 粤港澳·韶关
+    region: guangdong
+    lat: 24.81
+    lon: 113.60
+    pue: 1.25
+    pools: [{id: main, profile: a100x8, count: 4}]
+  - id: gz
+    name: 贵州·贵安
+    region: guizhou
+    lat: 26.40
+    lon: 106.40
+    pue: 1.20
+    pools: [{id: main, profile: a100x8, count: 6}]
+  - id: nm
+    name: 内蒙古·和林格尔
+    region: inner_mongolia
+    lat: 40.38
+    lon: 111.82
+    pue: 1.20
+    pools: [{id: main, profile: a100x8, count: 6}]
+
 network:
   emulate_wan: true
   default_source: east
 
 grid:
-  price:  {dataset: cn-tou-tariffs}
-  carbon: {dataset: cn-provincial-carbon-2023}
+  price:  {dataset: datasets/cn-grid-2026-07, signal: price}
+  carbon: {dataset: datasets/cn-grid-2026-07, signal: carbon_intensity}
   dr_events:
     - {site: gd, start: "2026-07-15T15:00:00+08:00", end: "2026-07-15T17:00:00+08:00", cap_kw: 8}
 
 workload:
-  dataset: synthetic-poisson
-  params:
-    rps: 12
-    duration_s: 172800
-    diurnal_amplitude: 0.5
-    peak_hour: 20
-    input_tokens:  {mean: 800, sigma: 0.8, max: 8192}
-    output_tokens: {mean: 200, sigma: 0.7, max: 1024}
-    seed: 1
+  dataset: datasets/workload-synthetic
   seed: 1
 
 slo:
@@ -66,5 +84,5 @@ scheduler:
   capacity: {policy: reactive, params: {target_util: 0.6}}
   control_interval_s: 15
   sim_control_interval_s: 300
-  carbon_price_yuan_per_kg: 0.1
+  carbon_price_per_kg: 0.1
   queue_limit_per_slot: 4

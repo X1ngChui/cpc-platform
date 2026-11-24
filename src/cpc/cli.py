@@ -2,8 +2,9 @@
 
 服务类：grid / site / gateway / controller / up（本机单进程启动全部服务）/ exporter（通用功率导出器）
 工具类（能耗感知）：sensors（列出传感器类型、读取指定传感器）
-工具类：loadgen / sim / compare / report / signals / rtt / event
-数据集：data list / info / fetch / verify / summary / calibrate
+仿真：sim（单次运行）/ run（按实验描述运行多个变体）/ compare（多组策略对比）/ report（作图）
+工具类：loadgen / signals / rtt / event
+数据集：data kinds / validate / info / summary / fetch / calibrate（参数为数据集目录或描述文件路径）
 
 服务地址：除 up 外，需要访问其他服务的命令须用 -e / CPC_ENDPOINTS 给出地址文件，或用 --local 使用本机模式地址。
 配置或启动检查失败时打印原因并以状态码 2 退出。
@@ -13,9 +14,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import csv
 import json
 import logging
+import multiprocessing
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -23,7 +24,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .common import StartupError, setup_logging
-from .config import CST, ConfigError, Endpoints, Scenario, default_local_endpoints, load_endpoints, load_scenario, _host_port
+from .config import ConfigError, Endpoints, Scenario, default_local_endpoints, load_endpoints, load_scenario, _host_port
 from .datasets import DatasetError
 from .sensors.base import SensorError
 
@@ -230,30 +231,48 @@ def cmd_loadgen(args) -> None:
     print(json.dumps(s, ensure_ascii=False, indent=2))
 
 
-def _run_sim(scenario: str, routing: str, capacity: str, hours: float, overrides: dict, out: str | None,
-             routing_params: dict | None = None, capacity_params: dict | None = None) -> dict:
+def _run_variant(scenario: str, name: str, routing: dict | None, capacity: dict | None, workload: dict, hours: float,
+                 bin_s: float, out: str) -> dict:
+    """运行一个变体（可在子进程中执行）：加载场景、覆盖策略与负载参数、仿真并写出结果数据包。"""
+    from .config import PolicyConfig
+    from .results import write_run
     from .sched import make_capacity, make_routing
     from .sim.des import Simulator
 
     scn = load_scenario(scenario)
-    apply_workload_overrides(scn, argparse.Namespace(**overrides))
-    rp = routing_params if routing_params is not None else (scn.scheduler.routing.params if routing == scn.scheduler.routing.policy else {})
-    cp = capacity_params if capacity_params is not None else (scn.scheduler.capacity.params if capacity == scn.scheduler.capacity.policy else {})
+    for k, v in workload.items():
+        if v is not None:
+            if k not in type(scn.workload).model_fields:
+                raise ConfigError(f"变体 {name}：workload 没有字段 {k}")
+            setattr(scn.workload, k, v)
+    if routing is not None:
+        scn.scheduler.routing = PolicyConfig.model_validate(routing)
+    if capacity is not None:
+        scn.scheduler.capacity = PolicyConfig.model_validate(capacity)
+    r, c = scn.scheduler.routing, scn.scheduler.capacity
     t0 = time.time()
-    res = Simulator(scn, make_routing(routing, rp), make_capacity(capacity, cp), hours=hours).run()
+    res = Simulator(scn, make_routing(r.policy, r.params), make_capacity(c.policy, c.params), hours=hours, bin_s=bin_s).run()
     res.summary["wall_s"] = round(time.time() - t0, 2)
-    if out:
-        d = Path(out)
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "summary.json").write_text(json.dumps(res.summary, ensure_ascii=False, indent=2), encoding="utf-8")
-        with open(d / "timeseries.csv", "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=list(res.timeseries[0]))
-            w.writeheader()
-            w.writerows(res.timeseries)
-        with open(d / "decisions.jsonl", "w", encoding="utf-8") as f:
-            for r in res.decisions:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    return res.summary
+    write_run(out, res, scn, {"name": name, "mode": "simulation", "hours": hours, "bin_s": bin_s,
+                              "routing": r.model_dump(), "capacity": c.model_dump()})
+    return {"variant": name, **res.summary}
+
+
+def _run_variants(scenario: str, variants: list[dict], hours: float, bin_s: float, out: Path, jobs: int) -> list[dict]:
+    from .results import write_comparison
+
+    ctx = multiprocessing.get_context("spawn")  # 子进程不继承父进程的线程与状态
+    with ProcessPoolExecutor(max_workers=max(1, min(len(variants), jobs)), mp_context=ctx) as ex:
+        futs = [ex.submit(_run_variant, scenario, v["name"], v.get("routing"), v.get("capacity"), v.get("workload", {}),
+                          hours, bin_s, str(out / v["name"])) for v in variants]
+        rows = [f.result() for f in futs]
+    p = write_comparison(out, rows)
+    keys = ["variant", "served", "rejected", "slo_attainment", "ttft_p99_s", "facility_kwh", "cost", "carbon_kg"]
+    print(" | ".join(keys))
+    for r in rows:
+        print(" | ".join(f"{r[k]:.4g}" if isinstance(r[k], float) else str(r[k]) for k in keys))
+    print(f"结果已写入 {out}/，对比表 {p}")
+    return rows
 
 
 def _overrides(args) -> dict:
@@ -261,32 +280,38 @@ def _overrides(args) -> dict:
 
 
 def cmd_sim(args) -> None:
-    scn = _scn(args)
-    routing = args.routing or scn.scheduler.routing.policy
-    capacity = args.capacity or scn.scheduler.capacity.policy
-    out = args.out or f"results/sim-{routing}-{capacity}"
-    s = _run_sim(args.scenario, routing, capacity, args.hours, _overrides(args), out)
+    scn = load_scenario(args.scenario)
+    routing = {"policy": args.routing, "params": json.loads(args.routing_params or "{}")} if args.routing else None
+    capacity = {"policy": args.capacity, "params": json.loads(args.capacity_params or "{}")} if args.capacity else None
+    name = f"{args.routing or scn.scheduler.routing.policy}__{args.capacity or scn.scheduler.capacity.policy}"
+    out = args.out or f"results/sim-{name}"
+    s = _run_variant(args.scenario, name, routing, capacity, _overrides(args), args.hours, args.bin_s, out)
     print(json.dumps(s, ensure_ascii=False, indent=2))
     print(f"结果已写入 {out}/")
 
 
+def cmd_run(args) -> None:
+    """按实验描述运行全部变体。"""
+    from .results import load_experiment
+
+    exp = load_experiment(args.experiment)
+    out = Path(args.out or f"results/{exp.name}")
+    variants = [{"name": v.name, "routing": v.routing.model_dump() if v.routing else None,
+                 "capacity": v.capacity.model_dump() if v.capacity else None, "workload": v.workload} for v in exp.variants]
+    _run_variants(str(exp.scenario_path()), variants, exp.hours, exp.bin_s, out, args.jobs)
+
+
 def cmd_compare(args) -> None:
-    """并行运行多组 路由:容量 策略组合，输出对比表。"""
-    combos = [c.split(":") for c in args.runs.split(",")]
-    out = Path(args.out)
-    with ProcessPoolExecutor(max_workers=min(len(combos), args.jobs)) as ex:
-        futs = [ex.submit(_run_sim, args.scenario, r, c, args.hours, _overrides(args), str(out / f"{r}__{c}")) for r, c in combos]
-        rows = [f.result() for f in futs]
-    keys = ["routing", "capacity", "served", "rejected", "slo_attainment", "ttft_p99_s", "facility_kwh", "cost_yuan", "carbon_kg", "wh_per_request"]
-    out.mkdir(parents=True, exist_ok=True)
-    with open(out / "comparison.csv", "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=keys, extrasaction="ignore")
-        w.writeheader()
-        w.writerows(rows)
-    print(" | ".join(keys))
-    for r in rows:
-        print(" | ".join(f"{r[k]:.4g}" if isinstance(r[k], float) else str(r[k]) for k in keys))
-    print(f"对比表已写入 {out / 'comparison.csv'}")
+    """并行仿真多组"路由:容量"策略组合（策略参数取场景中的配置，策略名不同时为空）。"""
+    scn = load_scenario(args.scenario)
+    variants = []
+    for combo in args.runs.split(","):
+        r, c = combo.split(":")
+        rp = scn.scheduler.routing.params if r == scn.scheduler.routing.policy else {}
+        cp = scn.scheduler.capacity.params if c == scn.scheduler.capacity.policy else {}
+        variants.append({"name": f"{r}__{c}", "routing": {"policy": r, "params": rp}, "capacity": {"policy": c, "params": cp},
+                         "workload": _overrides(args)})
+    _run_variants(args.scenario, variants, args.hours, args.bin_s, Path(args.out), args.jobs)
 
 
 def cmd_report(args) -> None:
@@ -308,16 +333,18 @@ def cmd_signals(args) -> None:
 
     scn = _scn(args)
     g = GridModel(scn)
-    day = datetime.fromisoformat(args.date).replace(tzinfo=CST) if args.date else scn.clock.start
+    tz = scn.clock.start.tzinfo
+    day = datetime.fromisoformat(args.date).replace(tzinfo=tz) if args.date else scn.clock.start
     sites = [s.id for s in scn.sites]
-    print("hour | " + " | ".join(f"{s}:price/period/carbon" for s in sites))
+    print(f"信号时间时区：{tz}；电价单位 {g.currency}/kWh；碳强度单位 kgCO2/kWh")
+    print("hour | " + " | ".join(f"{s}:price/label/carbon" for s in sites))
     for h in range(24):
         t = day.replace(hour=0, minute=30) + timedelta(hours=h)
         cells = []
         for sid in sites:
             try:
                 x = g.signal(sid, t)
-                cells.append(f"{x.price_yuan_per_kwh:.3f}/{x.period}/{x.carbon_kg_per_kwh:.3f}")
+                cells.append(f"{x.price:.3f}/{x.price_label or '-'}/{x.carbon_intensity:.3f}")
             except SignalUnavailable:
                 cells.append("缺失")
         print(f"{h:02d} | " + " | ".join(cells))
@@ -346,60 +373,81 @@ def cmd_event(args) -> None:
 
 
 def cmd_data(args) -> None:
-    """数据集管理。下载显式执行；需要认证的数据集从环境变量 HF_TOKEN 读取令牌。"""
-    from .datasets import DatasetError, all_datasets, data_dir, make_dataset
-    from .datasets.base import file_view
+    """数据集：按规范校验、查看描述、统计、下载远程资源、标定服务器参数。参数为数据集目录或描述文件路径。"""
+    from .datasets import KINDS, load_descriptor
+    from .datasets.table import validate
 
-    reg = all_datasets()
-    get = file_view
-
-    if args.data_cmd == "list":
-        print(f"缓存目录 {data_dir()}")
-        for name, cls in sorted(reg.items()):
-            m = cls.manifest
-            st = get(name).status()
-            state = "合成" if m.synthetic else ("就绪" if all(v == "ok" for v in st.values()) else "未下载" if all(v == "missing" for v in st.values()) else "不完整")
-            size = sum(f.size for f in m.files) / 1e6
-            print(f"  {name:<30s} {m.kind:<13s} {m.version:<18s} {state:<6s} {size:9.1f} MB  {m.license}")
+    if args.data_cmd == "kinds":
+        for kind, spec in KINDS.items():
+            print(f"{kind}（资源 {spec.resource}）：{spec.description}")
+            for tag, fields in (("核心", spec.core), ("约定扩展", spec.conventional)):
+                for name, fs in fields.items():
+                    unit = f" [{fs.unit}]" if fs.unit else ""
+                    print(f"  {tag:<4s} {name:<26s} {'/'.join(fs.types):<16s}{unit}  {fs.description}")
         return
     if args.data_cmd == "calibrate":
-        from .datasets.power import PowerProfileDataset, calibrate
+        from .datasets.power import calibrate, load_points
 
-        ds = make_dataset(args.name)
-        if not isinstance(ds, PowerProfileDataset):
-            raise ConfigError(f"{args.name} 不是功率特性数据集")
-        cal = calibrate(ds.points(model=args.model, gpu=args.gpu, task=args.task, num_gpus=args.num_gpus), args.slots)
-        print(json.dumps({**cal.to_dict(), "dataset": ds.ref}, ensure_ascii=False, indent=2))
+        d = load_descriptor(args.path)
+        where = dict(kv.split("=", 1) for kv in args.where)
+        pts = load_points(d, {k: (int(v) if k == "device_count" else v) for k, v in where.items()})
+        cal = calibrate(pts, args.slots, curves=args.curves)
+        print(json.dumps({**cal.to_dict(), "dataset": d.ref, "where": where}, ensure_ascii=False, indent=2))
         return
-    for name in args.names:
-        ds = get(name)
-        if args.data_cmd == "info":
-            print(json.dumps({**ds.manifest.to_dict(), "dir": str(ds.dir), "status": ds.status()}, ensure_ascii=False, indent=2))
-        elif args.data_cmd == "fetch":
-            def progress(fn: str, done: int, total: int) -> None:
-                print(f"\r  {fn} {done / 1e6:8.1f} / {total / 1e6:.1f} MB", end="", file=sys.stderr, flush=True)
-
-            for p in ds.fetch(force=args.force, progress=progress):
-                print(f"\n  {p}", file=sys.stderr)
-            ds.verify()
-            print(f"{ds.ref} 就绪")
-        elif args.data_cmd == "verify":
-            ds.verify()
-            print(f"{ds.ref} 校验通过")
+    for path in args.paths:
+        d = load_descriptor(path)
+        if args.data_cmd == "validate":
+            rows = validate(d)
+            print(f"{d.ref}（{d.kind}）符合规范：" + "，".join(f"{k} {v} 行" for k, v in rows.items()))
+        elif args.data_cmd == "info":
+            print(json.dumps(d.summary(), ensure_ascii=False, indent=2))
         elif args.data_cmd == "summary":
-            from .datasets.workload import WorkloadDataset
+            print(json.dumps(_data_summary(d), ensure_ascii=False, indent=2))
+        elif args.data_cmd == "fetch":
+            from .datasets.fetch import fetch
 
-            full = make_dataset(name, **(json.loads(args.params) if args.params else {}))
-            if not isinstance(full, WorkloadDataset):
-                raise DatasetError(f"{name} 不是负载数据集")
-            print(json.dumps(full.load_trace().summary(), ensure_ascii=False))
+            def progress(name: str, done: int, total: int | None) -> None:
+                tot = "?" if total is None else f"{total / 1e6:.1f}"
+                print(f"\r  {name} {done / 1e6:8.1f} / {tot} MB", end="", file=sys.stderr, flush=True)
+
+            for p in fetch(d, force=args.force, progress=progress):
+                print(f"\n  {p}", file=sys.stderr)
+            print(f"{d.ref} 的远程资源已就绪")
+
+
+def _data_summary(d) -> dict:
+    if d.kind == "workload":
+        from .datasets.workload import load_trace
+
+        return load_trace(d).summary()
+    if d.kind == "grid_signal":
+        from .datasets.grid import SignalSet
+
+        ss = SignalSet(d)
+        out = {"ref": d.ref, "signals": {}}
+        for sig in ss.signals():
+            regs = ss.regions(sig)
+            spans = [ss.coverage(sig, r) for r in regs]
+            out["signals"][sig] = {"unit": ss.unit(sig), "regions": regs, "from": min(a for a, _ in spans).isoformat(),
+                                   "to": max(b for _, b in spans).isoformat()}
+        return out
+    if d.kind == "power_profile":
+        from .datasets.power import load_points
+
+        pts = load_points(d)
+        groups: dict[str, int] = {}
+        for p in pts:
+            k = f"{p.device} x{p.device_count} {p.model}"
+            groups[k] = groups.get(k, 0) + 1
+        return {"ref": d.ref, "measurements": len(pts), "groups": groups}
+    return d.summary()
 
 
 # ------------------------------------------------------------------ 解析
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="cpc", description="算电协同跨数据中心 AI 任务调度虚拟化平台")
+    p = argparse.ArgumentParser(prog="cpc", description="算电协同跨数据中心 AI 计算任务调度平台")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def workload_args(sp):
@@ -486,18 +534,28 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--out", default=None)
     sp.set_defaults(fn=cmd_loadgen)
 
-    sp = common(sub.add_parser("sim", help="离散事件仿真"), endpoints=False)
-    sp.add_argument("--routing", default=None)
-    sp.add_argument("--capacity", default=None)
+    sp = common(sub.add_parser("sim", help="离散事件仿真（单次运行，结果写为数据包）"), endpoints=False)
+    sp.add_argument("--routing", default=None, help="覆盖场景的路由策略")
+    sp.add_argument("--routing-params", default=None, help="路由策略参数（JSON）")
+    sp.add_argument("--capacity", default=None, help="覆盖场景的容量策略")
+    sp.add_argument("--capacity-params", default=None, help="容量策略参数（JSON）")
     sp.add_argument("--hours", type=float, default=24)
+    sp.add_argument("--bin-s", type=float, default=300.0, help="时间序列的时间片长度（秒）")
     workload_args(sp)
     sp.add_argument("--out", default=None)
     sp.set_defaults(fn=cmd_sim)
 
-    sp = common(sub.add_parser("compare", help="并行仿真多组策略并对比"), endpoints=False)
+    sp = sub.add_parser("run", help="按实验描述运行多个变体并对比")
+    sp.add_argument("experiment", help="实验描述文件（YAML）")
+    sp.add_argument("--jobs", type=int, default=4, help="并行进程数")
+    sp.add_argument("--out", default=None, help="结果目录（缺省为 results/<实验名>）")
+    sp.set_defaults(fn=cmd_run)
+
+    sp = common(sub.add_parser("compare", help="并行仿真多组 路由:容量 策略组合并对比"), endpoints=False)
     sp.add_argument("--runs", default="nearest:static,least_loaded:reactive,cost_aware:reactive,weighted:grid_aware",
                     help="逗号分隔的 路由:容量 组合")
     sp.add_argument("--hours", type=float, default=24)
+    sp.add_argument("--bin-s", type=float, default=300.0)
     workload_args(sp)
     sp.add_argument("--jobs", type=int, default=4)
     sp.add_argument("--out", default="results/compare")
@@ -513,25 +571,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     common(sub.add_parser("rtt", help="打印来源—站点 RTT 矩阵"), endpoints=False).set_defaults(fn=cmd_rtt)
 
-    dp = sub.add_parser("data", help="数据集：列出、查看、下载、校验、统计、标定")
+    dp = sub.add_parser("data", help="数据集：规范、校验、查看、统计、下载、标定")
     dsub = dp.add_subparsers(dest="data_cmd", required=True)
-    dsub.add_parser("list", help="列出已注册的数据集及本地状态").set_defaults(fn=cmd_data)
-    for name, h in (("info", "清单：出处、许可、引用、文件与校验和"), ("fetch", "下载并校验"), ("verify", "校验本地文件"),
-                    ("summary", "负载数据集的统计（请求数、时长、平均到达率、token 均值）")):
+    dsub.add_parser("kinds", help="打印各类数据集的核心字段与约定扩展字段").set_defaults(fn=cmd_data)
+    for name, h in (("validate", "按规范完整校验（描述文件与全部数据）"), ("info", "打印描述文件摘要（出处、许可、资源、字段）"),
+                    ("summary", "数据统计（负载：请求数、时长、到达率；电网信号：信号、区域、覆盖范围；功率特性：测量组）"),
+                    ("fetch", "下载描述文件中以 URL 给出的资源")):
         x = dsub.add_parser(name, help=h)
-        x.add_argument("names", nargs="+")
+        x.add_argument("paths", nargs="+", help="数据集目录或描述文件")
         if name == "fetch":
             x.add_argument("--force", action="store_true", help="重新下载已存在的文件")
-        if name == "summary":
-            x.add_argument("--params", default=None, help="数据集参数（JSON），如 BurstGPT 的 include_failed")
         x.set_defaults(fn=cmd_data)
-    x = dsub.add_parser("calibrate", help="由功率特性数据集标定节点参数")
-    x.add_argument("name")
-    x.add_argument("--model", required=True)
-    x.add_argument("--gpu", required=True)
-    x.add_argument("--task", required=True)
-    x.add_argument("--num-gpus", type=int, required=True)
-    x.add_argument("--slots", type=int, required=True, help="节点并发槽数（对应 max_num_seqs）")
+    x = dsub.add_parser("calibrate", help="由功率特性数据集标定服务器模型参数")
+    x.add_argument("path", help="power_profile 数据集目录或描述文件")
+    x.add_argument("--where", nargs="+", required=True, metavar="字段=值",
+                   help="选择同一组测量，如 device=H100 device_count=8 model=meta-llama/Llama-3.1-405B-Instruct-FP8")
+    x.add_argument("--slots", type=int, required=True, help="服务器并发槽数（对应推理引擎的最大批大小）")
+    x.add_argument("--curves", action="store_true", help="另给出查表式参数 gpu_power_curve、tpot_curve")
     x.set_defaults(fn=cmd_data)
 
     sp = common(sub.add_parser("event", help="向电网信号服务注入需求响应事件"))
@@ -545,9 +601,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     setup_logging()
-    from .sched import load_plugins
-
-    load_plugins()
     args = build_parser().parse_args(argv)
     try:
         args.fn(args)

@@ -1,4 +1,4 @@
-# 全仿真一键部署：电网信号服务 + 4 个虚拟数据中心站点 + 网关 + 容量控制器 + Prometheus + Grafana。
+# 全仿真服务器部署：电网信号服务 + 4 个数据中心站点 + 网关 + 容量控制器 + Prometheus + Grafana。
 #
 #   docker compose -f deploy/compose/docker-compose.yml up -d --build
 #   docker compose -f deploy/compose/docker-compose.yml run --rm loadgen      # 压测 10 分钟
@@ -9,8 +9,8 @@
 #   CPC_ROUTING   路由策略，默认取场景文件
 #   CPC_CAPACITY  容量策略，默认取场景文件
 #   CPC_LOAD_SECONDS / CPC_RATE_SCALE  负载生成器的时长与到达率缩放
-#   CPC_DATA_DIR  宿主机的数据集缓存目录（默认 ~/.cache/cpc/datasets），负载生成器以只读方式挂载；
-#                 须先在宿主机执行 cpc data fetch azure-llm-2024-conv
+#   CPC_DATA_DIR  宿主机的数据集目录（默认 ~/.cache/cpc/datasets），电网信号服务与负载生成器以只读方式挂载；
+#                 须先在宿主机准备场景所需的数据集（见 examples/datasets/README.md）
 
 name: cpc
 
@@ -29,6 +29,7 @@ services:
     <<: *cpc
     command: ["grid", "-s", "/app/configs/scenario.yaml", "--host", "0.0.0.0", "--speedup", "${CPC_SPEEDUP:-60}"]
     ports: ["9000:9000"]
+    volumes: ["${CPC_DATA_DIR:-~/.cache/cpc/datasets}:/var/lib/cpc/datasets:ro"]
 
   site-sh:
     <<: *cpc

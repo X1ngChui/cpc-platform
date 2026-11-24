@@ -1,11 +1,10 @@
-# 本机"真实后端"联调场景：验证站点代理的 openai 后端 + NVML 实测功率链路。
+# 本机联调场景：站点 lab 只有真实服务器（任意 OpenAI 兼容推理实例），功率由 NVML 实测；站点 emu 为仿真服务器。
 #
-# 站点 lab 使用 openai 后端，其上游是任意 OpenAI 兼容推理服务（vLLM、SGLang、llama.cpp server……）。
-# 功率来源：NVML 读取本机 GPU 0；主机部分不计入（power.host: excluded，节点 IT 功率只含 GPU）。
-# 没有真实模型时，可以用平台自带的仿真站点充当"假 vLLM"：
-#   cpc site -s configs/scenario.yaml --local --site gz --port 8000 --host 127.0.0.1   # 在 8000 端口提供 OpenAI 兼容接口
-#   cpc up -s configs/scenario.local-gpu.yaml                                         # 启动 lab 与 emu 两个站点
-# 有真实 vLLM 时：把 upstreams[0].url 指向 vLLM，并把请求中的 model 设为 vLLM 的 served-model-name（loadgen --model）。
+# lab 的推理实例：有真实模型时为 vLLM 等推理服务；没有时可用平台的仿真站点充当 OpenAI 兼容接口：
+#   cpc site -s configs/scenario.yaml --local --site gz --port 8000 --host 127.0.0.1
+#   cpc up -s configs/scenario.local-gpu.yaml
+# 使用真实 vLLM 时，把 upstreams[0].url 指向 vLLM，并把请求中的 model 设为其 served-model-name（loadgen --model）。
+# 数据准备：azure_llm.py --variant 2023-conv、cn_grid/convert.py（见 examples/datasets/README.md）。
 
 name: local-gpu
 
@@ -19,47 +18,43 @@ sources:
 network:
   default_source: east
 
-sites:
-  - id: lab
-    name: 本机 GPU（真实后端）
-    province: guizhou
-    lat: 26.40
-    lon: 106.40
-    pue: 1.2
-    backend: openai
-    profile: local
-    upstreams:
-      - {id: lab-0, url: "http://127.0.0.1:8000", gpu_indices: [0], container: cpc-vllm-local, max_inflight: 32}
-    power:
-      sensors: [{type: nvml, gpus: [0]}]
-      host: excluded
-  - id: emu
-    name: 仿真站点
-    province: guangdong
-    lat: 24.81
-    lon: 113.60
-    pue: 1.25
-    nodes: 2
-    profile: default
-
 node_profiles:
-  local:
+  local:                       # 本机推理实例：占用 1 块 GPU；功率来自实测，以下参数只用于全局策略的容量与功率估计
     gpus: 1
     gpu_model: local
     host_idle_w: 60
     host_max_w: 120
-  default: {}
+  emulated: {}                 # 仿真服务器（缺省参数，示意值）
+
+sites:
+  - id: lab
+    name: 本机 GPU（真实服务器）
+    region: guizhou
+    lat: 26.40
+    lon: 106.40
+    pue: 1.2
+    pools:
+      - id: gpu
+        profile: local
+        backend: openai
+        upstreams:
+          - {id: lab-0, url: "http://127.0.0.1:8000", gpu_indices: [0], container: cpc-vllm-local, max_inflight: 32}
+    measurement:
+      sensors: [{type: nvml, gpus: [0]}]
+      host: excluded           # 服务器 IT 功率只含 GPU
+  - id: emu
+    name: 仿真站点
+    region: guangdong
+    lat: 24.81
+    lon: 113.60
+    pue: 1.25
+    pools: [{id: main, profile: emulated, count: 2}]
 
 grid:
-  price:  {dataset: cn-tou-tariffs}
-  carbon: {dataset: cn-provincial-carbon-2023}
+  price:  {dataset: "${CPC_DATA_DIR}/cn-grid-2026", signal: price}
+  carbon: {dataset: "${CPC_DATA_DIR}/cn-grid-2026", signal: carbon_intensity}
 
-workload:                      # Azure LLM Inference Trace 2023（对话，1 小时，平均约 5.5 请求/秒）稀疏化到约 2 请求/秒
-  dataset: azure-llm-2023-conv
+workload:                      # Azure LLM Inference Trace 2023（对话，1 小时，平均约 5.4 请求/秒）稀疏化到约 2 请求/秒
+  dataset: "${CPC_DATA_DIR}/azure-llm-2023-conv"
   rate_scale: 0.4
   seed: 1
-
-scheduler:
-  routing: {policy: least_loaded}
-  capacity: {policy: static}
-  control_interval_s: 10

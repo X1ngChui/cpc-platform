@@ -16,7 +16,7 @@ ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install ".[nvml,docker,data]"
+RUN pip install ".[nvml,docker]"
 COPY configs ./configs
 COPY deploy ./deploy
 # 公开数据集不打包进镜像：需要时把宿主机的数据集缓存目录挂载到 $CPC_DATA_DIR

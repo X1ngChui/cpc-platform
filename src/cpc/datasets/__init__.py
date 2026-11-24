@@ -1,8 +1,9 @@
-"""数据集：清单、获取、校验、加载与变换（负载、电网信号、功率特性）。见 cpc.datasets.base。"""
+"""数据集：描述文件（Data Package v2 + cpc 类别规范）、校验与列式加载。
 
-from .base import (
-    DATASETS, BundledFile, Dataset, DatasetError, Manifest, RemoteFile, all_datasets, data_dir, make_dataset, register_dataset,
-)
+平台只接受符合类别规范的数据集（见 profiles.py）；原始数据到平台格式的转换由用户完成，范例见 examples/datasets/。
+"""
 
-__all__ = ["DATASETS", "BundledFile", "Dataset", "DatasetError", "Manifest", "RemoteFile", "all_datasets", "data_dir",
-           "make_dataset", "register_dataset"]
+from .descriptor import DatasetError, Descriptor, Field, Resource, data_dir, expand, load_descriptor
+from .profiles import KINDS, PROFILE_VERSION
+
+__all__ = ["KINDS", "PROFILE_VERSION", "DatasetError", "Descriptor", "Field", "Resource", "data_dir", "expand", "load_descriptor"]

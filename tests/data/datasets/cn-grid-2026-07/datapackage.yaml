@@ -1,0 +1,58 @@
+$schema: https://datapackage.org/profiles/2.0/datapackage.json
+name: cn-grid-2026-07
+version: 2026-07-01_2026-08-01
+title: 中国省级分时电价（规则展开）与 2023 年省级电力平均二氧化碳排放因子
+licenses:
+- name: 政府公开信息
+sources:
+- title: 各省发展改革委分时电价文件（见 tou_tariffs.yaml 的 source）
+- title: 生态环境部 国家统计局 公告2025年第47号
+  path: https://www.mee.gov.cn/xxgk2018/xxgk/xxgk01/202512/t20251231_1139517.html
+cpc:
+  kind: grid_signal
+  profile: 1
+  signals:
+    price:
+      unit: CNY/kWh
+      note: 平段电价为示意值，浮动比例作用于整个平段电价
+    carbon_intensity:
+      unit: kgCO2/kWh
+      basis: 电力平均二氧化碳排放因子（2023 年年均）
+  citation: 生态环境部, 国家统计局. 关于发布2023年电力二氧化碳排放因子的公告（公告2025年第47号）. 2025.
+  conversion:
+    script: examples/datasets/cn_grid/convert.py
+    start: '2026-07-01T00:00:00+08:00'
+    end: '2026-08-01T00:00:00+08:00'
+    assumption: 以 2023 年省级年均排放因子作为转换时间范围内的恒定碳强度
+resources:
+- name: signals
+  type: table
+  path: signals.csv
+  format: csv
+  bytes: 92464
+  hash: sha256:0abf3848f5fabbd4f8c19eebfc6adc60b172825f2c5c210e28237bef3965b84d
+  schema:
+    fields:
+    - name: region
+      type: string
+      constraints:
+        required: true
+    - name: start
+      type: datetime
+      constraints:
+        required: true
+    - name: end
+      type: datetime
+      constraints:
+        required: true
+    - name: signal
+      type: string
+      constraints:
+        required: true
+    - name: value
+      type: number
+      constraints:
+        required: true
+    - name: label
+      type: string
+      description: 分时电价时段名

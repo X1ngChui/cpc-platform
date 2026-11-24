@@ -2,6 +2,7 @@
 
 用户（或负载生成器）把 OpenAI 兼容请求发到网关，网关根据路由策略选择站点并转发。
 请求头 x-cpc-source 指明请求来源区域；未携带时归属场景的 network.default_source，未配置该项则返回 400。
+请求头 x-cpc-attr-<字段名>（JSON 值）携带请求扩展属性，传给路由策略（RequestInfo.attrs），并随请求转发给站点代理。
 
 跨数据中心的广域网时延通过"时延注入"模拟：转发前等待 RTT/2，返回（或首个流式片段）前再等待 RTT/2。
 在真实多地部署时应关闭注入（network.emulate_wan=false），由真实网络产生时延。
@@ -39,7 +40,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 from pydantic import BaseModel, Field, ValidationError
 
-from ..common import JsonlWriter, metrics_response, require_admin, sync_clock
+from ..common import JsonlWriter, attr_headers, metrics_response, request_attrs, require_admin, sync_clock
 from ..config import Endpoints, Scenario
 from ..grid.signals import GridSignal
 from ..health import HealthBoard, describe
@@ -229,7 +230,9 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
             raise HTTPException(400, f"未知的来源区域 {src}，可选：{sorted(st.src_rate)}")
         st._src_count[src] += 1
         n_in, n_out = approx_prompt_tokens(body), requested_output_tokens(body)
-        req = RequestInfo(source=src, input_tokens=n_in, output_tokens=n_out, id=uuid.uuid4().hex[:12])
+        attrs = request_attrs(request.headers)
+        req = RequestInfo(source=src, input_tokens=n_in, output_tokens=n_out, id=uuid.uuid4().hex[:12], attrs=attrs)
+        fwd = {"x-cpc-source": src, "x-request-id": req.id, **attr_headers(attrs)}
         t0 = time.monotonic()
         tried: list[str] = []
         attempts: list[dict] = []
@@ -252,16 +255,16 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
             rtt_s = st.rtt[src][sid] / 1000.0 if emulate else 0.0
             sig = view.sites[sid].signal
             rec = {**base, "t_signal": view.now.isoformat(), "site": sid, "route_reason": decision.reason,
-                   "rtt_ms": st.rtt[src][sid], "price": sig.price_yuan_per_kwh if sig else None,
-                   "carbon": sig.carbon_kg_per_kwh if sig else None}
+                   "rtt_ms": st.rtt[src][sid], "price": sig.price if sig else None,
+                   "carbon_intensity": sig.carbon_intensity if sig else None}
             if rtt_s:
                 await asyncio.sleep(rtt_s / 2)
             url = ep.sites[sid] + path
             try:
                 if not stream:
-                    r = await client.post(url, json=body)
+                    r = await client.post(url, json=body, headers=fwd)
                 else:
-                    r = await client.send(client.build_request("POST", url, json=body), stream=True)
+                    r = await client.send(client.build_request("POST", url, json=body, headers=fwd), stream=True)
             except CONNECT_ERRORS as e:
                 m_att.labels(sid, "connect_error").inc()
                 board.fail(f"site:{sid}", e)

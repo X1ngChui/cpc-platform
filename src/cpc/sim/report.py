@@ -16,7 +16,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-from ..config import CST, Scenario  # noqa: E402
+from ..config import Scenario  # noqa: E402
 
 PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
 INK, INK2, MUTED, GRID, AXIS, SURFACE = "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7", "#fcfcfb"
@@ -65,11 +65,13 @@ def plot_run(run_dir: str | Path, scn: Scenario) -> Path:
     colors = _site_colors(scn)
     names = {s.id: s.id for s in scn.sites}
     fig, axes = plt.subplots(3, 1, figsize=(8.2, 7.4), sharex=True, gridspec_kw={"hspace": 0.32})
-    specs = [("it_kw", "各站点 IT 功率（kW）", False), ("nodes", "各站点在线节点数（含启动中）", True), ("price", "分时电价（元/kWh）", True)]
+    cur = summary.get("currency", "")
+    specs = [("it_kw", "各站点 IT 功率（kW）", False), ("nodes", "各站点非关机服务器数（时间平均）", True),
+             ("price", f"电价（{cur}/kWh）", True)]
     for ax, (key, title, step) in zip(axes, specs):
         series = {}
         for sid in colors:
-            ys = [float(r[f"{sid}_{key}"]) for r in rows]
+            ys = [float(r[f"{sid}_{key}"]) if r[f"{sid}_{key}"] not in ("", "None") else float("nan") for r in rows]
             series[sid] = ys
             if step:
                 ax.step(t, ys, where="post", color=colors[sid], label=sid)
@@ -94,8 +96,9 @@ def plot_comparison(cmp_dir: str | Path) -> Path:
     cmp_dir = Path(cmp_dir)
     with open(cmp_dir / "comparison.csv", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
-    labels = [f"{r['routing']} + {r['capacity']}" for r in rows]
-    metrics = [("cost_yuan", "电费（元）", "{:.0f}"), ("facility_kwh", "设施用电量（kWh）", "{:.0f}"),
+    labels = [r["variant"] for r in rows]
+    cur = rows[0].get("currency", "") if rows else ""
+    metrics = [("cost", f"电费（{cur}）", "{:.0f}"), ("facility_kwh", "设施用电量（kWh）", "{:.0f}"),
                ("carbon_kg", "碳排放（kgCO2）", "{:.0f}"), ("slo_attainment", "SLO 达成率", "{:.2%}")]
     fig, axes = plt.subplots(1, 4, figsize=(11, 0.55 * len(rows) + 1.4), sharey=True, gridspec_kw={"wspace": 0.12})
     y = list(range(len(rows)))[::-1]
@@ -120,52 +123,28 @@ def plot_comparison(cmp_dir: str | Path) -> Path:
     return out
 
 
-def plot_power_trace(csv_path: str | Path, out: str | Path, phases: list[tuple[float, float, str]] | None = None,
-                     title: str = "真实 GPU 站点的实测功率（NVML）") -> Path:
-    """单条功率轨迹（站点实测 GPU 功率），用浅色色带标出各阶段。"""
-    setup_style()
-    with open(csv_path, encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
-    t = [float(r["t"]) for r in rows]
-    p = [float(r["gpu_w"]) for r in rows]
-    fig, ax = plt.subplots(figsize=(8.2, 3.0))
-    for a, b, name in phases or []:
-        ax.axvspan(a, b, color=GRID, alpha=0.55, lw=0)
-        for x in (a, b):
-            ax.axvline(x, color=AXIS, lw=0.8, ls=(0, (3, 3)))
-        ax.text((a + b) / 2, max(p) * 1.08, name, ha="center", va="bottom", fontsize=8, color=INK2)
-    ax.plot(t, p, color=PALETTE[0])
-    ax.set_ylim(0, max(p) * 1.25)
-    ax.set_xlim(0, max(t))
-    ax.set_xlabel("时间（s）")
-    ax.set_ylabel("GPU 功率（W）")
-    ax.set_title(title)
-    out = Path(out)
-    fig.savefig(out, bbox_inches="tight")
-    plt.close(fig)
-    return out
-
-
 def plot_signals(scn: Scenario, day: datetime | None, out: str | Path) -> Path:
     from ..grid.signals import GridModel, SignalUnavailable
 
     setup_style()
     g = GridModel(scn)
-    day = (day or scn.clock.start).astimezone(CST).replace(hour=0, minute=0, second=0, microsecond=0)
+    tz = scn.clock.start.tzinfo
+    day = (day or scn.clock.start).astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
     ts = [day + timedelta(minutes=10 * i) for i in range(24 * 6 + 1)]
     hours = [i / 6 for i in range(len(ts))]
     colors = _site_colors(scn)
     names = {s.id: f"{s.id}（{s.name}）" for s in scn.sites}
     fig, axes = plt.subplots(2, 1, figsize=(8.2, 5.6), sharex=True, gridspec_kw={"hspace": 0.3})
     src = g.sources()
-    for key, ax, title in (("price", axes[0], f"电价（元/kWh；{src['price']}）"), ("carbon", axes[1], f"碳强度（kgCO2/kWh；{src['carbon']}）")):
+    for key, ax, title in (("price", axes[0], f"电价（{g.currency}/kWh；{src['price']}）"),
+                           ("carbon", axes[1], f"碳强度（kgCO2/kWh；{src['carbon']}）")):
         series = {}
         for sid in colors:
             ys = []
             for t in ts:
                 try:
                     x = g.signal(sid, t)
-                    ys.append(x.price_yuan_per_kwh if key == "price" else x.carbon_kg_per_kwh)
+                    ys.append(x.price if key == "price" else x.carbon_intensity)
                 except SignalUnavailable:
                     ys.append(float("nan"))  # 数据缺失的时刻不绘制
             series[sid] = ys

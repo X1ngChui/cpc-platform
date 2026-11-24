@@ -1,14 +1,17 @@
-"""节点容量管理策略（插件）。
+"""跨站点容量策略（全局调度，插件）。
 
-控制器每个控制周期调用 policy.decide(view)，得到各站点的目标在线节点数、功率封顶比例，
+控制器每个控制周期调用 policy.decide(view)，得到各站点的数据中心指令（目标在线服务器数、功率封顶比例），
 以及可选的路由权重（下发给网关，配合 weighted 路由策略使用）。
 
 输入完整性：策略在类属性 requires 中声明所需的输入（signals：各站点的电网信号；demand：网关的需求统计）。
 控制器只在所需输入齐全时调用 decide()，否则跳过本周期并记录原因；状态不可达的站点不出现在 view.sites 中，
 其原因见 view.excluded。因此策略可以直接按站点索引 view.signals，无需处理缺失。
 
-新增策略：继承 CapacityPolicy，实现 decide()，声明 requires，并用 @register_capacity("名字") 注册。
-这里给出的是简单的参考实现，用来演示接口与数据通路。
+目标在线服务器数由站点的电源管理策略落实到具体服务器（见 sched.local）。站点的服务器池可以异构，
+快照中的 slots_per_node、node_idle_w、node_peak_w 为平均值，本模块的参考实现按平均值计算。
+
+新增策略：继承 CapacityPolicy，实现 decide()，声明 requires；以 entry point（组 cpc.capacity）提供。
+内置策略是用于演示接口与数据通路的参考实现。
 """
 
 from __future__ import annotations
@@ -16,10 +19,11 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable, ClassVar, Literal
+from typing import ClassVar, Literal
 
 from ..config import SLOConfig
 from ..grid.signals import GridSignal
+from ..registry import Registry
 from ..schemas import CapacityTarget, DemandSnapshot, SiteSnapshot
 
 INPUTS = frozenset({"signals", "demand"})
@@ -58,25 +62,16 @@ class CapacityPolicy:
         raise NotImplementedError
 
 
-CAPACITY_POLICIES: dict[str, type[CapacityPolicy]] = {}
-
-
-def register_capacity(name: str) -> Callable[[type[CapacityPolicy]], type[CapacityPolicy]]:
-    def deco(cls: type[CapacityPolicy]) -> type[CapacityPolicy]:
-        unknown = set(cls.requires) - INPUTS
-        if unknown:
-            raise ValueError(f"容量策略 {name} 声明了未知输入 {sorted(unknown)}，可选 {sorted(INPUTS)}")
-        cls.name = name
-        CAPACITY_POLICIES[name] = cls
-        return cls
-
-    return deco
+CAPACITY: Registry[CapacityPolicy] = Registry("capacity")
+register_capacity = CAPACITY.register
 
 
 def make_capacity(name: str, params: dict | None = None) -> CapacityPolicy:
-    if name not in CAPACITY_POLICIES:
-        raise KeyError(f"未知容量策略 {name}，可选：{sorted(CAPACITY_POLICIES)}")
-    return CAPACITY_POLICIES[name](**(params or {}))
+    cls = CAPACITY.get(name)
+    unknown = set(cls.requires) - INPUTS
+    if unknown:
+        raise ValueError(f"容量策略 {name} 声明了未知输入 {sorted(unknown)}，可选 {sorted(INPUTS)}")
+    return cls(**(params or {}))
 
 
 def node_cap_peak_w(s: SiteSnapshot, cap_ratio: float) -> float:

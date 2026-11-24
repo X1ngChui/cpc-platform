@@ -21,7 +21,7 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       - run: python -m pytest
       - name: smoke test (all services in one process)
-        run: python scripts/smoke_test.py --synthetic-workload --duration 20   # CI 不下载公开数据集
+        run: python scripts/smoke_test.py --offline --duration 20   # 测试场景：合成负载与随测试提交的电网数据
 
   docs:
     runs-on: ubuntu-latest
