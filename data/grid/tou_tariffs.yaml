@@ -8,7 +8,8 @@
 # 4. 2026 年起部分省份对直接参与市场交易的工商业用户取消了固定分时电价，改为随现货市场价格浮动；
 #    若需研究市场价格，请通过 grid.traces 提供逐时价格 CSV 覆盖本文件。
 #
-# 结构：每个省份由若干 season 组成；每个 season 覆盖若干月份。
+# 结构：每个省份由若干 season 组成；各 season 的月份合起来恰好覆盖 1–12 月各一次（加载时校验）。
+# 场景中站点引用的省份必须在本文件中收录，否则电网信号服务启动失败。
 # periods 中未列出的小时为平段（flat）；小时区间为 [start, end)，取 0–24。
 # sharp：尖峰，价格 = 高峰价 × multiplier_over_peak；deep_valley：深谷，价格 = 低谷价 × multiplier_over_valley。
 
@@ -88,13 +89,3 @@ shanghai:
         peak: [[8, 11], [18, 21]]
         valley: [[22, 24], [0, 6]]
       multipliers: {peak: 1.60, valley: 0.50}
-
-# 未单独收录的省份使用 default：单一平段价格（不分时）。
-default:
-  name: 默认（不分时）
-  source: 示意
-  flat_price: 0.60
-  seasons:
-    - months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-      periods: {}
-      multipliers: {}

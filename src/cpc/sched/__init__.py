@@ -4,7 +4,9 @@ import importlib
 import os
 
 from .capacity import CAPACITY_POLICIES, CapacityPlan, CapacityPolicy, ControlView, make_capacity, register_capacity
-from .routing import ROUTING_POLICIES, ClusterView, RequestInfo, RoutingPolicy, SiteView, make_routing, register_routing
+from .routing import (
+    ROUTING_POLICIES, ClusterView, RequestInfo, RouteDecision, RoutingPolicy, SiteView, make_routing, register_routing,
+)
 
 
 def load_plugins(modules: str | None = None) -> list[str]:
@@ -16,6 +18,6 @@ def load_plugins(modules: str | None = None) -> list[str]:
 
 __all__ = [
     "CAPACITY_POLICIES", "ROUTING_POLICIES", "CapacityPlan", "CapacityPolicy", "ClusterView", "ControlView",
-    "RequestInfo", "RoutingPolicy", "SiteView", "load_plugins", "make_capacity", "make_routing",
+    "RequestInfo", "RouteDecision", "RoutingPolicy", "SiteView", "load_plugins", "make_capacity", "make_routing",
     "register_capacity", "register_routing",
 ]

@@ -2,7 +2,7 @@
 #
 # 组成：
 #   vllm-0 / vllm-1   推理实例（OpenAI 兼容接口），每个实例占一张 GPU，对平台而言是一个"节点"
-#   site-agent        站点代理：排队与派发、NVML 功率采集、开关实例（Docker API）、可选功率封顶
+#   site-agent        站点代理：排队与派发、按场景 power 声明采集功率、开关实例（Docker API）、可选功率封顶
 #   dcgm-exporter     （可选，数据中心级 GPU 推荐）NVIDIA 官方 GPU 指标导出器
 #   node-exporter     （可选）主机 CPU/内存/网络指标；裸金属上还可读取 RAPL 能耗
 #
@@ -52,11 +52,11 @@ services:
   site-agent:
     image: ${CPC_IMAGE:-cpc-platform:latest}
     restart: unless-stopped
-    command: ["site", "-s", "/cfg/scenario.yaml", "-e", "/cfg/endpoints.yaml", "--site", "${SITE_ID}",
-              "--host", "0.0.0.0", "--port", "9100", "--power", "nvml"]
+    command: ["site", "-s", "/app/cfg/scenario.yaml", "-e", "/app/cfg/endpoints.yaml", "--site", "${SITE_ID}",
+              "--host", "0.0.0.0", "--port", "9100"]
     volumes:
-      - ./scenario.yaml:/cfg/scenario.yaml:ro
-      - ./endpoints.yaml:/cfg/endpoints.yaml:ro
+      - ./scenario.yaml:/app/cfg/scenario.yaml:ro
+      - ./endpoints.yaml:/app/cfg/endpoints.yaml:ro
       - /var/run/docker.sock:/var/run/docker.sock   # 用于启停 vLLM 容器（节点开关）
     environment:
       CPC_ADMIN_TOKEN: ${CPC_ADMIN_TOKEN:?请在 .env 中设置与控制栈相同的 CPC_ADMIN_TOKEN}

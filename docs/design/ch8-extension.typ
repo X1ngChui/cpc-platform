@@ -10,7 +10,7 @@
     header: ("扩展什么", "怎么做", "说明"),
     [路由策略], [继承 `RoutingPolicy`，`@register_routing("名")`], [放在自己的模块中，用环境变量 `CPC_PLUGINS=模块名` 加载；场景文件 `scheduler.routing.policy` 引用。],
     [容量策略], [继承 `CapacityPolicy`，`@register_capacity("名")`], [同上；可返回路由权重，与 `weighted` 路由配合形成两级调度。],
-    [功率传感器], [继承 `Sensor`，实现 `read()`，`@register_sensor("名")`], [如需自动探测，实现类方法 `detect()` 并加入 `AUTO_ORDER`；能做功率封顶的实现 `set_power_limit()`。],
+    [功率传感器], [继承 `Sensor`，实现 `read()`，`@register_sensor("名")`], [构造时探测能力，必需能力不可用时抛出 `SensorError`；字段读取失败时值为 `None` 并记入 `errors`；能做功率封顶的实现 `set_power_limit()` 并设 `supports_power_limit = True`。],
     [电网数据], [修改 `data/grid/*`，或提供 `grid.traces` CSV], [新增省份：在 `tou_tariffs.yaml` 增加一项，键与站点的 `province` 一致。],
     [推理后端], [任何 OpenAI 兼容服务], [站点配置 `backend: openai` 与 `upstreams`；SGLang、llama.cpp server、TGI 等均可。],
     [部署], [修改 `deploy/` 下的清单], [Kubernetes 清单由 `deploy/k8s/generate.py` 按场景生成，修改生成器而不是生成结果。],
@@ -21,21 +21,22 @@
 一个完整的策略插件示例（文件 `my_policies.py`，与 `configs/` 同级即可）：
 
 ```python
-from cpc.sched import RoutingPolicy, register_routing
+from cpc.sched import RouteDecision, RoutingPolicy, register_routing
 
 @register_routing("greenest")
 class Greenest(RoutingPolicy):
-    """在 RTT 预算内选碳排放因子最低、且未满载的站点。"""
+    """在 RTT 预算内选碳排放因子最低、且未满载的站点；没有满足条件（含电网信号缺失）的站点时拒绝。"""
     def __init__(self, rtt_budget_ms: float = 30, **params):
         super().__init__(**params)
         self.budget = rtt_budget_ms
 
     def choose(self, req, view, exclude=()):
         cands = [sv for sv in self.candidates(view, exclude)
-                 if view.rtt(req.source, sv.id) <= self.budget and sv.load < 0.9]
+                 if view.rtt(req.source, sv.id) <= self.budget and sv.load < 0.9 and sv.signal is not None]
         if not cands:
-            return self.least_loaded(self.candidates(view, exclude))
-        return min(cands, key=lambda sv: sv.signal.carbon_kg_per_kwh if sv.signal else 0).id
+            return RouteDecision.reject("no_green_site")
+        best = min(cands, key=lambda sv: sv.signal.carbon_kg_per_kwh)
+        return RouteDecision.to(best.id, "greenest")
 ```
 
 ```bash

@@ -18,33 +18,33 @@ x-cpc: &cpc
   image: ${CPC_IMAGE:-cpc-platform:latest}
   restart: unless-stopped
   volumes:
-    - ./scenario.yaml:/cfg/scenario.yaml:ro
-    - ./endpoints.yaml:/cfg/endpoints.yaml:ro
+    - ./scenario.yaml:/app/cfg/scenario.yaml:ro
+    - ./endpoints.yaml:/app/cfg/endpoints.yaml:ro
     - ./logs:/logs
   environment:
-    CPC_ENDPOINTS: /cfg/endpoints.yaml
+    CPC_ENDPOINTS: /app/cfg/endpoints.yaml
     CPC_ADMIN_TOKEN: ${CPC_ADMIN_TOKEN:?请在 .env 中设置管理接口令牌 CPC_ADMIN_TOKEN}
 
 services:
   grid:
     <<: *cpc
-    command: ["grid", "-s", "/cfg/scenario.yaml", "--host", "0.0.0.0", "--port", "9000"]
+    command: ["grid", "-s", "/app/cfg/scenario.yaml", "--host", "0.0.0.0", "--port", "9000"]
     ports: ["9000:9000"]
 
   gateway:
     <<: *cpc
-    command: ["gateway", "-s", "/cfg/scenario.yaml", "--host", "0.0.0.0", "--port", "8080", "--log", "/logs/gateway.jsonl"]
+    command: ["gateway", "-s", "/app/cfg/scenario.yaml", "--host", "0.0.0.0", "--port", "8080", "--log", "/logs/gateway.jsonl"]
     ports: ["8080:8080"]
 
   controller:
     <<: *cpc
-    command: ["controller", "-s", "/cfg/scenario.yaml", "--host", "0.0.0.0", "--port", "9300", "--log", "/logs/controller.jsonl"]
+    command: ["controller", "-s", "/app/cfg/scenario.yaml", "--host", "0.0.0.0", "--port", "9300", "--log", "/logs/controller.jsonl"]
     ports: ["9300:9300"]
 
   # 场景中的仿真站点（示例 gd）；没有仿真站点时删除
   site-gd:
     <<: *cpc
-    command: ["site", "-s", "/cfg/scenario.yaml", "--site", "gd", "--host", "0.0.0.0", "--port", "9104"]
+    command: ["site", "-s", "/app/cfg/scenario.yaml", "--site", "gd", "--host", "0.0.0.0", "--port", "9104"]
     ports: ["9104:9104"]
 
   prometheus:

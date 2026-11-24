@@ -1,4 +1,7 @@
-"""服务之间交换的数据结构（JSON）。在线服务与仿真器共用，策略代码只依赖这些结构。"""
+"""服务之间交换的数据结构（JSON）。在线服务与仿真器共用，策略代码只依赖这些结构。
+
+功率与能耗字段可能为 None：表示对应读数缺失（传感器故障、设备无读数等），缺失原因见 power_missing 与 components。
+"""
 
 from __future__ import annotations
 
@@ -11,9 +14,11 @@ class NodeSnapshot(BaseModel):
     slots: int
     busy: int
     cap_ratio: float = 1.0
-    it_power_w: float = 0.0
-    gpu_power_w: float = 0.0
-    power_source: str = "model"  # model / nvml / mixed
+    it_power_w: float | None = None  # 缺失时为 None
+    gpu_power_w: float | None = None
+    power_source: str = "model"  # model（功率模型）/ sensors（传感器实测）
+    power_missing: list[str] = Field(default_factory=list)  # 缺失的功率组成部分，如 device:gpu0、host
+    last_error: str | None = None  # 最近一次开关机或功率封顶操作的错误
 
 
 class SiteSnapshot(BaseModel):
@@ -22,7 +27,6 @@ class SiteSnapshot(BaseModel):
     site: str
     ts: float = 0.0  # 采样时刻（真实 Unix 时间；仿真中为仿真秒）
     backend: str = "emulated"
-    healthy: bool = True
     nodes_total: int
     nodes_on: int
     nodes_booting: int = 0
@@ -33,15 +37,19 @@ class SiteSnapshot(BaseModel):
     queue_len: int  # 排队等待的请求数
     queue_limit: int
     cap_ratio: float = 1.0
-    it_power_w: float
-    facility_power_w: float
+    cap_min_ratio: float = 0.5  # 节点允许的最低功率封顶比例（节点配置参数）
+    it_power_w: float | None  # 任一节点功率缺失时为 None
+    facility_power_w: float | None
     pue: float
-    energy_it_j: float = 0.0  # 累计 IT 能耗
+    power_scope: str = "node"  # node：加速卡 + 主机部分；accelerators：只含加速卡（主机部分不计入）
+    energy_it_j: float = 0.0  # 功率有效区间内的累计 IT 能耗
+    energy_coverage: float | None = None  # 功率有效时长占比（节点·秒加权）；尚无数据时为 None
     est_service_s: float = 5.0  # 平均服务时间的滑动估计
     arrival_rate: float = 0.0  # 到达率（请求/秒，滑动估计）
-    node_idle_w: float = 0.0  # 单节点空载功率（模型参数或实测估计）
-    node_peak_w: float = 0.0  # 单节点满载功率
+    node_idle_w: float = 0.0  # 单节点空载功率（节点配置参数）
+    node_peak_w: float = 0.0  # 单节点满载功率（节点配置参数）
     nodes: list[NodeSnapshot] = Field(default_factory=list)
+    components: dict[str, dict] = Field(default_factory=dict)  # 子模块（功率传感器等）的健康状态
 
     @property
     def utilization(self) -> float:

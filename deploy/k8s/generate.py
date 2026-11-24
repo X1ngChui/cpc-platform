@@ -28,7 +28,8 @@ def svc(name: str, port: int, node_port: int | None = None) -> dict:
 
 
 def deploy(name: str, image: str, args: list[str], port: int, node_selector: dict | None = None, extra: dict | None = None,
-           volumes: list | None = None, mounts: list | None = None, env: list | None = None, probe: str = "/healthz") -> dict:
+           volumes: list | None = None, mounts: list | None = None, env: list | None = None, probe: str = "/readyz",
+           liveness: str | None = "/healthz") -> dict:
     c = {
         "name": name, "image": image, "imagePullPolicy": "IfNotPresent", "args": args,
         "ports": [{"containerPort": port, "name": "http"}],
@@ -38,6 +39,8 @@ def deploy(name: str, image: str, args: list[str], port: int, node_selector: dic
     }
     if probe:
         c["readinessProbe"] = {"httpGet": {"path": probe, "port": port}, "periodSeconds": 5}
+    if liveness:
+        c["livenessProbe"] = {"httpGet": {"path": liveness, "port": port}, "periodSeconds": 10, "failureThreshold": 3}
     c.update(extra or {})
     pod = {
         "containers": [c],
@@ -122,7 +125,7 @@ def main() -> None:
                             {"name": "rules", "configMap": {"name": "prometheus-rules"}}],
                    mounts=[{"name": "config", "mountPath": "/etc/prometheus/prometheus.yml", "subPath": "prometheus.yml"},
                            {"name": "rules", "mountPath": "/etc/prometheus/rules"}],
-                   env=[], probe="/-/ready"),
+                   env=[], probe="/-/ready", liveness="/-/healthy"),
             svc("prometheus", 9090, 30090),
             deploy("grafana", "grafana/grafana:12.1.1", [], 3000,
                    volumes=[{"name": "ds", "configMap": {"name": "grafana-datasources"}},
@@ -134,7 +137,7 @@ def main() -> None:
                    env=[{"name": "GF_AUTH_ANONYMOUS_ENABLED", "value": "true"},
                         {"name": "GF_AUTH_ANONYMOUS_ORG_ROLE", "value": "Viewer"},  # 匿名只读；管理员 admin/admin（首次登录后修改）
                         {"name": "GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH", "value": "/var/lib/grafana/dashboards/cpc-overview.json"}],
-                   probe="/api/health"),
+                   probe="/api/health", liveness=None),
             svc("grafana", 3000, 30300),
         ],
     }

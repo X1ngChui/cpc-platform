@@ -9,6 +9,8 @@
 - **运行环境**：服务端组件只面向 Linux（x86_64、aarch64）；开发环境为 Linux 或 WSL2（Ubuntu）。
 - **电网数据有出处**：广东、贵州、内蒙古（蒙西）、上海的分时电价时段与浮动比例取自省级发改委文件；30 个省份的 2023 年电力二氧化碳排放因子取自生态环境部、国家统计局公告（2025 年第 47 号）。
 - **策略可插拔**：路由策略、容量策略、功率传感器都是带注册装饰器的 Python 类；仓库只提供演示数据通路用的参考实现。
+- **失败显式化**：配置与环境错误在启动时报错；运行期故障（传感器、站点、电网信号服务）被隔离在其所属范围内，
+  通过 `/healthz`、`/readyz`、状态字段与 `cpc_*_up` / `*_errors_total` 指标报告，缺失的读数不以其他值替代。
 
 ## 文档
 
@@ -27,12 +29,12 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 
 pytest                                  # 单元测试
-python scripts/smoke_test.py            # 端到端冒烟测试（启动全部服务、压测、注入需求响应事件）
+python scripts/smoke_test.py            # 端到端冒烟测试（启动全部服务、压测、需求响应、故障隔离）
 
 cpc up --speedup 60                     # 本机启动：电网信号 9000、站点 9101-9104、网关 8080、控制器 9300
-cpc loadgen --duration 120 --rps 10     # 另一个终端发负载
+cpc loadgen --local --duration 120 --rps 10   # 另一个终端发负载（--local：本机模式地址）
 cpc compare --hours 24                  # 仿真对比四组策略组合
-cpc sensors                             # 探测本机功率传感器并读数
+cpc sensors --list                      # 列出功率传感器类型；cpc sensors --types nvml 读取指定传感器
 ```
 
 Docker Compose（含 Prometheus 与 Grafana 仪表盘）：

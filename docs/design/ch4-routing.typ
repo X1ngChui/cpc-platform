@@ -8,9 +8,12 @@
 
 + 提供 OpenAI 兼容接口（`/v1/chat/completions`、`/v1/completions`，支持流式输出），因此任何 OpenAI 客户端、
   vLLM 自带的压测工具都可以直接对网关发请求；
-+ 根据请求头 `x-cpc-source` 确定来源区域，构造集群视图，调用路由策略选择站点；
++ 根据请求头 `x-cpc-source` 确定来源区域（未携带时归属场景的 `network.default_source`；未配置该项或来源未知时返回 400），
+  构造集群视图，调用路由策略得到路由决策；
 + 模拟跨数据中心的广域网时延；
-+ 站点返回 503（排队已满）或连接失败时，排除该站点后重试，最多 3 次；
++ 按 `scheduler.retry` 处理转发失败：可重试的失败类型（`overloaded`：站点排队已满返回 503；`connect_error`：连接建立失败，
+  请求未送达）排除该站点后重新决策，每个请求至多尝试 `max_attempts` 个站点（默认 3）；请求送达后的读取失败或超时不重试，返回 502；
++ 维护各站点状态与电网信号的健康状态：拉取失败或超过 `scheduler.state_stale_s` 未成功刷新的站点移出路由视图（@sec-failure）；
 + 统计各来源区域到达率（指数滑动平均），供容量控制器使用；
 + 记录每个请求的日志（来源、站点、节点、时延、token 数、电价、碳强度、SLO 是否达成）与 Prometheus 指标。
 
@@ -44,25 +47,29 @@ $t_0$ 为固定开销（默认 4 ms）。默认场景的 RTT 矩阵如下（`cpc
 
 == 路由策略接口
 
-路由策略是一个带 `choose()` 方法的类：
+路由策略是一个带 `choose()` 方法的类，返回结构化的路由决策 `RouteDecision(site, reason, detail)`：`site` 为 `None` 表示拒绝；
+`reason` 为取值有限的短标识，写入请求日志、响应头 `x-cpc-route-reason` 与指标 `cpc_gateway_route_decisions_total{policy,reason}`。
 
 ```python
-from cpc.sched import RoutingPolicy, register_routing
+from cpc.sched import RouteDecision, RoutingPolicy, register_routing
 
 @register_routing("my_policy")            # 注册名，在场景文件或命令行中引用
 class MyPolicy(RoutingPolicy):
-    def __init__(self, alpha: float = 1.0, **params):   # 参数来自场景文件的 params
+    def __init__(self, alpha: float = 1.0, **params):   # 参数来自场景文件的 params；未知参数在构造时报错
         super().__init__(**params)
         self.alpha = alpha
 
     def choose(self, req, view, exclude=()):
-        # req:  RequestInfo(source, input_tokens, output_tokens, id)
-        # view: ClusterView(now, sites, rtt_ms, slo, weights)
-        cands = self.candidates(view, exclude)      # 健康、有在线容量、排队未满的站点
+        # req:  RequestInfo(source, input_tokens, output_tokens, id)；output_tokens 在请求未给出 max_tokens 时为 None
+        # view: ClusterView(now, sites, rtt_ms, slo, weights)；sites 只含状态可用的站点
+        cands = self.candidates(view, exclude)      # 有在线容量、排队未满、未被排除的站点
         if not cands:
-            return None                              # None 表示拒绝
-        return min(cands, key=lambda sv: sv.load + self.alpha * view.rtt(req.source, sv.id) / 100).id
+            return RouteDecision.reject("no_available_site")
+        best = min(cands, key=lambda sv: sv.load + self.alpha * view.rtt(req.source, sv.id) / 100)
+        return RouteDecision.to(best.id, "min_score")
 ```
+
+电网信号缺失时 `sv.signal` 为 `None`。依赖信号的策略应把这类站点排除在评分之外，并通过原因说明，而不是按缺省价格计算。
 
 集群视图中每个站点为一个 `SiteView`，提供以下便捷属性（均基于站点快照与网关本地的 pending 计数）：
 
@@ -71,10 +78,10 @@ class MyPolicy(RoutingPolicy):
     columns: (10em, 1fr),
     header: ("属性", "含义"),
     [`sv.snap`], [站点快照 `SiteSnapshot`（字段见 @ch-api）],
-    [`sv.signal`], [站点当前电网信号：电价、时段、碳排放因子、功率上限、PUE、等效电价 `effective_price`],
+    [`sv.signal`], [站点当前电网信号：电价、时段、碳排放因子、功率上限、PUE、等效电价 `effective_price`；信号缺失时为 `None`],
     [`sv.load`], [负载率 =（在服务 + 排队 + 在途）/ 在线并发槽数],
     [`sv.est_wait_s`], [估计排队等待时间],
-    [`sv.available`], [是否可接收请求（健康、有在线槽、排队未满）],
+    [`sv.available`], [是否可接收请求（有在线槽、排队未满）],
     [`view.rtt(src, site)`], [来源到站点的 RTT（ms）],
     [`view.est_ttft_s(req, sv)`], [估计 TTFT（不含预填充）= RTT + 排队等待],
     [`view.weights`], [控制器下发的路由权重 `{来源: {站点: 权重}}`],
@@ -93,12 +100,16 @@ class MyPolicy(RoutingPolicy):
     [`round_robin`], [在可用站点间轮询（基线）。],
     [`random`], [均匀随机（基线）。],
     [`least_loaded`], [选择负载率最低的站点（基线）。],
-    [`nearest`], [按 RTT 从近到远，选第一个估计排队时间低于 `max_wait_s` 的站点；都超过时选负载最低者。模拟"就近接入"。],
-    [`cost_aware`], [在满足 TTFT 预算（`ttft_budget` × SLO）且负载率低于 `max_load` 的站点中，选单位请求边际成本最低者。边际成本 = 等效电价（电价 + 碳价 × 碳强度）× PUE × 单请求边际能耗。演示"算随电走"。],
-    [`weighted`], [按控制器下发的权重随机分流；目标满载时改投负载最低的站点。用于实现"控制器算计划、网关按计划分流"的两级调度。],
+    [`nearest`], [按 RTT 从近到远，选第一个估计排队时间不超过 `max_wait_s` 的站点（原因 `nearest`）；都超过时按溢出规则处理（`wait_exceeded`）。模拟"就近接入"。],
+    [`cost_aware`], [在有电网信号、满足 TTFT 预算（`ttft_budget` × SLO）且负载率低于 `max_load` 的站点中，选单位请求边际成本最低者（`min_cost`）。边际成本 = 等效电价（电价 + 碳价 × 碳强度）× PUE × 单请求边际能耗。无站点有信号（`no_signal`）或无站点满足条件（`over_budget`）时按溢出规则处理。演示"算随电走"。],
+    [`weighted`], [按控制器下发的权重随机分流（`weighted`）；该来源没有可用站点的正权重（`no_weights`）或抽中的站点负载率不低于 `max_load`（`target_full`）时按溢出规则处理。用于实现"控制器算计划、网关按计划分流"的两级调度。],
   ),
   caption: [参考路由策略],
 )
+
+`nearest`、`cost_aware`、`weighted` 的参数 `overflow` 给出首选条件不满足时的溢出规则：`least_loaded`（默认）选负载率最低的可用站点，
+原因记为 `overflow_<条件>`（如 `overflow_no_signal`）；`reject` 拒绝请求，原因记为触发条件本身。
+溢出是策略定义的一部分，以原因显式记录，便于在实验结果中统计各条件出现的比例（仿真结果的 `route_reasons`）。
 
 #note[这些策略只用于演示接口与数据通路，没有经过优化，也不代表推荐的研究方法。例如 `cost_aware` 对每个请求独立贪心，
 在多个网关实例或高并发下容易造成"羊群效应"；`weighted` 的效果完全取决于控制器给出的权重。]

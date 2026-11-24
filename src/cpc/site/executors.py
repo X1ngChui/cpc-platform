@@ -2,7 +2,10 @@
 
 - EmulatedExecutor：按性能模型"睡眠"相应时间并返回 OpenAI 格式的假文本（含流式输出）。
 - OpenAIExecutor：把请求转发给真实 OpenAI 兼容推理实例（vLLM、SGLang、llama.cpp server 等）。
-- RealNodeHooks：真实节点的开关机（Docker 启停容器，可选）、功率封顶（NVML，可选）、就绪检查（HTTP）。
+- RealNodeHooks：真实节点的开关机（配置了容器名时通过 Docker 启停容器）、功率封顶（显式开启时）、就绪检查（HTTP）。
+
+请求的 token 数：输入按近似分词（max(空白分词数, 字符数/4)）估计，用于路由视图与仿真后端的计时；
+输出取请求中的 max_tokens（或 max_completion_tokens）。仿真后端要求请求给出输出上限，缺失时返回 400。
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ from typing import AsyncIterator
 
 import httpx
 
-from ..config import NodeProfile
+from ..config import ConfigError, NodeProfile, UpstreamConfig
 from ..models import prefill_s, tpot_s
 from .core import Node
 
@@ -25,8 +28,12 @@ log = logging.getLogger("cpc.site.exec")
 WORDS = "the of and to in is that for it as with was on be by this are from at or an".split()
 
 
-def estimate_tokens(body: dict) -> tuple[int, int]:
-    """估计输入/输出 token 数。输入：按空白分词数与字符数/4 取大；输出：max_tokens（压测通常配合 ignore_eos）。"""
+class InvalidRequest(Exception):
+    """请求不满足后端要求（返回 400）。"""
+
+
+def approx_prompt_tokens(body: dict) -> int:
+    """输入 token 数的近似值：按空白分词数与字符数/4 取大（不依赖具体模型的分词器）。"""
     if "messages" in body:
         text = " ".join(
             m.get("content", "") if isinstance(m.get("content"), str) else json.dumps(m.get("content"))
@@ -35,9 +42,13 @@ def estimate_tokens(body: dict) -> tuple[int, int]:
     else:
         p = body.get("prompt", "")
         text = p if isinstance(p, str) else " ".join(map(str, p))
-    n_in = max(1, len(text.split()), len(text) // 4)
-    n_out = int(body.get("max_tokens") or body.get("max_completion_tokens") or 128)
-    return n_in, max(1, n_out)
+    return max(1, len(text.split()), len(text) // 4)
+
+
+def requested_output_tokens(body: dict) -> int | None:
+    """请求给出的输出 token 上限（max_tokens / max_completion_tokens）；未给出时为 None。"""
+    v = body.get("max_tokens") or body.get("max_completion_tokens")
+    return None if v is None else max(1, int(v))
 
 
 def _fake_text(n: int, offset: int = 0) -> str:
@@ -61,8 +72,14 @@ class EmulatedExecutor:
     async def models(self) -> dict:
         return {"object": "list", "data": [{"id": self.model_name, "object": "model", "owned_by": "cpc"}]}
 
+    @staticmethod
+    def validate(body: dict) -> None:
+        if requested_output_tokens(body) is None:
+            raise InvalidRequest("仿真后端要求请求给出 max_tokens（或 max_completion_tokens）")
+
     def _timing(self, node: Node, body: dict) -> tuple[int, int, float, float]:
-        n_in, n_out = estimate_tokens(body)
+        n_in, n_out = approx_prompt_tokens(body), requested_output_tokens(body)
+        assert n_out is not None  # 已由 validate 保证
         occ = node.busy / node.slots
         return n_in, n_out, prefill_s(self.p, n_in, node.cap_ratio), tpot_s(self.p, occ, node.cap_ratio)
 
@@ -119,15 +136,20 @@ class OpenAIExecutor:
     def __init__(self, timeout_s: float = 600.0):
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(timeout_s, connect=5.0), trust_env=False)
 
-    async def models(self, nodes: list[Node]) -> dict:
-        for n in nodes:
-            if n.state == "on" and n.upstream:
-                try:
-                    r = await self.client.get(n.upstream.url.rstrip("/") + "/v1/models")
-                    return r.json()
-                except httpx.HTTPError:
-                    continue
-        return {"object": "list", "data": []}
+    @staticmethod
+    def validate(body: dict) -> None:
+        return None
+
+    async def models(self, nodes: list[Node]) -> tuple[int, dict]:
+        """转发给第一个在线节点；没有在线节点返回 503，上游失败返回 502。"""
+        node = next((n for n in nodes if n.state == "on" and n.upstream), None)
+        if node is None:
+            return 503, {"error": {"message": "no node online", "type": "unavailable"}}
+        try:
+            r = await self.client.get(node.upstream.url.rstrip("/") + "/v1/models")
+            return r.status_code, r.json()
+        except (httpx.HTTPError, ValueError) as e:
+            return 502, {"error": {"message": f"upstream {node.id} error: {e}", "type": "upstream_error"}}
 
     async def complete(self, node: Node, path: str, body: dict) -> ExecResult:
         assert node.upstream is not None
@@ -173,24 +195,40 @@ def _scan_usage(chunk: bytes, out: ExecResult) -> None:
 class RealNodeHooks:
     """真实节点钩子。
 
-    - 开关机：若 upstream.container 已配置且安装了 docker SDK，则启停该容器；否则为"逻辑开关"
-      （只停止向其派发请求，GPU 仍处于空载供电状态——测得的功率会如实反映这一点）。
-    - 功率封顶：若功率来源中的传感器支持（如 NVML）且进程有权限，设置设备功率上限。
-    - 就绪检查：GET {url}/health（vLLM 提供），失败再试 /v1/models。
+    - 开关机：upstream 配置了 container 时通过 Docker Engine API 启停该容器；未配置时为逻辑开关
+      （只停止向其派发请求，GPU 仍处于空载供电状态——测得的功率如实反映这一点）。
+    - 功率封顶：显式开启（--enable-power-cap）时，通过管理该设备的传感器设置功率上限；未开启时只记录目标比例。
+    - 就绪检查：GET {url}{ready_path}（默认 /health，vLLM 提供）返回 200。
+
+    启动检查：配置了容器名时须能连接 Docker Engine 且容器存在；开启功率封顶时，每个节点的加速卡都须由支持封顶的传感器管理。
+    运行期操作失败时抛出异常，由站点核心记入节点的 last_error 与失败计数。
     """
 
-    def __init__(self, power=None, enable_docker: bool = True, enable_power_cap: bool = False):
-        self.power = power  # 功率来源；若其支持 set_power_limit(device, ratio) 则可做硬件封顶
+    def __init__(self, upstreams: list[UpstreamConfig], power=None, enable_power_cap: bool = False):
+        self.power = power
         self.enable_power_cap = enable_power_cap
         self.client = httpx.AsyncClient(timeout=2.0, trust_env=False)
         self.docker = None
-        if enable_docker:
+        containers = [u.container for u in upstreams if u.container]
+        if containers:
             try:
                 import docker  # type: ignore
-
+            except ImportError as e:
+                raise ConfigError(f"upstream 配置了容器名 {containers}，需要安装 docker SDK（pip install \"cpc-platform[docker]\"）") from e
+            try:
                 self.docker = docker.from_env()
-            except Exception as e:  # noqa: BLE001
-                log.info("未启用 Docker 控制（%s），节点开关为逻辑开关", e)
+                for c in containers:
+                    self.docker.containers.get(c)
+            except docker.errors.DockerException as e:
+                raise ConfigError(f"无法通过 Docker Engine 访问容器 {containers}：{e}") from e
+        if enable_power_cap:
+            from .power import SensorPower
+
+            if not isinstance(power, SensorPower):
+                raise ConfigError("开启功率封顶需要传感器功率来源")
+            bad = [d for u in upstreams for d in u.device_names if not power.sensor_for(d).supports_power_limit]
+            if bad:
+                raise ConfigError(f"加速卡 {bad} 的传感器不支持功率封顶")
 
     async def power_on(self, node: Node) -> None:
         if self.docker and node.upstream and node.upstream.container:
@@ -203,27 +241,17 @@ class RealNodeHooks:
             log.info("已停止容器 %s", node.upstream.container)
 
     async def set_cap(self, node: Node, ratio: float) -> None:
-        setter = getattr(self.power, "set_power_limit", None)
-        if not (self.enable_power_cap and setter and node.upstream):
-            log.info("节点 %s 功率封顶比例 %.2f（未启用硬件封顶，仅记录）", node.id, ratio)
+        if not self.enable_power_cap:
+            log.info("节点 %s 功率封顶比例 %.2f（未开启硬件封顶，只记录目标比例）", node.id, ratio)
             return
-        from .power import node_devices
-
-        for dev in node_devices(node):
-            try:
-                await asyncio.to_thread(setter, dev, ratio)
-            except Exception as e:  # noqa: BLE001
-                log.warning("设置设备 %s 功率上限失败（通常需要 root 权限）：%s", dev, e)
+        for dev in node.upstream.device_names:
+            await asyncio.to_thread(self.power.set_power_limit, dev, ratio)
 
     async def is_ready(self, node: Node) -> bool:
         if not node.upstream:
             return True
-        base = node.upstream.url.rstrip("/")
-        for p in ("/health", "/v1/models"):
-            try:
-                r = await self.client.get(base + p)
-                if r.status_code == 200:
-                    return True
-            except httpx.HTTPError:
-                pass
-        return False
+        try:
+            r = await self.client.get(node.upstream.url.rstrip("/") + node.upstream.ready_path)
+        except httpx.HTTPError:
+            return False
+        return r.status_code == 200

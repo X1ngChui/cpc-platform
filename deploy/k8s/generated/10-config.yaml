@@ -553,6 +553,159 @@ data:
     \        ]\n      },\n      \"options\": {\n        \"legend\": {\n          \"\
     displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\"\
     : true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n \
+    \         \"sort\": \"desc\"\n        }\n      }\n    },\n    {\n      \"id\"\
+    : 20,\n      \"type\": \"timeseries\",\n      \"title\": \"上游可用性（网关 / 控制器视角）\"\
+    ,\n      \"description\": \"1 为正常，0 为故障；站点不可用时被移出路由视图或控制周期\",\n      \"datasource\"\
+    : {\n        \"type\": \"prometheus\",\n        \"uid\": \"prometheus\"\n    \
+    \  },\n      \"gridPos\": {\n        \"x\": 0,\n        \"y\": 44,\n        \"\
+    w\": 12,\n        \"h\": 8\n      },\n      \"targets\": [\n        {\n      \
+    \    \"refId\": \"A\",\n          \"expr\": \"min by (component, upstream) (cpc_upstream_up)\"\
+    ,\n          \"legendFormat\": \"{{component}} → {{upstream}}\",\n          \"\
+    datasource\": {\n            \"type\": \"prometheus\",\n            \"uid\": \"\
+    prometheus\"\n          }\n        }\n      ],\n      \"fieldConfig\": {\n   \
+    \     \"defaults\": {\n          \"unit\": \"none\",\n          \"custom\": {\n\
+    \            \"lineWidth\": 2,\n            \"fillOpacity\": 0,\n            \"\
+    showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"lineInterpolation\"\
+    : \"stepAfter\",\n            \"axisSoftMin\": 0\n          },\n          \"color\"\
+    : {\n            \"mode\": \"palette-classic\"\n          }\n        },\n    \
+    \    \"overrides\": [\n          {\n            \"matcher\": {\n             \
+    \ \"id\": \"byName\",\n              \"options\": \"sh\"\n            },\n   \
+    \         \"properties\": [\n              {\n                \"id\": \"color\"\
+    ,\n                \"value\": {\n                  \"mode\": \"fixed\",\n    \
+    \              \"fixedColor\": \"#2a78d6\"\n                }\n              }\n\
+    \            ]\n          },\n          {\n            \"matcher\": {\n      \
+    \        \"id\": \"byName\",\n              \"options\": \"gd\"\n            },\n\
+    \            \"properties\": [\n              {\n                \"id\": \"color\"\
+    ,\n                \"value\": {\n                  \"mode\": \"fixed\",\n    \
+    \              \"fixedColor\": \"#eb6834\"\n                }\n              }\n\
+    \            ]\n          },\n          {\n            \"matcher\": {\n      \
+    \        \"id\": \"byName\",\n              \"options\": \"gz\"\n            },\n\
+    \            \"properties\": [\n              {\n                \"id\": \"color\"\
+    ,\n                \"value\": {\n                  \"mode\": \"fixed\",\n    \
+    \              \"fixedColor\": \"#1baf7a\"\n                }\n              }\n\
+    \            ]\n          },\n          {\n            \"matcher\": {\n      \
+    \        \"id\": \"byName\",\n              \"options\": \"nm\"\n            },\n\
+    \            \"properties\": [\n              {\n                \"id\": \"color\"\
+    ,\n                \"value\": {\n                  \"mode\": \"fixed\",\n    \
+    \              \"fixedColor\": \"#eda100\"\n                }\n              }\n\
+    \            ]\n          }\n        ]\n      },\n      \"options\": {\n     \
+    \   \"legend\": {\n          \"displayMode\": \"list\",\n          \"placement\"\
+    : \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\"\
+    : {\n          \"mode\": \"multi\",\n          \"sort\": \"desc\"\n        }\n\
+    \      }\n    },\n    {\n      \"id\": 21,\n      \"type\": \"timeseries\",\n\
+    \      \"title\": \"功率传感器状态与能耗数据完整率\",\n      \"description\": \"传感器 1 正常 0 故障；读数缺失时站点功率为\
+    \ NaN，不以其他值替代\",\n      \"datasource\": {\n        \"type\": \"prometheus\",\n\
+    \        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n        \"x\"\
+    : 12,\n        \"y\": 44,\n        \"w\": 12,\n        \"h\": 8\n      },\n  \
+    \    \"targets\": [\n        {\n          \"refId\": \"A\",\n          \"expr\"\
+    : \"min by (site, sensor) (cpc_sensor_up)\",\n          \"legendFormat\": \"{{site}}\
+    \ {{sensor}}\",\n          \"datasource\": {\n            \"type\": \"prometheus\"\
+    ,\n            \"uid\": \"prometheus\"\n          }\n        }\n      ],\n   \
+    \   \"fieldConfig\": {\n        \"defaults\": {\n          \"unit\": \"none\"\
+    ,\n          \"custom\": {\n            \"lineWidth\": 2,\n            \"fillOpacity\"\
+    : 0,\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n\
+    \            \"lineInterpolation\": \"stepAfter\",\n            \"axisSoftMin\"\
+    : 0\n          },\n          \"color\": {\n            \"mode\": \"palette-classic\"\
+    \n          }\n        },\n        \"overrides\": [\n          {\n           \
+    \ \"matcher\": {\n              \"id\": \"byName\",\n              \"options\"\
+    : \"sh\"\n            },\n            \"properties\": [\n              {\n   \
+    \             \"id\": \"color\",\n                \"value\": {\n             \
+    \     \"mode\": \"fixed\",\n                  \"fixedColor\": \"#2a78d6\"\n  \
+    \              }\n              }\n            ]\n          },\n          {\n\
+    \            \"matcher\": {\n              \"id\": \"byName\",\n             \
+    \ \"options\": \"gd\"\n            },\n            \"properties\": [\n       \
+    \       {\n                \"id\": \"color\",\n                \"value\": {\n\
+    \                  \"mode\": \"fixed\",\n                  \"fixedColor\": \"\
+    #eb6834\"\n                }\n              }\n            ]\n          },\n \
+    \         {\n            \"matcher\": {\n              \"id\": \"byName\",\n \
+    \             \"options\": \"gz\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#1baf7a\"\n                }\n              }\n            ]\n          },\n\
+    \          {\n            \"matcher\": {\n              \"id\": \"byName\",\n\
+    \              \"options\": \"nm\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#eda100\"\n                }\n              }\n            ]\n          }\n\
+    \        ]\n      },\n      \"options\": {\n        \"legend\": {\n          \"\
+    displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\"\
+    : true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n \
+    \         \"sort\": \"desc\"\n        }\n      }\n    },\n    {\n      \"id\"\
+    : 22,\n      \"type\": \"timeseries\",\n      \"title\": \"能耗数据完整率（功率有效时长占比）\"\
+    ,\n      \"description\": \"\",\n      \"datasource\": {\n        \"type\": \"\
+    prometheus\",\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n\
+    \        \"x\": 0,\n        \"y\": 52,\n        \"w\": 12,\n        \"h\": 8\n\
+    \      },\n      \"targets\": [\n        {\n          \"refId\": \"A\",\n    \
+    \      \"expr\": \"max by (site) (cpc_site_energy_coverage_ratio)\",\n       \
+    \   \"legendFormat\": \"{{site}}\",\n          \"datasource\": {\n           \
+    \ \"type\": \"prometheus\",\n            \"uid\": \"prometheus\"\n          }\n\
+    \        }\n      ],\n      \"fieldConfig\": {\n        \"defaults\": {\n    \
+    \      \"unit\": \"percentunit\",\n          \"custom\": {\n            \"lineWidth\"\
+    : 2,\n            \"fillOpacity\": 0,\n            \"showPoints\": \"never\",\n\
+    \            \"spanNulls\": true,\n            \"lineInterpolation\": \"linear\"\
+    ,\n            \"axisSoftMin\": 0\n          },\n          \"color\": {\n    \
+    \        \"mode\": \"palette-classic\"\n          }\n        },\n        \"overrides\"\
+    : [\n          {\n            \"matcher\": {\n              \"id\": \"byName\"\
+    ,\n              \"options\": \"sh\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#2a78d6\"\n                }\n              }\n            ]\n          },\n\
+    \          {\n            \"matcher\": {\n              \"id\": \"byName\",\n\
+    \              \"options\": \"gd\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#eb6834\"\n                }\n              }\n            ]\n          },\n\
+    \          {\n            \"matcher\": {\n              \"id\": \"byName\",\n\
+    \              \"options\": \"gz\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#1baf7a\"\n                }\n              }\n            ]\n          },\n\
+    \          {\n            \"matcher\": {\n              \"id\": \"byName\",\n\
+    \              \"options\": \"nm\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#eda100\"\n                }\n              }\n            ]\n          }\n\
+    \        ]\n      },\n      \"options\": {\n        \"legend\": {\n          \"\
+    displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\"\
+    : true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n \
+    \         \"sort\": \"desc\"\n        }\n      }\n    },\n    {\n      \"id\"\
+    : 23,\n      \"type\": \"timeseries\",\n      \"title\": \"网关转发尝试结果\",\n     \
+    \ \"description\": \"\",\n      \"datasource\": {\n        \"type\": \"prometheus\"\
+    ,\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n        \"\
+    x\": 12,\n        \"y\": 52,\n        \"w\": 12,\n        \"h\": 8\n      },\n\
+    \      \"targets\": [\n        {\n          \"refId\": \"A\",\n          \"expr\"\
+    : \"sum by (outcome) (rate(cpc_gateway_attempts_total[1m]))\",\n          \"legendFormat\"\
+    : \"{{outcome}}\",\n          \"datasource\": {\n            \"type\": \"prometheus\"\
+    ,\n            \"uid\": \"prometheus\"\n          }\n        }\n      ],\n   \
+    \   \"fieldConfig\": {\n        \"defaults\": {\n          \"unit\": \"reqps\"\
+    ,\n          \"custom\": {\n            \"lineWidth\": 2,\n            \"fillOpacity\"\
+    : 0,\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n\
+    \            \"lineInterpolation\": \"linear\",\n            \"axisSoftMin\":\
+    \ 0\n          },\n          \"color\": {\n            \"mode\": \"palette-classic\"\
+    \n          }\n        },\n        \"overrides\": [\n          {\n           \
+    \ \"matcher\": {\n              \"id\": \"byName\",\n              \"options\"\
+    : \"sh\"\n            },\n            \"properties\": [\n              {\n   \
+    \             \"id\": \"color\",\n                \"value\": {\n             \
+    \     \"mode\": \"fixed\",\n                  \"fixedColor\": \"#2a78d6\"\n  \
+    \              }\n              }\n            ]\n          },\n          {\n\
+    \            \"matcher\": {\n              \"id\": \"byName\",\n             \
+    \ \"options\": \"gd\"\n            },\n            \"properties\": [\n       \
+    \       {\n                \"id\": \"color\",\n                \"value\": {\n\
+    \                  \"mode\": \"fixed\",\n                  \"fixedColor\": \"\
+    #eb6834\"\n                }\n              }\n            ]\n          },\n \
+    \         {\n            \"matcher\": {\n              \"id\": \"byName\",\n \
+    \             \"options\": \"gz\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#1baf7a\"\n                }\n              }\n            ]\n          },\n\
+    \          {\n            \"matcher\": {\n              \"id\": \"byName\",\n\
+    \              \"options\": \"nm\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#eda100\"\n                }\n              }\n            ]\n          }\n\
+    \        ]\n      },\n      \"options\": {\n        \"legend\": {\n          \"\
+    displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\"\
+    : true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n \
     \         \"sort\": \"desc\"\n        }\n      }\n    }\n  ],\n  \"templating\"\
     : {\n    \"list\": []\n  },\n  \"annotations\": {\n    \"list\": []\n  },\n  \"\
     editable\": true\n}"

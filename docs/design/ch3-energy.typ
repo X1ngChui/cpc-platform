@@ -25,12 +25,18 @@
     [`power_w`], [功率（W）。不同接口给出的可能是瞬时值或驱动内部的短时平均值],
     [`energy_j`], [累计能耗（J）。硬件提供计数器时直接使用，否则由上层按功率积分],
     [`util_pct`], [利用率（%），若可得],
+    [`errors`], [本次读取中失败的字段及原因；失败字段的值为 `None`],
   ),
   caption: [功率读数结构],
 )
 
 新增一种硬件只需实现一个 `Sensor` 子类的 `read()` 方法并用 `@register_sensor` 注册；
-站点代理、通用导出器、命令行工具都通过这一层获取功率，不关心具体硬件。
+站点代理、通用导出器、命令行工具都通过这一层获取功率，不关心具体硬件。传感器的错误处理约定为：
+
+- 构造阶段确定设备集合以及各字段使用的接口（能力探测，结果由 `capabilities()` 给出）；必需能力不可用时抛出 `SensorError`，
+  使站点代理或导出器启动失败。例如 NVML 的功率读数为必需能力，累计能耗计数器（Volta 及以后的 GPU 提供）与利用率为可选能力；
+- `read()` 整体失败（命令执行失败、接口不可达、输出无法解析）时抛出异常，由调用方记入该传感器的健康状态；
+- 单个设备或字段读取失败时，该值为 `None`，原因记入 `errors`；计数器差分的首次采样没有前一时刻，功率为 `None` 但不计为错误。
 
 === 已支持的传感器
 
@@ -53,9 +59,9 @@
   caption: [已支持的功率传感器（Linux）。"已实测"指已在 NVIDIA GeForce RTX 5070 Ti 上验证；"按文档"指依据官方接口文档实现、解析逻辑有单元测试，需在目标硬件上验证],
 )
 
-`cpc sensors --list` 列出全部传感器及其在本机是否可用；`cpc sensors` 自动探测并打印读数。
-自动探测按"同一类设备优先使用更直接的接口"的顺序进行（例如有 NVML 时不再使用 nvidia-smi；
-有 AMD SMI 时 hwmon 只用于 Intel 显卡），避免同一设备被重复计入。
+`cpc sensors --list` 列出全部传感器类型及本机是否具备其前提条件（仅作信息展示）；`cpc sensors --types nvml,rapl`
+读取指定传感器并打印读数。平台不自动选择传感器：站点与导出器使用的传感器均由配置显式给出，
+同一设备不应由两个传感器同时报告（站点代理在启动时检查加速卡设备名是否重复）。
 
 === 采集方案选型
 
@@ -127,23 +133,29 @@ $T_"pot" = d_0 (1 + k u) \/ s(c)$，其中 $s(c) = c^beta$ 为功率封顶后的
 
 === 真实后端：传感器归属
 
-真实站点的功率来源为 `SensorPower`：
+真实站点的功率来源为 `SensorPower`，由站点配置的 `power` 显式给出传感器列表与主机部分的确定方式：
 
 1. 加速卡（gpu / npu / soc）的读数按场景配置中每个推理实例的 `devices`（或 `gpu_indices`）归属到对应节点；
-2. 若有整机读数（IPMI、Redfish、PDU），主机部分 = 整机功率 − 全部加速卡功率；否则若有 CPU / 内存读数（RAPL 等），
-   主机部分 = 其和；都没有时用功率模型估计主机部分（节点 `power_source` 标为 `sensors+model`）；
-3. 主机部分在本机在线节点之间平均分摊。
-
-传感器列表可在场景文件的站点配置中给出，不给出时自动探测：
+2. 主机部分（CPU、内存、主板、风扇等）按 `power.host` 确定：`server` 为整机读数（IPMI、Redfish、PDU）减去本机全部加速卡读数；
+   `cpu_dram` 为 CPU 与内存读数（RAPL 等）之和，不含主板、风扇与电源损耗；`excluded` 表示不计主机部分，
+   节点 IT 功率只含加速卡，站点快照的 `power_scope` 标为 `accelerators`；
+3. 主机部分在本机未关机的节点之间平均分摊（全部关机时在全部节点之间分摊）；
+4. 任一组成部分的读数缺失时，相应节点的功率为 `None`，缺失项（如 `device:gpu0`、`host`）记入 `power_missing`；
+   站点 IT 功率在任一节点缺失时为 `None`。平台不以功率模型或其他传感器替代缺失的读数。
 
 ```yaml
 sites:
   - id: gz
     backend: openai
-    sensors: [{type: nvml}, {type: rapl}, {type: ipmi}]
     upstreams:
       - {id: gz-vllm0, url: "http://vllm-0:8000", gpu_indices: [0]}
+    power:
+      sensors: [{type: nvml}, {type: ipmi, name: bmc}]
+      host: server                 # server / cpu_dram / excluded
 ```
+
+站点代理启动时读取一次全部传感器，检查节点声明的加速卡均有读数、`power.host` 所需的读数类别存在；
+运行期每个传感器独立维护健康状态（@sec-failure）。
 
 == 设施层：PUE
 
@@ -208,7 +220,9 @@ sites:
     [`DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION`], [GPU 累计能耗（mJ）],
     [`cpc_device_power_watts`], [通用导出器：任意设备功率；标签 `sensor`、`device`、`kind`、`vendor`、`host`],
     [`cpc_device_energy_joules_total`], [通用导出器：任意设备累计能耗（J）],
-    [`cpc_node_it_power_watts`], [节点 IT 功率；标签 `source` 记录功率来源],
+    [`cpc_node_it_power_watts`], [节点 IT 功率；标签 `source` 记录功率来源（model / sensors）；读数缺失时为 NaN],
+    [`cpc_node_power_valid`、`cpc_site_energy_coverage_ratio`], [节点功率读数是否完整；站点功率有效时长占比],
+    [`cpc_sensor_up`、`cpc_sensor_errors_total`], [传感器最近一次读取是否成功且无字段错误；读取失败次数],
     [`cpc_node_state`], [节点状态（0 关机 / 1 启动中 / 2 在线 / 3 排空）],
     [`cpc_site_it_power_watts`、`cpc_site_facility_power_watts`], [站点 IT 功率、设施功率],
     [`cpc_site_nodes_on`、`cpc_site_queue_length`], [在线节点数、排队请求数],
@@ -242,7 +256,10 @@ Prometheus 记录规则（`deploy/prometheus/rules/cpc-energy.yml`）把它们�
 == 能耗核算 <sec-accounting>
 
 - *站点能耗*：站点代理在每次功率变化时先按旧功率积分再重新采样（功率分段恒定），累计节点能耗 `cpc_node_energy_joules_total`。
+  区间左端点的功率缺失时该区间不积分，计入缺失时长（`cpc_node_energy_missing_seconds_total`）；站点快照的 `energy_coverage`
+  为功率有效时长占比（节点·秒加权），用于在报告中给出能耗数据的完整率。传感器层的 `EnergyIntegrator` 对无计数器的设备
+  采用同样的规则，并处理计数器复位（计为一次复位并写日志）。
 - *成本与碳排放*：仿真器按 5 分钟时间片累计 IT 能耗，乘以 PUE 得设施能耗，再乘以时间片中点的电价与碳排放因子；
   在线平台由 Prometheus 记录规则给出成本速率与碳排放速率，对时间积分即得总量（Grafana 中可用 `increase` / `sum_over_time`）。
-- *单请求能耗*：站点在非流式响应头 `x-cpc-energy-j` 中给出粗略估计（请求开始时节点功率按在途请求数均摊 × 服务时间 × PUE），
-  仅供参考；严谨的核算应按"一段时间的站点能耗 ÷ 期间输出 token 数"计算每 token 能耗，再按请求的 token 数分摊。
+- *单请求能耗*：站点在非流式响应头 `x-cpc-energy-est-j` 中给出粗略估计（请求开始时节点功率按在途请求数均摊 × 服务时间 × PUE；
+  节点功率缺失时不给出），仅供参考；严谨的核算应按"一段时间的站点能耗 ÷ 期间输出 token 数"计算每 token 能耗，再按请求的 token 数分摊。

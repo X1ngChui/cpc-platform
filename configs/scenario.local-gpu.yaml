@@ -1,9 +1,10 @@
 # 本机"真实后端"联调场景：验证站点代理的 openai 后端 + NVML 实测功率链路。
 #
 # 站点 lab 使用 openai 后端，其上游是任意 OpenAI 兼容推理服务（vLLM、SGLang、llama.cpp server……）。
+# 功率来源：NVML 读取本机 GPU 0；主机部分不计入（power.host: excluded，节点 IT 功率只含 GPU）。
 # 没有真实模型时，可以用平台自带的仿真站点充当"假 vLLM"：
-#   cpc site -s configs/scenario.yaml --site gz --port 8000     # 在 8000 端口提供 OpenAI 兼容接口
-#   cpc up -s configs/scenario.local-gpu.yaml                    # 启动 lab（NVML 读取本机 GPU 0）与 emu 两个站点
+#   cpc site -s configs/scenario.yaml --local --site gz --port 8000 --host 127.0.0.1   # 在 8000 端口提供 OpenAI 兼容接口
+#   cpc up -s configs/scenario.local-gpu.yaml                                         # 启动 lab 与 emu 两个站点
 # 有真实 vLLM 时：把 upstreams[0].url 指向 vLLM，并把请求中的 model 设为 vLLM 的 served-model-name（loadgen --model）。
 
 name: local-gpu
@@ -14,6 +15,9 @@ clock:
 
 sources:
   - {id: east, name: 上海, lat: 31.23, lon: 121.47, share: 1.0}
+
+network:
+  default_source: east
 
 sites:
   - id: lab
@@ -26,6 +30,9 @@ sites:
     profile: local
     upstreams:
       - {id: lab-0, url: "http://127.0.0.1:8000", gpu_indices: [0], container: cpc-vllm-local, max_inflight: 32}
+    power:
+      sensors: [{type: nvml, gpus: [0]}]
+      host: excluded
   - id: emu
     name: 仿真站点
     province: guangdong

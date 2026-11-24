@@ -85,6 +85,10 @@ docker compose up -d                 # 启动 vllm-0 与 site-agent
 docker compose logs -f site-agent    # 等待"功率传感器：['nvml']"与 vLLM 就绪
 ```
 
+站点的功率来源在场景文件的 `power` 中声明（示例为 NVML 读取 GPU，`host: excluded` 表示节点 IT 功率只含 GPU）。
+站点代理启动时检查传感器可用、节点声明的 GPU 有读数、配置的容器存在；任一不满足时容器以非零状态退出，
+原因见 `docker compose logs site-agent`。服务器提供整机功率读数（IPMI、Redfish）时，可加入相应传感器并改为 `host: server`。
+
 站点栈包含：`vllm-0`（每个推理实例占一张 GPU；双卡服务器可启用 `--profile gpu2` 的 `vllm-1`）、`site-agent`
 （排队与派发、NVML 功率采集、通过挂载的 Docker 套接字启停 vLLM 容器）、可选的 `dcgm-exporter`（`--profile dcgm`）
 与 `node-exporter`（`--profile host`，监听 9101）。
@@ -97,7 +101,8 @@ docker compose logs -f site-agent    # 等待"功率传感器：['nvml']"与 vLL
 
 ```bash
 curl -s localhost:9100/state | python3 -m json.tool | head -30       # nodes_on 应为 1，power_source 为 sensors
-docker compose exec site-agent cpc sensors                            # 列出探测到的传感器与读数
+curl -s localhost:9100/readyz                                         # 就绪状态
+docker compose exec site-agent cpc sensors --types nvml               # 读取 NVML 读数
 curl -s localhost:8000/v1/models                                      # vLLM 模型名应为 cpc
 ```
 
@@ -120,7 +125,7 @@ python3 ../../../scripts/smoke_test.py --external -e endpoints.yaml -s scenario.
 接入真实服务器后，建议用实测数据标定仿真站点的节点参数，使仿真与真实一致：
 
 1. 只向一个真实站点发请求，逐级提高并发（例如每级 3 分钟，rps 从 0.5 提高到饱和）：
-   `cpc loadgen -s scenario.yaml --gateway http://<站点IP>:9100 --rps <r> --duration 180 --model cpc`；
+   `cpc loadgen -s scenario.yaml --gateway http://<站点IP>:9100 --grid http://<控制节点IP>:9000 --rps <r> --duration 180 --model cpc`；
 2. 同时记录站点状态（`busy`、`gpu_power_w`）——可直接改用 `scripts/real_gpu_check.py` 的采样逻辑，或从 Prometheus 导出
    `cpc_node_busy_slots` 与 `DCGM_FI_DEV_POWER_USAGE`；
 3. 以占用率 $u = "busy" \/ "slots"$ 为横轴拟合 $P = P_"idle" + (P_"max" - P_"idle") u^alpha$，得到 `gpu_idle_w`、`gpu_max_w`、`power_exponent`；

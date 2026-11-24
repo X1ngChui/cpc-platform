@@ -7,6 +7,7 @@ import hmac
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,10 +15,33 @@ from fastapi import HTTPException, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, generate_latest
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+_STD_ATTRS = set(vars(logging.LogRecord("", 0, "", 0, "", None, None))) | {"message", "asctime", "taskName"}
 
 
-def setup_logging(level: str | None = None) -> None:
-    logging.basicConfig(level=(level or os.environ.get("CPC_LOG_LEVEL", "INFO")).upper(), format=LOG_FORMAT)
+class JsonFormatter(logging.Formatter):
+    """结构化日志：每条记录一行 JSON，含时间、级别、来源与调用方通过 extra 传入的字段（event、site、error 等）。"""
+
+    def format(self, record: logging.LogRecord) -> str:
+        d: dict[str, Any] = {
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S") + f".{int(record.msecs):03d}",
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        d.update({k: v for k, v in vars(record).items() if k not in _STD_ATTRS})
+        if record.exc_info:
+            d["exc"] = self.formatException(record.exc_info)
+        return json.dumps(d, ensure_ascii=False, default=str)
+
+
+def setup_logging(level: str | None = None, fmt: str | None = None) -> None:
+    """日志级别取 CPC_LOG_LEVEL（默认 INFO），格式取 CPC_LOG_FORMAT：text（默认）或 json。"""
+    fmt = (fmt or os.environ.get("CPC_LOG_FORMAT", "text")).lower()
+    if fmt not in ("text", "json"):
+        raise ValueError(f"CPC_LOG_FORMAT 只能为 text 或 json，当前为 {fmt}")
+    handler = logging.StreamHandler()
+    handler.setFormatter(JsonFormatter() if fmt == "json" else logging.Formatter(LOG_FORMAT))
+    logging.basicConfig(level=(level or os.environ.get("CPC_LOG_LEVEL", "INFO")).upper(), handlers=[handler], force=True)
     for noisy in ("httpx", "httpcore", "uvicorn.access"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
@@ -41,6 +65,31 @@ def require_admin(request: Request) -> None:
     got = request.headers.get("authorization", "")
     if not hmac.compare_digest(got.encode(), f"Bearer {tok}".encode()):
         raise HTTPException(status_code=401, detail="admin token required")
+
+
+class StartupError(Exception):
+    """服务启动检查失败（依赖服务在期限内不可达等）：进程以非零状态退出。"""
+
+
+async def sync_clock(client, grid_url: str, timeout_s: float):
+    """从电网信号服务同步信号时钟；在 timeout_s 内不可达则抛出 StartupError。"""
+    import httpx
+
+    from .health import describe
+    from .models import SimClock
+
+    deadline = time.monotonic() + timeout_s
+    last: BaseException | None = None
+    while True:
+        try:
+            r = await client.get(grid_url.rstrip("/") + "/v1/clock", timeout=2.0)
+            r.raise_for_status()
+            return SimClock.from_dict(r.json())
+        except (httpx.HTTPError, ValueError, KeyError) as e:
+            last = e
+        if time.monotonic() >= deadline:
+            raise StartupError(f"电网信号服务 {grid_url} 在 {timeout_s:.0f} s 内不可达，无法同步信号时钟：{describe(last)}")
+        await asyncio.sleep(0.5)
 
 
 def warn_if_open(service: str, host: str) -> None:

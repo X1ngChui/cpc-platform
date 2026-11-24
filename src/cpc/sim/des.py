@@ -85,7 +85,8 @@ class SimSite:
         """与站点代理 /state 相同的结构。路由时每个请求都要构造，故用 model_construct 跳过校验以提速。"""
         on = [n for n in self.nodes if n.state == "on"]
         return SiteSnapshot.model_construct(
-            site=self.cfg.id, ts=t, backend="sim", healthy=True, energy_it_j=0.0,
+            site=self.cfg.id, ts=t, backend="sim", energy_it_j=0.0, energy_coverage=1.0, power_scope="node",
+            cap_min_ratio=self.prof.cap_min_ratio, components={},
             nodes_total=len(self.nodes), nodes_on=len(on),
             nodes_booting=sum(n.state == "booting" for n in self.nodes),
             nodes_draining=sum(n.state == "draining" for n in self.nodes),
@@ -94,7 +95,9 @@ class SimSite:
             it_power_w=self.power, facility_power_w=self.power * self.cfg.pue, pue=self.cfg.pue,
             est_service_s=self.est_service_s, arrival_rate=self.arrival_rate,
             node_idle_w=node_idle_w(self.prof), node_peak_w=node_peak_w(self.prof),
-            nodes=[NodeSnapshot(id=n.id, state=n.state, slots=n.slots, busy=n.busy, cap_ratio=n.cap, it_power_w=n.power)
+            nodes=[NodeSnapshot.model_construct(id=n.id, state=n.state, slots=n.slots, busy=n.busy, cap_ratio=n.cap,
+                                                it_power_w=n.power, gpu_power_w=None, power_source="model",
+                                                power_missing=[], last_error=None)
                    for n in self.nodes] if with_nodes else [],
         )
 
@@ -146,6 +149,7 @@ class Simulator:
         self.arrived = 0
         self.rejected = 0
         self.unrouted = 0
+        self.route_reasons: dict[str, int] = {}
 
     # ------------------------------------------------------------ 工具
 
@@ -200,7 +204,9 @@ class Simulator:
         self.src_window[src] += 1
         req = RequestInfo(source=src, input_tokens=n_in, output_tokens=n_out)
         self.arrived += 1
-        sid = self.routing.choose(req, self.view(t, signals))
+        decision = self.routing.choose(req, self.view(t, signals))
+        self.route_reasons[decision.reason] = self.route_reasons.get(decision.reason, 0) + 1
+        sid = decision.site
         if sid is None:
             self.unrouted += 1
             return
@@ -310,7 +316,7 @@ class Simulator:
         for s in self.sites.values():
             s.arrival_rate = s.arrivals_window / self.ctl_s
             s.arrivals_window = 0
-        demand = DemandSnapshot(rates={k: v / self.ctl_s for k, v in self.src_window.items()})
+        demand = DemandSnapshot(rates={k: v / self.ctl_s for k, v in self.src_window.items()})  # 仿真中输入总是完整的
         self.src_window = {k: 0 for k in self.src_window}
         view = ControlView(now=self.dt(t), interval_s=self.ctl_s, sites={k: s.snapshot(t, True) for k, s in self.sites.items()},
                            signals=signals, demand=demand, rtt_ms=self.rtt, slo=self.scn.slo,
@@ -329,7 +335,7 @@ class Simulator:
     def run(self) -> SimResult:
         self.gen_arrivals()
         self.push(0.0, CONTROL, None)
-        sig_t, signals = -1.0, {}
+        sig_t, signals = float("-inf"), {}  # 首个事件即刷新信号，保证决策输入完整
         while self.ev:
             t, _, kind, data = heapq.heappop(self.ev)
             if t >= self.horizon:
@@ -390,6 +396,8 @@ class Simulator:
             **{k: round(v, 4) for k, v in tot.items()},
             "wh_per_request": round(tot["facility_kwh"] * 1000 / max(n, 1), 4),
             "sites": {k: {kk: (round(vv, 4) if isinstance(vv, float) else vv) for kk, vv in v.items()} for k, v in per_site.items()},
+            "route_reasons": dict(sorted(self.route_reasons.items())),
+            "energy_coverage": 1.0,  # 仿真中功率由模型给出，无缺失区间
         }
         reqs = {"source": np.array(self.rec_src), "site": np.array(self.rec_site), "ttft": ttft, "e2e": e2e,
                 "tpot": np.array(self.rec_tpot), "ok": ok}

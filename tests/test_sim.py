@@ -19,3 +19,10 @@ def test_static_uses_more_energy_than_reactive(scn):
     a = run(scn, "least_loaded", "static")
     b = run(scn, "least_loaded", "reactive")
     assert a["it_kwh"] > b["it_kwh"]  # 低负载时关闭空闲节点应节能
+
+
+def test_route_reasons_reported(scn):
+    s = run(scn, "nearest", "reactive", hours=1.0)
+    assert sum(s["route_reasons"].values()) == s["arrived"]
+    assert set(s["route_reasons"]) <= {"nearest", "overflow_wait_exceeded", "no_available_site"}
+    assert s["energy_coverage"] == 1.0

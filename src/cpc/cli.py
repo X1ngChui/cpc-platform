@@ -1,8 +1,11 @@
 """命令行入口：python -m cpc <子命令> 或 cpc <子命令>。
 
 服务类：grid / site / gateway / controller / up（本机单进程启动全部服务）/ exporter（通用功率导出器）
-工具类（能耗感知）：sensors（探测本机功率传感器）
+工具类（能耗感知）：sensors（列出传感器类型、读取指定传感器）
 工具类：loadgen / sim / compare / report / signals / rtt / event
+
+服务地址：除 up 外，需要访问其他服务的命令须用 -e / CPC_ENDPOINTS 给出地址文件，或用 --local 使用本机模式地址。
+配置或启动检查失败时打印原因并以状态码 2 退出。
 """
 
 from __future__ import annotations
@@ -18,8 +21,9 @@ from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .common import setup_logging
-from .config import CST, Endpoints, Scenario, load_endpoints, load_scenario, _host_port
+from .common import StartupError, setup_logging
+from .config import CST, ConfigError, Endpoints, Scenario, default_local_endpoints, load_endpoints, load_scenario, _host_port
+from .sensors.base import SensorError
 
 log = logging.getLogger("cpc")
 
@@ -29,7 +33,7 @@ def _scn(args) -> Scenario:
 
 
 def _ep(args, scn: Scenario) -> Endpoints:
-    return load_endpoints(getattr(args, "endpoints", None), scn)
+    return load_endpoints(getattr(args, "endpoints", None), scn, local=getattr(args, "local", False))
 
 
 def _serve(app, host: str, port: int) -> None:
@@ -64,7 +68,9 @@ def cmd_site(args) -> None:
 
     scn = _scn(args)
     ep = _ep(args, scn)
-    app = create_app(scn, args.site, power=args.power, enable_power_cap=args.enable_power_cap, initial_active=args.initial_active)
+    if args.site not in ep.sites:
+        raise ConfigError(f"站点 {args.site} 不在场景中，可选：{sorted(ep.sites)}")
+    app = create_app(scn, args.site, enable_power_cap=args.enable_power_cap, initial_active=args.initial_active)
     _serve(app, *_bind(args, ep.sites[args.site]))
 
 
@@ -74,7 +80,7 @@ def cmd_gateway(args) -> None:
     scn = _scn(args)
     ep = _ep(args, scn)
     params = json.loads(args.params) if args.params else None
-    _serve(create_app(scn, ep, args.policy, params, args.log), *_bind(args, ep.gateway))
+    _serve(create_app(scn, ep, args.policy, params, args.log, args.startup_timeout), *_bind(args, ep.gateway))
 
 
 def cmd_controller(args) -> None:
@@ -83,12 +89,16 @@ def cmd_controller(args) -> None:
     scn = _scn(args)
     ep = _ep(args, scn)
     params = json.loads(args.params) if args.params else None
-    app = create_app(scn, ep, args.policy, params, args.interval, args.log, args.actuator, args.k8s_namespace, args.k8s_template)
+    app = create_app(scn, ep, args.policy, params, args.interval, args.log, args.actuator, args.k8s_namespace, args.k8s_template,
+                     args.k8s_auth, args.startup_timeout)
     _serve(app, *_bind(args, ep.controller))
 
 
 def cmd_up(args) -> None:
-    """本机开发模式：在一个进程中启动电网信号服务、全部站点代理、网关和控制器。"""
+    """本机开发模式：在一个进程中启动电网信号服务、全部站点代理、网关和控制器。
+
+    未给出 -e 时使用本机模式地址。任一服务启动失败或退出时，停止其余服务并以非零状态退出。
+    """
     import uvicorn
 
     from .controller.service import create_app as ctl_app
@@ -99,7 +109,7 @@ def cmd_up(args) -> None:
     scn = _scn(args)
     if args.speedup is not None:
         scn.clock.speedup = args.speedup
-    ep = _ep(args, scn)
+    ep = load_endpoints(args.endpoints, scn) if args.endpoints else default_local_endpoints(scn)
     out = Path(args.log_dir)
     out.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -109,7 +119,7 @@ def cmd_up(args) -> None:
     if not args.no_controller:
         apps.append((ctl_app(scn, ep, args.capacity, None, args.interval, str(out / f"controller-{stamp}.jsonl")), ep.controller))
 
-    async def main() -> None:
+    async def main() -> int:
         servers = []
         for app, url in apps:
             h, p = _host_port(url)
@@ -118,62 +128,67 @@ def cmd_up(args) -> None:
         for app, url in apps:
             print(f"  {app.title:<36s} {url}")
         print(f"  日志目录 {out.resolve()}；Ctrl+C 退出")
-        await asyncio.gather(*(s.serve() for s in servers))
+        tasks = {asyncio.create_task(s.serve()): (s, app.title) for s, (app, _) in zip(servers, apps)}
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        failed = [tasks[t][1] for t in done if not tasks[t][0].started or t.exception() is not None]
+        for s, _ in tasks.values():
+            s.should_exit = True
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if failed:
+            print(f"[cpc up] 服务启动失败或异常退出：{failed}", file=sys.stderr)
+            return 1
+        return 0
 
     try:
-        asyncio.run(main())
+        rc = asyncio.run(main())
     except KeyboardInterrupt:
-        pass
+        rc = 0
+    sys.exit(rc)
 
 
 def _sensors_from_args(args):
+    """按 --spec（YAML，键 sensors 为传感器列表）或 --types（逗号分隔的类型名）构造传感器；二者须给出其一。"""
     import yaml
 
-    from .sensors import autodetect, make_sensor
+    from .sensors import make_sensor
 
-    if getattr(args, "spec", None):
+    if args.spec and args.types:
+        raise ConfigError("--spec 与 --types 只能给出其一")
+    if args.spec:
         with open(args.spec, encoding="utf-8") as f:
             return [make_sensor(s) for s in yaml.safe_load(f)["sensors"]]
-    if getattr(args, "types", None):
+    if args.types:
         return [make_sensor(t) for t in args.types.split(",")]
-    return autodetect()
+    raise ConfigError("请用 --types 或 --spec 指定传感器（cpc sensors --list 列出全部类型及本机前提条件是否具备）")
 
 
 def cmd_exporter(args) -> None:
     from .sensors.exporter import serve
 
-    sensors = _sensors_from_args(args)
-    if not sensors:
-        raise SystemExit("未探测到可用传感器；可用 --types 或 --spec 显式指定")
-    serve(sensors, args.port, args.host or "0.0.0.0", args.site, args.interval)
+    serve(_sensors_from_args(args), args.port, args.host or "0.0.0.0", args.site, args.interval)
 
 
 def cmd_sensors(args) -> None:
-    """列出可用传感器类型、探测本机传感器并打印读数。"""
+    """列出传感器类型及本机前提条件是否具备；或读取指定传感器并打印读数。"""
+    from .health import HealthBoard
     from .sensors import SENSORS
     from .sensors.base import EnergyIntegrator
-    from .sensors.exporter import host_total
+    from .sensors.exporter import read_all
 
     if args.list:
         for name, cls in SENSORS.items():
-            ok = ""
-            try:
-                ok = "可用" if cls.detect() else ""
-            except Exception:  # noqa: BLE001
-                pass
+            ok = "具备" if cls.detect() else ""
             print(f"{name:<14s} {cls.requires:<40s} {'已实测' if cls.verified else '按文档实现'}  {ok}")
         return
     sensors = _sensors_from_args(args)
-    print("传感器：", [s.name for s in sensors] or "无")
+    print("传感器：", [s.id for s in sensors])
     integ = EnergyIntegrator()
+    board = HealthBoard("sensor", None)
     for k in range(args.count):
-        rs = []
-        for s in sensors:
-            try:
-                rs += s.read()
-            except Exception as e:  # noqa: BLE001
-                print(f"  {s.name} 读取失败：{e}")
-        integ.update(rs)
+        rs = integ.update(read_all(sensors, board))
+        for name, h in board.items.items():
+            if not h.up:
+                print(f"  {name} 读取失败：{h.last_error}")
         if args.json:
             print(json.dumps([r.to_dict() for r in rs], ensure_ascii=False))
         else:
@@ -181,8 +196,8 @@ def cmd_sensors(args) -> None:
                 pw = "-" if r.power_w is None else f"{r.power_w:8.2f} W"
                 en = "-" if r.energy_j is None else f"{r.energy_j:12.1f} J"
                 ut = "" if r.util_pct is None else f"{r.util_pct:5.1f} %"
-                print(f"  [{r.sensor}] {r.device:<14s} {r.kind:<8s} {r.vendor:<8s} {r.model[:28]:<28s} {pw:>11s} {en:>15s} {ut}")
-            print(f"  主机合计 {host_total(rs):.2f} W")
+                err = f"  错误 {r.errors}" if r.errors else ""
+                print(f"  [{r.sensor}] {r.device:<14s} {r.kind:<8s} {r.vendor:<8s} {r.model[:28]:<28s} {pw:>11s} {en:>15s} {ut}{err}")
         if k + 1 < args.count:
             time.sleep(args.interval)
 
@@ -194,8 +209,12 @@ def cmd_loadgen(args) -> None:
     from .loadgen.client import run
 
     scn = _scn(args)
-    ep = _ep(args, scn)
-    s = asyncio.run(run(args.gateway or ep.gateway, scn, args.duration, grid=args.grid or ep.grid, rps=args.rps,
+    if args.gateway and args.grid:
+        gateway, grid = args.gateway, args.grid
+    else:
+        ep = _ep(args, scn)
+        gateway, grid = args.gateway or ep.gateway, args.grid or ep.grid
+    s = asyncio.run(run(gateway, scn, args.duration, grid=grid, rps=args.rps,
                         stream=not args.no_stream, out=args.out, trace=args.trace, time_scale=args.time_scale, model=args.model))
     print(json.dumps(s, ensure_ascii=False, indent=2))
 
@@ -314,10 +333,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="cpc", description="算电协同跨数据中心 AI 任务调度虚拟化平台")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    def common(sp, endpoints=True):
+    def common(sp, endpoints=True, local=True):
         sp.add_argument("--scenario", "-s", default="configs/scenario.yaml", help="场景文件")
         if endpoints:
-            sp.add_argument("--endpoints", "-e", default=None, help="服务地址文件（缺省为本机默认端口）")
+            sp.add_argument("--endpoints", "-e", default=None, help="服务地址文件（也可用环境变量 CPC_ENDPOINTS）")
+            if local:
+                sp.add_argument("--local", action="store_true", help="使用本机模式地址（与 cpc up 相同的默认端口）")
             sp.add_argument("--host", default=None, help="覆盖监听地址（容器内用 0.0.0.0）")
             sp.add_argument("--port", type=int, default=None, help="覆盖监听端口")
         return sp
@@ -328,9 +349,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = common(sub.add_parser("site", help="站点代理"))
     sp.add_argument("--site", required=True)
-    sp.add_argument("--power", choices=["auto", "model", "sensors"], default="auto",
-                    help="真实后端的功率来源：auto=场景配置或自动探测的传感器，失败时退回模型")
-    sp.add_argument("--enable-power-cap", action="store_true", help="允许通过 NVML 设置 GPU 功率上限（需 root）")
+    sp.add_argument("--enable-power-cap", action="store_true", help="允许通过传感器设置加速卡功率上限（NVML，需 root）")
     sp.add_argument("--initial-active", type=int, default=None)
     sp.set_defaults(fn=cmd_site)
 
@@ -338,6 +357,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--policy", default=None)
     sp.add_argument("--params", default=None, help="策略参数（JSON）")
     sp.add_argument("--log", default=None, help="请求日志 JSONL 路径")
+    sp.add_argument("--startup-timeout", type=float, default=30.0, help="启动时等待电网信号服务可达的期限（秒）")
     sp.set_defaults(fn=cmd_gateway)
 
     sp = common(sub.add_parser("controller", help="容量控制器"))
@@ -348,9 +368,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--actuator", choices=["site-agent", "kubernetes"], default="site-agent")
     sp.add_argument("--k8s-namespace", default="cpc")
     sp.add_argument("--k8s-template", default="vllm-{site}")
+    sp.add_argument("--k8s-auth", choices=["incluster", "kubeconfig"], default="incluster", help="Kubernetes 认证方式")
+    sp.add_argument("--startup-timeout", type=float, default=30.0, help="启动时等待电网信号服务可达的期限（秒）")
     sp.set_defaults(fn=cmd_controller)
 
-    sp = common(sub.add_parser("up", help="本机单进程启动全部服务"))
+    sp = common(sub.add_parser("up", help="本机单进程启动全部服务"), local=False)
     sp.add_argument("--routing", default=None)
     sp.add_argument("--capacity", default=None)
     sp.add_argument("--interval", type=float, default=None)
@@ -364,7 +386,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--port", type=int, default=9400)
     sp.add_argument("--host", default=None)
     sp.add_argument("--site", default=None, help="附加 site 标签")
-    sp.add_argument("--types", default=None, help="逗号分隔的传感器类型，如 nvml,rapl；缺省自动探测")
+    sp.add_argument("--types", default=None, help="逗号分隔的传感器类型，如 nvml,rapl")
     sp.add_argument("--spec", default=None, help="传感器配置 YAML（含参数，如 ipmi 远程地址）")
     sp.add_argument("--interval", type=float, default=1.0, help="采样周期（秒）")
     sp.set_defaults(fn=cmd_exporter)
@@ -432,7 +454,11 @@ def main(argv: list[str] | None = None) -> None:
 
     load_plugins()
     args = build_parser().parse_args(argv)
-    args.fn(args)
+    try:
+        args.fn(args)
+    except (ConfigError, StartupError, SensorError) as e:
+        print(f"cpc {args.cmd}：{e}", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

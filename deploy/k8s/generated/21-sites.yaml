@@ -51,9 +51,15 @@ spec:
             memory: 512Mi
         readinessProbe:
           httpGet:
-            path: /healthz
+            path: /readyz
             port: 9100
           periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9100
+          periodSeconds: 10
+          failureThreshold: 3
       volumes:
       - name: cpc-endpoints
         configMap:
@@ -131,9 +137,15 @@ spec:
             memory: 512Mi
         readinessProbe:
           httpGet:
-            path: /healthz
+            path: /readyz
             port: 9100
           periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9100
+          periodSeconds: 10
+          failureThreshold: 3
       volumes:
       - name: cpc-endpoints
         configMap:
@@ -211,9 +223,15 @@ spec:
             memory: 512Mi
         readinessProbe:
           httpGet:
-            path: /healthz
+            path: /readyz
             port: 9100
           periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9100
+          periodSeconds: 10
+          failureThreshold: 3
       volumes:
       - name: cpc-endpoints
         configMap:
@@ -291,9 +309,15 @@ spec:
             memory: 512Mi
         readinessProbe:
           httpGet:
-            path: /healthz
+            path: /readyz
             port: 9100
           periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9100
+          periodSeconds: 10
+          failureThreshold: 3
       volumes:
       - name: cpc-endpoints
         configMap:

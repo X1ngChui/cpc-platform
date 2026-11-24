@@ -76,6 +76,13 @@ def build(sites: list[str]) -> dict:
         ts(17, "每输出 token 设施能耗（J/token）", "site:joules_per_output_token:rate1m", "none", 12, 28, sites),
         ts(18, "排队请求数", "max by (site) (cpc_site_queue_length)", "none", 0, 36, sites),
         ts(19, "GPU 功率（按站点汇总，DCGM 兼容指标）", "site:gpu_power_watts:sum", "watt", 12, 36, sites),
+        ts(20, "上游可用性（网关 / 控制器视角）", "min by (component, upstream) (cpc_upstream_up)", "none", 0, 44, sites,
+           legend="{{component}} → {{upstream}}", step=True, desc="1 为正常，0 为故障；站点不可用时被移出路由视图或控制周期"),
+        ts(21, "功率传感器状态与能耗数据完整率", "min by (site, sensor) (cpc_sensor_up)", "none", 12, 44, sites,
+           legend="{{site}} {{sensor}}", step=True, desc="传感器 1 正常 0 故障；读数缺失时站点功率为 NaN，不以其他值替代"),
+        ts(22, "能耗数据完整率（功率有效时长占比）", "max by (site) (cpc_site_energy_coverage_ratio)", "percentunit", 0, 52, sites),
+        ts(23, "网关转发尝试结果", "sum by (outcome) (rate(cpc_gateway_attempts_total[1m]))", "reqps", 12, 52, sites,
+           legend="{{outcome}}"),
     ]
     return {
         "uid": "cpc-overview", "title": "算电协同调度平台", "tags": ["cpc"], "timezone": "browser",

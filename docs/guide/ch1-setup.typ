@@ -78,11 +78,13 @@ kind（Kubernetes in Docker）是 Kubernetes 官方的本地集群工具，单�
 == 验证安装
 
 ```bash
-pytest                              # 单元测试，约 5 秒
-python scripts/smoke_test.py        # 端到端冒烟测试：启动全部服务、压测、注入需求响应事件，约 1 分钟
+pytest                              # 单元测试，约 10 秒
+python scripts/smoke_test.py        # 端到端冒烟测试，约 1.5 分钟
 ```
 
-冒烟测试最后输出"冒烟测试通过"即说明环境正常。
+冒烟测试把各服务作为独立进程启动，依次检查：全部服务就绪；压测请求全部成功；控制器完成决策；能耗与电网信号指标；
+需求响应事件生效；传感器故障（真实后端站点的功率计不可用）与站点故障（停止一个站点进程）被隔离并显式报告，
+其余部分正常服务。最后输出"冒烟测试通过"即说明环境正常。
 
 = 本机快速开始 <g-quick>
 
@@ -92,7 +94,8 @@ python scripts/smoke_test.py        # 端到端冒烟测试：启动全部服务
 cpc up --speedup 60
 ```
 
-`cpc up` 在一个进程中启动电网信号服务（9000）、4 个站点代理（9101–9104）、网关（8080）与容量控制器（9300）。
+`cpc up` 在一个进程中启动电网信号服务（9000）、4 个站点代理（9101–9104）、网关（8080）与容量控制器（9300）；
+任一服务启动失败时停止其余服务并以非零状态退出。
 `--speedup 60` 表示信号时钟加速 60 倍（真实 1 分钟 = 信号 1 小时），便于在短时间内看到电价变化。
 请求日志与决策日志写入 `logs/` 目录。常用选项：`--routing`、`--capacity` 指定策略，`--interval` 指定控制周期，
 `--no-controller` 不启动控制器，`-s` 指定其他场景文件。
@@ -102,8 +105,10 @@ cpc up --speedup 60
 另开一个终端：
 
 ```bash
-cpc loadgen --duration 120 --rps 10 --out logs/loadgen.jsonl
+cpc loadgen --local --duration 120 --rps 10 --out logs/loadgen.jsonl
 ```
+
+`--local` 表示使用与 `cpc up` 相同的本机模式地址；访问其他部署时用 `-e <地址文件>` 给出服务地址。
 
 结束后打印汇总：发送数、成功数、端到端时延与 TTFT 的中位数和 P99、SLO 达成率、各站点分担比例。
 也可以用任何 OpenAI 客户端直接访问网关，例如：
@@ -120,7 +125,8 @@ curl http://localhost:8080/v1/chat/completions -H "Content-Type: application/jso
   tbl(
     columns: (19em, 1fr),
     header: ("地址", "内容"),
-    [`http://localhost:9101/state`], [站点 sh 的状态快照：节点状态、在服务与排队请求、功率],
+    [`http://localhost:9101/state`], [站点 sh 的状态快照：节点状态、在服务与排队请求、功率及其完整率],
+    [`http://localhost:8080/readyz`], [网关就绪状态：可用站点、电网信号状态与各上游的健康状态],
     [`http://localhost:9101/metrics`], [站点指标（含 DCGM 兼容的 GPU 功率）],
     [`http://localhost:8080/state`], [网关：各来源到达率、各站点负载视图、当前路由策略与权重],
     [`http://localhost:9300/state`], [控制器：最近一次决策（目标、观测、电网信号）],
@@ -140,7 +146,7 @@ curl -X PUT http://localhost:8080/admin/policy -H "Content-Type: application/jso
 curl -X PUT http://localhost:9300/admin/policy -H "Content-Type: application/json" \
      -d '{"policy": "grid_aware"}'
 # 注入需求响应事件：站点 gd 设施功率不超过 8 kW，持续 120 分钟（信号时间）
-cpc event --site gd --cap-kw 8 --duration-min 120
+cpc event --local --site gd --cap-kw 8 --duration-min 120
 ```
 
 == 仿真与对比

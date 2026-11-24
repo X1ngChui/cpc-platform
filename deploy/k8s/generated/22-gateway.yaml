@@ -49,9 +49,15 @@ spec:
             memory: 512Mi
         readinessProbe:
           httpGet:
-            path: /healthz
+            path: /readyz
             port: 8080
           periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          periodSeconds: 10
+          failureThreshold: 3
       volumes:
       - name: cpc-endpoints
         configMap:

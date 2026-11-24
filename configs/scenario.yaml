@@ -1,5 +1,6 @@
 # 默认场景：东西部 4 个虚拟数据中心 + 3 个用户来源区域。
 # 场景描述"实验世界"，与部署方式无关；服务地址见 endpoints 文件（configs/endpoints.*.yaml）。
+# 文件中的相对路径相对于本文件所在目录解析。
 # 节点功率/性能参数为示意值，接入真实服务器后请用实测数据标定（见《平台设计说明书》第 4 章）。
 
 name: east-west-4dc
@@ -41,10 +42,11 @@ network:
   route_factor: 1.5
   km_per_ms: 200
   emulate_wan: true                    # 网关按 RTT 注入时延，模拟跨数据中心访问
+  default_source: east                 # 未携带 x-cpc-source 请求头的请求归属的来源区域
 
 grid:
-  tariffs: data/grid/tou_tariffs.yaml
-  carbon_factors: data/grid/carbon_factors_2023.csv
+  tariffs: ../data/grid/tou_tariffs.yaml
+  carbon_factors: ../data/grid/carbon_factors_2023.csv
   carbon_profile: synthetic            # flat：年均因子；synthetic：叠加示意日内形状
   dr_events:                           # 示例：广东站点 15:00–17:00 削峰
     - {site: gd, start: "2026-07-15T15:00:00+08:00", end: "2026-07-15T17:00:00+08:00", cap_kw: 8}

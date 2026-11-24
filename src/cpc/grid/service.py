@@ -5,7 +5,10 @@
 - GET  /v1/signals[?at=ISO时间]       各站点当前（或指定时刻）的电价、碳强度、功率上限
 - GET  /v1/forecast?site=&hours=24   某站点未来若干小时的逐时信号
 - GET  /v1/events  POST /v1/events  DELETE /v1/events   需求响应事件的查询、注入与清除
+- GET  /healthz、/readyz              存活检查；就绪检查（数据加载与校验在启动时完成，服务运行即就绪）
 - GET  /metrics                      Prometheus 指标（cpc_grid_*）
+
+启动检查：电价与排放因子数据可读，且覆盖场景中全部站点的省份；分时电价的季节覆盖全年。任一不满足即启动失败。
 """
 
 from __future__ import annotations
@@ -67,7 +70,11 @@ def create_app(scn: Scenario, clock: SimClock | None = None) -> FastAPI:
 
     @app.get("/healthz")
     def healthz() -> dict:
-        return {"ok": True}
+        return {"status": "alive"}
+
+    @app.get("/readyz")
+    def readyz() -> dict:
+        return {"ready": True, "sites": len(scn.sites), "events": len(model.events)}
 
     @app.get("/v1/clock")
     def get_clock() -> dict:

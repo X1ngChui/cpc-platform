@@ -1,6 +1,6 @@
 """真实 GPU 站点检查：压测期间按秒记录站点实测功率，然后通过容量指令关停/重启推理实例。
 
-前提：已按 configs/scenario.local-gpu.yaml 启动服务（cpc up -s configs/scenario.local-gpu.yaml），
+前提：已按 configs/scenario.local-gpu.yaml 以本机模式启动服务（cpc up -s configs/scenario.local-gpu.yaml），
 站点 lab 的上游是本机 vLLM（容器名 cpc-vllm-local）。
 
 用法：python scripts/real_gpu_check.py [--site lab] [--rps 6] [--duration 60] [--restart]
@@ -47,7 +47,7 @@ async def main() -> None:
     ap.add_argument("--restart", action="store_true", help="压测后用容量指令关停再重启推理实例")
     args = ap.parse_args()
     scn = load_scenario(args.scenario)
-    ep = load_endpoints(None, scn)
+    ep = load_endpoints(None, scn, local=True)
     url = ep.sites[args.site]
     rows: list[dict] = []
     stop = asyncio.Event()

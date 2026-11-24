@@ -18,7 +18,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 CLUSTER = "cpc"
-IMAGES = ["cpc-platform:latest", "prom/prometheus:v3.5.0", "grafana/grafana:12.1.1"]
+LOCAL_IMAGES = ["cpc-platform:latest"]  # 本机构建
+REMOTE_IMAGES = ["prom/prometheus:v3.5.0", "grafana/grafana:12.1.1"]  # 从镜像仓库拉取
 
 
 def sh(*cmd: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -26,14 +27,25 @@ def sh(*cmd: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=ROOT, check=check)
 
 
-def load_image(img: str) -> None:
-    """Docker Engine 启用 containerd 镜像库时（Docker Desktop 的默认设置），kind load docker-image 加载多架构镜像会失败，
-    失败时改为导出单一平台的镜像包再用 kind load image-archive 加载。"""
-    if subprocess.run(["kind", "load", "docker-image", img, "--name", CLUSTER], cwd=ROOT).returncode == 0:
+def containerd_store() -> bool:
+    """Docker Engine 是否使用 containerd 镜像库（Docker Desktop 的默认设置）。"""
+    out = subprocess.run(["docker", "info", "--format", "{{json .DriverStatus}}"], capture_output=True, text=True, check=True).stdout
+    return "io.containerd.snapshotter" in out
+
+
+def load_image(img: str, containerd: bool, remote: bool) -> None:
+    """把宿主机上的镜像加载进 kind 节点。
+
+    containerd 镜像库中的多架构镜像无法直接用 kind load docker-image 加载：此时先按本机平台拉取（仓库镜像），
+    再导出单一架构的镜像包，用 kind load image-archive 加载。
+    """
+    arch = subprocess.run(["docker", "info", "--format", "{{.Architecture}}"], capture_output=True, text=True, check=True).stdout.strip()
+    plat = {"aarch64": "linux/arm64", "arm64": "linux/arm64", "x86_64": "linux/amd64"}[arch]
+    if remote:
+        sh("docker", "pull", "--platform", plat, img)
+    if not containerd:
+        sh("kind", "load", "docker-image", img, "--name", CLUSTER)
         return
-    arch = subprocess.run(["docker", "info", "--format", "{{.Architecture}}"], capture_output=True, text=True).stdout.strip()
-    plat = "linux/arm64" if arch in ("aarch64", "arm64") else "linux/amd64"
-    sh("docker", "pull", "--platform", plat, img)
     with tempfile.TemporaryDirectory() as d:
         tar = str(Path(d) / "image.tar")
         sh("docker", "save", "--platform", plat, "-o", tar, img)
@@ -56,8 +68,9 @@ def main() -> None:
         sh("docker", "build", "-t", "cpc-platform:latest", ".")
     # 所有镜像都在宿主机准备好后加载进 kind 节点，节点本身不需要访问镜像仓库
     # （宿主机使用 127.0.0.1 上的代理时，kind 节点继承的代理地址不可达，直接拉取会失败）。
-    for img in IMAGES:
-        load_image(img)
+    containerd = containerd_store()
+    for img in LOCAL_IMAGES + REMOTE_IMAGES:
+        load_image(img, containerd, remote=img in REMOTE_IMAGES)
     sh("kubectl", "--context", f"kind-{CLUSTER}", "apply", "-f", str(HERE / "generated"))
     sh("kubectl", "--context", f"kind-{CLUSTER}", "-n", "cpc", "rollout", "restart", "deployment")
     sh("kubectl", "--context", f"kind-{CLUSTER}", "-n", "cpc", "wait", "--for=condition=available", "deployment", "--all", "--timeout=180s")

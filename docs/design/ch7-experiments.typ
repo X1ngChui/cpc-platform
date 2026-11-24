@@ -75,7 +75,7 @@
 === 真实 GPU 站点 <sec-realgpu>
 
 在同一台笔记本的 NVIDIA GeForce RTX 5070 Ti 上运行 vLLM（v0.34.0，模型 Qwen2.5-0.5B-Instruct），场景
-`configs/scenario.local-gpu.yaml` 把它配置为真实站点（`backend: openai`，功率传感器自动探测为 NVML，配置了容器名以便启停）。
+`configs/scenario.local-gpu.yaml` 把它配置为真实站点（`backend: openai`，功率传感器为 NVML，配置了容器名以便启停）。
 `scripts/real_gpu_check.py` 以 6 请求/秒压测 60 秒，然后通过容量指令关停、重启推理实例：
 
 #figure(image("../figures/real_gpu_power.png", width: 95%), caption: [真实 GPU 站点的实测功率轨迹（每秒采样站点快照）])

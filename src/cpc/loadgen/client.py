@@ -6,6 +6,8 @@
 2. Trace 回放：读取 Azure LLM 推理 trace 格式（列 TIMESTAMP, ContextTokens, GeneratedTokens）的 CSV。
 
 请求体带 max_tokens 与 ignore_eos=true（vLLM 扩展参数），使真实模型输出长度可控，这是推理压测的通行做法。
+
+信号时钟：给出电网信号服务地址时从其同步（失败则报错退出）；未给出时使用场景中的时钟定义。
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from pathlib import Path
 import httpx
 import numpy as np
 
+from ..common import sync_clock
 from ..config import CST, Scenario, TokenDist
 from ..models import SimClock, diurnal_factor
 
@@ -97,10 +100,7 @@ async def run(gateway: str, scn: Scenario, duration_s: float, grid: str | None =
                                  limits=httpx.Limits(max_connections=max_concurrency, max_keepalive_connections=500),
                                  trust_env=False) as client:
         if grid:
-            try:
-                clock = SimClock.from_dict((await client.get(grid.rstrip("/") + "/v1/clock")).json())
-            except httpx.HTTPError:
-                pass
+            clock = await sync_clock(client, grid, 10.0)
         t_begin = time.time()
         arrivals = trace_arrivals(scn, trace, duration_s, time_scale) if trace else synth_arrivals(scn, clock, t_begin, duration_s, rps)
         rng = random.Random(scn.workload.seed)
@@ -119,6 +119,7 @@ async def run(gateway: str, scn: Scenario, duration_s: float, grid: str | None =
                         async with client.stream("POST", url, json=body, headers={"x-cpc-source": a.source}) as r:
                             rec["status"] = r.status_code
                             rec["site"] = r.headers.get("x-cpc-site")
+                            rec["route_reason"] = r.headers.get("x-cpc-route-reason")
                             async for _ in r.aiter_raw():
                                 if ttft is None:
                                     ttft = time.monotonic() - t0
@@ -127,8 +128,8 @@ async def run(gateway: str, scn: Scenario, duration_s: float, grid: str | None =
                         r = await client.post(url, json=body, headers={"x-cpc-source": a.source})
                         rec["status"] = r.status_code
                         rec["site"] = r.headers.get("x-cpc-site")
-                        if "x-cpc-energy-j" in r.headers:
-                            rec["energy_j"] = float(r.headers["x-cpc-energy-j"])
+                        if "x-cpc-energy-est-j" in r.headers:
+                            rec["energy_est_j"] = float(r.headers["x-cpc-energy-est-j"])
                 except httpx.HTTPError as e:
                     rec["status"] = -1
                     rec["error"] = type(e).__name__

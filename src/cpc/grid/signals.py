@@ -32,11 +32,13 @@ class Tariff:
     flat_price: float
     seasons: list[dict]
 
+    def __post_init__(self) -> None:
+        months = sorted(m for s in self.seasons for m in s.get("months", []))
+        if months != list(range(1, 13)):
+            raise ValueError(f"分时电价 {self.key} 的季节月份须恰好覆盖 1–12 月各一次，实际为 {months}")
+
     def season(self, month: int) -> dict:
-        for s in self.seasons:
-            if month in s.get("months", []):
-                return s
-        return self.seasons[0]
+        return next(s for s in self.seasons if month in s["months"])
 
     def price(self, t: datetime) -> tuple[float, str]:
         """返回 (电价 元/kWh, 时段名 sharp/peak/flat/valley/deep_valley)。"""
@@ -70,7 +72,9 @@ class TariffBook:
         }
 
     def get(self, province: str) -> Tariff:
-        return self.tariffs.get(province) or self.tariffs["default"]
+        if province not in self.tariffs:
+            raise KeyError(f"分时电价数据中没有省份 {province}，已收录：{sorted(self.tariffs)}")
+        return self.tariffs[province]
 
 
 class CarbonBook:
@@ -152,6 +156,9 @@ class GridModel:
         self.carbon = CarbonBook(scn.resolve(scn.grid.carbon_factors))
         self.traces = TraceBook(scn.resolve(scn.grid.traces)) if scn.grid.traces else None
         self.events: list[DREvent] = list(scn.grid.dr_events)
+        for s in scn.sites:  # 启动检查：站点引用的省份在电价与排放因子数据中均有收录
+            self.tariffs.get(s.province)
+            self.carbon.annual(s.province)
 
     def add_event(self, ev: DREvent) -> None:
         if ev.site not in {s.id for s in self.scn.sites}:
