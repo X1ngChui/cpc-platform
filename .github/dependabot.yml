@@ -1,0 +1,11 @@
+# 每周检查 GitHub Actions 与 pip 依赖的更新（包括已固定 SHA 的 action）
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
