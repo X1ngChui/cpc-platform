@@ -1,0 +1,9 @@
+# 从宿主机访问 Docker Compose 部署的各服务（端口映射见 deploy/compose/docker-compose.yml）
+grid: http://127.0.0.1:9000
+gateway: http://127.0.0.1:8080
+controller: http://127.0.0.1:9300
+sites:
+  sh: http://127.0.0.1:9101
+  gd: http://127.0.0.1:9102
+  gz: http://127.0.0.1:9103
+  nm: http://127.0.0.1:9104

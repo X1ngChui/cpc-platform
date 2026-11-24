@@ -1,0 +1,85 @@
+# 站点栈：部署在每台租用的 GPU 服务器上（一台服务器 = 一个虚拟数据中心站点）。
+#
+# 组成：
+#   vllm-0 / vllm-1   推理实例（OpenAI 兼容接口），每个实例占一张 GPU，对平台而言是一个"节点"
+#   site-agent        站点代理：排队与派发、NVML 功率采集、开关实例（Docker API）、可选功率封顶
+#   dcgm-exporter     （可选，数据中心级 GPU 推荐）NVIDIA 官方 GPU 指标导出器
+#   node-exporter     （可选）主机 CPU/内存/网络指标；裸金属上还可读取 RAPL 能耗
+#
+# 前置：NVIDIA 驱动 + Docker + NVIDIA Container Toolkit（见《部署与使用手册》第 4 章）。
+# 用法：
+#   cp .env.example .env   # 按本机修改 SITE_ID、MODEL 等
+#   docker compose up -d
+#   docker compose --profile dcgm up -d     # 同时启动 dcgm-exporter
+
+name: cpc-site
+
+x-vllm: &vllm
+  image: vllm/vllm-openai:${VLLM_TAG:-latest}
+  restart: unless-stopped
+  ipc: host
+  volumes:
+    - ${HF_CACHE:-~/.cache/huggingface}:/root/.cache/huggingface
+  environment:
+    HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+    VLLM_USE_MODELSCOPE: ${VLLM_USE_MODELSCOPE:-False}
+
+services:
+  vllm-0:
+    <<: *vllm
+    container_name: cpc-vllm-0
+    command: ["--model", "${MODEL}", "--served-model-name", "cpc", "--max-model-len", "${MAX_MODEL_LEN:-8192}",
+              "--gpu-memory-utilization", "0.90", "--max-num-seqs", "${MAX_NUM_SEQS:-32}"]
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, device_ids: ["0"], capabilities: [gpu]}]
+    ports: ["8000:8000"]
+
+  # 第二张 GPU（单卡服务器删除此服务，并在场景文件中删去对应 upstream）
+  vllm-1:
+    <<: *vllm
+    container_name: cpc-vllm-1
+    profiles: ["gpu2"]
+    command: ["--model", "${MODEL}", "--served-model-name", "cpc", "--max-model-len", "${MAX_MODEL_LEN:-8192}",
+              "--gpu-memory-utilization", "0.90", "--max-num-seqs", "${MAX_NUM_SEQS:-32}"]
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, device_ids: ["1"], capabilities: [gpu]}]
+    ports: ["8001:8000"]
+
+  site-agent:
+    image: ${CPC_IMAGE:-cpc-platform:latest}
+    restart: unless-stopped
+    command: ["site", "-s", "/cfg/scenario.yaml", "-e", "/cfg/endpoints.yaml", "--site", "${SITE_ID}",
+              "--host", "0.0.0.0", "--port", "9100", "--power", "nvml"]
+    volumes:
+      - ./scenario.yaml:/cfg/scenario.yaml:ro
+      - ./endpoints.yaml:/cfg/endpoints.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock   # 用于启停 vLLM 容器（节点开关）
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]   # 仅用于读取 NVML 功率
+    ports: ["9100:9100"]
+
+  dcgm-exporter:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:${DCGM_EXPORTER_TAG:-4.5.2-4.8.1-ubuntu22.04}
+    profiles: ["dcgm"]
+    restart: unless-stopped
+    cap_add: [SYS_ADMIN]
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    ports: ["9400:9400"]
+
+  node-exporter:
+    image: prom/node-exporter:v1.9.1
+    profiles: ["host"]
+    restart: unless-stopped
+    pid: host
+    network_mode: host
+    command: ["--path.rootfs=/host"]
+    volumes: ["/:/host:ro,rslave"]

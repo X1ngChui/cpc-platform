@@ -1,0 +1,70 @@
+# 默认场景：东西部 4 个虚拟数据中心 + 3 个用户来源区域。
+# 场景描述"实验世界"，与部署方式无关；服务地址见 endpoints 文件（configs/endpoints.*.yaml）。
+# 节点功率/性能参数为示意值，接入真实服务器后请用实测数据标定（见《平台设计说明书》第 4 章）。
+
+name: east-west-4dc
+
+clock:
+  start: "2026-07-15T00:00:00+08:00"   # 信号时间起点（夏季工作日，含尖峰时段）
+  speedup: 1                           # 1 = 真实时间；演示时可用 60（真实 1 分钟 = 信号 1 小时）
+
+sources:                               # 用户请求来源区域
+  - {id: east,  name: 上海,  lat: 31.23, lon: 121.47, share: 0.40}
+  - {id: south, name: 广州,  lat: 23.13, lon: 113.26, share: 0.35}
+  - {id: north, name: 北京,  lat: 39.90, lon: 116.40, share: 0.25}
+
+sites:                                 # 虚拟数据中心站点
+  - {id: sh, name: 长三角·上海,     province: shanghai,       lat: 31.15, lon: 121.12, pue: 1.25, nodes: 4}
+  - {id: gd, name: 粤港澳·韶关,     province: guangdong,      lat: 24.81, lon: 113.60, pue: 1.25, nodes: 4}
+  - {id: gz, name: 贵州·贵安,       province: guizhou,        lat: 26.40, lon: 106.40, pue: 1.20, nodes: 6}
+  - {id: nm, name: 内蒙古·和林格尔, province: inner_mongolia, lat: 40.38, lon: 111.82, pue: 1.20, nodes: 6}
+
+node_profiles:
+  default:                             # 示意：8 卡 A100 级推理服务器
+    gpus: 8
+    gpu_model: A100-SXM4-80GB
+    gpu_idle_w: 60
+    gpu_max_w: 400
+    host_idle_w: 800
+    host_max_w: 1500
+    power_exponent: 0.7
+    slots: 16
+    prefill_tokens_per_s: 20000
+    decode_s_per_token: 0.025
+    decode_slowdown: 0.6
+    cap_min_ratio: 0.5
+    cap_perf_exponent: 0.4
+    boot_s: 60
+
+network:
+  base_ms: 4
+  route_factor: 1.5
+  km_per_ms: 200
+  emulate_wan: true                    # 网关按 RTT 注入时延，模拟跨数据中心访问
+
+grid:
+  tariffs: data/grid/tou_tariffs.yaml
+  carbon_factors: data/grid/carbon_factors_2023.csv
+  carbon_profile: synthetic            # flat：年均因子；synthetic：叠加示意日内形状
+  dr_events:                           # 示例：广东站点 15:00–17:00 削峰
+    - {site: gd, start: "2026-07-15T15:00:00+08:00", end: "2026-07-15T17:00:00+08:00", cap_kw: 8}
+
+workload:
+  rps: 12
+  diurnal_amplitude: 0.5
+  peak_hour: 20
+  input_tokens:  {mean: 800, sigma: 0.8, max: 8192}
+  output_tokens: {mean: 200, sigma: 0.7, max: 1024}
+  seed: 1
+
+slo:
+  ttft_s: 2.0
+  tpot_s: 0.15
+
+scheduler:
+  routing:  {policy: nearest, params: {max_wait_s: 0.5}}
+  capacity: {policy: reactive, params: {target_util: 0.6}}
+  control_interval_s: 15
+  sim_control_interval_s: 300
+  carbon_price_yuan_per_kg: 0.1
+  queue_limit_per_slot: 4

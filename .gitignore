@@ -1,0 +1,35 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# 运行产物（可由命令重新生成）
+logs/
+logs-up.txt
+results/
+
+# 文档编译缓存（Typst 包缓存保留在 docs/.typst-packages 中以便离线编译）
+docs/**/*.pdf.tmp
+
+# 本地部署文件（含真实 IP、模型路径等）
+deploy/cloud/site-stack/.env
+deploy/cloud/site-stack/scenario.yaml
+deploy/cloud/site-stack/endpoints.yaml
+deploy/cloud/control-stack/.env
+deploy/cloud/control-stack/scenario.yaml
+deploy/cloud/control-stack/endpoints.yaml
+
+# 密钥与凭据
+*.pem
+.env
+api_key*.txt
+*token*.txt
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store

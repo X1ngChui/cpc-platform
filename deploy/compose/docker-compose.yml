@@ -1,0 +1,92 @@
+# 全仿真一键部署：电网信号服务 + 4 个虚拟数据中心站点 + 网关 + 容量控制器 + Prometheus + Grafana。
+#
+#   docker compose -f deploy/compose/docker-compose.yml up -d --build
+#   docker compose -f deploy/compose/docker-compose.yml run --rm loadgen      # 压测 10 分钟
+#   浏览器打开 Grafana http://localhost:3000 （仪表盘“算电协同调度平台”），Prometheus http://localhost:9090
+#
+# 环境变量（可写在同目录 .env 中）：
+#   CPC_SPEEDUP   信号时钟加速倍数，默认 60（真实 1 分钟 = 信号 1 小时）
+#   CPC_ROUTING   路由策略，默认取场景文件
+#   CPC_CAPACITY  容量策略，默认取场景文件
+
+name: cpc
+
+x-cpc: &cpc
+  image: cpc-platform:latest
+  build:
+    context: ../..
+  restart: unless-stopped
+  environment:
+    CPC_ENDPOINTS: /app/deploy/compose/endpoints.yaml
+    CPC_LOG_LEVEL: INFO
+
+services:
+  grid:
+    <<: *cpc
+    command: ["grid", "-s", "/app/configs/scenario.yaml", "--host", "0.0.0.0", "--speedup", "${CPC_SPEEDUP:-60}"]
+    ports: ["9000:9000"]
+
+  site-sh:
+    <<: *cpc
+    command: ["site", "-s", "/app/configs/scenario.yaml", "--site", "sh", "--host", "0.0.0.0"]
+    ports: ["9101:9100"]
+  site-gd:
+    <<: *cpc
+    command: ["site", "-s", "/app/configs/scenario.yaml", "--site", "gd", "--host", "0.0.0.0"]
+    ports: ["9102:9100"]
+  site-gz:
+    <<: *cpc
+    command: ["site", "-s", "/app/configs/scenario.yaml", "--site", "gz", "--host", "0.0.0.0"]
+    ports: ["9103:9100"]
+  site-nm:
+    <<: *cpc
+    command: ["site", "-s", "/app/configs/scenario.yaml", "--site", "nm", "--host", "0.0.0.0"]
+    ports: ["9104:9100"]
+
+  gateway:
+    <<: *cpc
+    command: ["gateway", "-s", "/app/configs/scenario.yaml", "--host", "0.0.0.0", "--log", "/logs/gateway.jsonl",
+              "--policy", "${CPC_ROUTING:-nearest}"]
+    volumes: ["../../logs/compose:/logs"]
+    ports: ["8080:8080"]
+    depends_on: [grid, site-sh, site-gd, site-gz, site-nm]
+
+  controller:
+    <<: *cpc
+    command: ["controller", "-s", "/app/configs/scenario.yaml", "--host", "0.0.0.0", "--log", "/logs/controller.jsonl",
+              "--policy", "${CPC_CAPACITY:-reactive}"]
+    volumes: ["../../logs/compose:/logs"]
+    ports: ["9300:9300"]
+    depends_on: [gateway]
+
+  loadgen:
+    <<: *cpc
+    restart: "no"
+    profiles: ["load"]
+    command: ["loadgen", "-s", "/app/configs/scenario.yaml", "--duration", "${CPC_LOAD_SECONDS:-600}",
+              "--out", "/logs/loadgen.jsonl"]
+    volumes: ["../../logs/compose:/logs"]
+    depends_on: [gateway]
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d", "--web.enable-lifecycle"]
+    volumes:
+      - ../prometheus/prometheus.compose.yml:/etc/prometheus/prometheus.yml:ro
+      - ../prometheus/rules:/etc/prometheus/rules:ro
+    ports: ["9090:9090"]
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    restart: unless-stopped
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/cpc-overview.json
+    volumes:
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus]

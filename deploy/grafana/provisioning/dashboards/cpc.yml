@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: cpc
+    folder: ""
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

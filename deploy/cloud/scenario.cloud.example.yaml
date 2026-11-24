@@ -1,0 +1,103 @@
+# 云服务器实验场景示例：3 台租用 GPU 服务器分别扮演 3 个站点，另加 1 个纯仿真站点。
+#
+# - 真实站点（backend: openai）：节点 = vLLM 实例，功率来自 NVML 实测；
+# - 仿真站点（backend: emulated）：节点由功率/性能模型模拟，可与真实站点混合使用；
+# - 租用的服务器通常在同一地域，跨数据中心时延由网关注入（network.emulate_wan: true）；
+#   若服务器确实分布在不同地域，改为 false，并可在 network.overrides 中填入实测 RTT。
+#
+# 节点参数（node_profiles）对真实站点只用到主机功率部分（host_idle_w/host_max_w，每个实例分摊）
+# 和功率封顶下限；GPU 功率以 NVML 实测为准。
+
+name: cloud-3real-1sim
+
+clock:
+  start: "2026-07-15T08:00:00+08:00"
+  speedup: 12            # 真实 2 小时覆盖信号 24 小时；正式实验建议 1
+
+sources:
+  - {id: east,  name: 上海, lat: 31.23, lon: 121.47, share: 0.40}
+  - {id: south, name: 广州, lat: 23.13, lon: 113.26, share: 0.35}
+  - {id: north, name: 北京, lat: 39.90, lon: 116.40, share: 0.25}
+
+sites:
+  - id: sh
+    name: 长三角·上海（真实服务器 A）
+    province: shanghai
+    lat: 31.15
+    lon: 121.12
+    pue: 1.25
+    backend: openai
+    profile: gpu-server
+    upstreams:
+      - {id: sh-vllm0, url: "http://vllm-0:8000", gpu_indices: [0], container: cpc-vllm-0, max_inflight: 32}
+  - id: gz
+    name: 贵州·贵安（真实服务器 B）
+    province: guizhou
+    lat: 26.40
+    lon: 106.40
+    pue: 1.20
+    backend: openai
+    profile: gpu-server
+    upstreams:
+      - {id: gz-vllm0, url: "http://vllm-0:8000", gpu_indices: [0], container: cpc-vllm-0, max_inflight: 32}
+  - id: nm
+    name: 内蒙古·和林格尔（真实服务器 C）
+    province: inner_mongolia
+    lat: 40.38
+    lon: 111.82
+    pue: 1.20
+    backend: openai
+    profile: gpu-server
+    upstreams:
+      - {id: nm-vllm0, url: "http://vllm-0:8000", gpu_indices: [0], container: cpc-vllm-0, max_inflight: 32}
+  - id: gd
+    name: 粤港澳·韶关（仿真）
+    province: guangdong
+    lat: 24.81
+    lon: 113.60
+    pue: 1.25
+    nodes: 2
+    profile: emulated-a10
+
+node_profiles:
+  gpu-server:              # 真实服务器：GPU 功率实测，主机部分按实例分摊的示意值
+    gpus: 1
+    gpu_model: measured
+    host_idle_w: 150
+    host_max_w: 250
+    cap_min_ratio: 0.6
+  emulated-a10:            # 仿真站点：与真实服务器同级别的单卡节点（示意参数，建议用真实站点的实测数据标定）
+    gpus: 1
+    gpu_model: A10-24GB
+    gpu_idle_w: 20
+    gpu_max_w: 150
+    host_idle_w: 150
+    host_max_w: 250
+    slots: 32
+    prefill_tokens_per_s: 4000
+    decode_s_per_token: 0.03
+    boot_s: 90
+
+network:
+  emulate_wan: true
+
+grid:
+  tariffs: data/grid/tou_tariffs.yaml
+  carbon_factors: data/grid/carbon_factors_2023.csv
+  carbon_profile: synthetic
+
+workload:
+  rps: 2
+  diurnal_amplitude: 0.5
+  peak_hour: 20
+  input_tokens:  {mean: 600, sigma: 0.8, max: 4096}
+  output_tokens: {mean: 150, sigma: 0.7, max: 512}
+
+slo:
+  ttft_s: 2.0
+  tpot_s: 0.15
+
+scheduler:
+  routing:  {policy: nearest}
+  capacity: {policy: reactive, params: {target_util: 0.6}}
+  control_interval_s: 30

@@ -1,0 +1,555 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cpc-endpoints
+  namespace: cpc
+data:
+  endpoints.yaml: "grid: http://grid.cpc.svc:9000\ngateway: http://gateway.cpc.svc:8080\n\
+    controller: http://controller.cpc.svc:9300\nsites:\n  sh: http://site-sh.cpc.svc:9100\n\
+    \  gd: http://site-gd.cpc.svc:9100\n  gz: http://site-gz.cpc.svc:9100\n  nm: http://site-nm.cpc.svc:9100\n"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: cpc
+data:
+  prometheus.yml: "global:\n  scrape_interval: 5s\n  evaluation_interval: 5s\nrule_files:\n\
+    - /etc/prometheus/rules/*.yml\nscrape_configs:\n- job_name: cpc-grid\n  static_configs:\n\
+    \  - targets:\n    - grid.cpc.svc:9000\n- job_name: cpc-site\n  static_configs:\n\
+    \  - targets:\n    - site-sh.cpc.svc:9100\n    - site-gd.cpc.svc:9100\n    - site-gz.cpc.svc:9100\n\
+    \    - site-nm.cpc.svc:9100\n- job_name: cpc-gateway\n  static_configs:\n  - targets:\n\
+    \    - gateway.cpc.svc:8080\n- job_name: cpc-controller\n  static_configs:\n \
+    \ - targets:\n    - controller.cpc.svc:9300\n"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+  namespace: cpc
+data:
+  cpc-energy.yml: "# 能耗感知的\"标准化指标\"——Prometheus 记录规则（recording rules）。\n#\n# 设计：各类采集器（站点代理的模型/NVML\
+    \ 读数、NVIDIA dcgm-exporter、Kepler、IPMI exporter）\n# 输出的原始指标名各不相同；这里统一汇总为以 site\
+    \ 为维度的标准指标，调度器、仪表盘与实验分析只依赖这些标准指标。\n# 命名遵循 Prometheus 官方约定 level:metric:operations。\n\
+    groups:\n  - name: cpc-energy\n    interval: 5s\n    rules:\n      # ---- 设备层：GPU\
+    \ 功率（与 dcgm-exporter 同名指标，仿真站点与真实站点通用）\n      - record: site:gpu_power_watts:sum\n\
+    \        expr: sum by (site) (DCGM_FI_DEV_POWER_USAGE)\n      # ---- 服务器层：IT 功率（GPU\
+    \ + 主机）\n      - record: site:it_power_watts:sum\n        expr: sum by (site)\
+    \ (cpc_site_it_power_watts)\n      # ---- 设施层：设施功率 = IT 功率 × PUE\n      - record:\
+    \ site:facility_power_watts:sum\n        expr: sum by (site) (cpc_site_facility_power_watts)\n\
+    \      - record: global:facility_power_watts:sum\n        expr: sum(site:facility_power_watts:sum)\n\
+    \      # ---- 电网层：用电成本速率（元/小时）与碳排放速率（kg/小时）\n      - record: site:energy_cost_yuan_per_hour\n\
+    \        expr: site:facility_power_watts:sum / 1000 * on (site) group_left max\
+    \ by (site) (cpc_grid_price_yuan_per_kwh)\n      - record: site:carbon_kg_per_hour\n\
+    \        expr: site:facility_power_watts:sum / 1000 * on (site) group_left max\
+    \ by (site) (cpc_grid_carbon_kg_per_kwh)\n      - record: global:energy_cost_yuan_per_hour\n\
+    \        expr: sum(site:energy_cost_yuan_per_hour)\n      - record: global:carbon_kg_per_hour\n\
+    \        expr: sum(site:carbon_kg_per_hour)\n      # ---- 需求响应：设施功率相对上限的余量（无上限的站点不出现）\n\
+    \      - record: site:power_cap_headroom_watts\n        expr: max by (site) (cpc_grid_power_cap_kw\
+    \ > 0) * 1000 - on (site) site:facility_power_watts:sum\n      # ---- 能效：每输出 token\
+    \ 的设施能耗（J/token）\n      - record: site:joules_per_output_token:rate1m\n      \
+    \  expr: >\n          site:facility_power_watts:sum\n          / on (site) (sum\
+    \ by (site) (rate(cpc_site_tokens_total{kind=\"completion\"}[1m])) > 0)\n\n  -\
+    \ name: cpc-service\n    interval: 5s\n    rules:\n      - record: source_site:requests:rate1m\n\
+    \        expr: sum by (source, site) (rate(cpc_gateway_requests_total{status=\"\
+    200\"}[1m]))\n      - record: site:requests:rate1m\n        expr: sum by (site)\
+    \ (rate(cpc_gateway_requests_total{status=\"200\"}[1m]))\n      - record: site:ttft_seconds:p99_1m\n\
+    \        expr: histogram_quantile(0.99, sum by (le, site) (rate(cpc_gateway_ttft_seconds_bucket[1m])))\n\
+    \      - record: global:slo_attainment:ratio5m\n        expr: sum(rate(cpc_gateway_slo_total{result=\"\
+    met\"}[5m])) / sum(rate(cpc_gateway_slo_total[5m]))\n"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: cpc
+data:
+  prometheus.yml: "apiVersion: 1\ndatasources:\n  - name: Prometheus\n    uid: prometheus\n\
+    \    type: prometheus\n    access: proxy\n    url: http://prometheus.cpc.svc:9090\n\
+    \    isDefault: true\n    jsonData:\n      timeInterval: 5s\n"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: cpc
+data:
+  cpc.yml: "apiVersion: 1\nproviders:\n  - name: cpc\n    folder: \"\"\n    type:\
+    \ file\n    options:\n      path: /var/lib/grafana/dashboards\n"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: cpc
+data:
+  cpc-overview.json: "{\n  \"uid\": \"cpc-overview\",\n  \"title\": \"算电协同调度平台\",\n\
+    \  \"tags\": [\n    \"cpc\"\n  ],\n  \"timezone\": \"browser\",\n  \"schemaVersion\"\
+    : 39,\n  \"version\": 1,\n  \"refresh\": \"5s\",\n  \"time\": {\n    \"from\"\
+    : \"now-30m\",\n    \"to\": \"now\"\n  },\n  \"panels\": [\n    {\n      \"id\"\
+    : 1,\n      \"type\": \"stat\",\n      \"title\": \"设施总功率\",\n      \"description\"\
+    : \"各站点 IT 功率 × PUE 之和\",\n      \"datasource\": {\n        \"type\": \"prometheus\"\
+    ,\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n        \"\
+    x\": 0,\n        \"y\": 0,\n        \"w\": 4,\n        \"h\": 4\n      },\n  \
+    \    \"targets\": [\n        {\n          \"refId\": \"A\",\n          \"expr\"\
+    : \"global:facility_power_watts:sum\",\n          \"datasource\": {\n        \
+    \    \"type\": \"prometheus\",\n            \"uid\": \"prometheus\"\n        \
+    \  }\n        }\n      ],\n      \"fieldConfig\": {\n        \"defaults\": {\n\
+    \          \"unit\": \"watt\",\n          \"decimals\": 1,\n          \"color\"\
+    : {\n            \"mode\": \"fixed\",\n            \"fixedColor\": \"#52514e\"\
+    \n          }\n        },\n        \"overrides\": []\n      },\n      \"options\"\
+    : {\n        \"colorMode\": \"none\",\n        \"graphMode\": \"area\",\n    \
+    \    \"reduceOptions\": {\n          \"calcs\": [\n            \"lastNotNull\"\
+    \n          ]\n        },\n        \"textMode\": \"value\"\n      }\n    },\n\
+    \    {\n      \"id\": 2,\n      \"type\": \"stat\",\n      \"title\": \"用电成本速率（元/小时）\"\
+    ,\n      \"description\": \"\",\n      \"datasource\": {\n        \"type\": \"\
+    prometheus\",\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n\
+    \        \"x\": 4,\n        \"y\": 0,\n        \"w\": 4,\n        \"h\": 4\n \
+    \     },\n      \"targets\": [\n        {\n          \"refId\": \"A\",\n     \
+    \     \"expr\": \"global:energy_cost_yuan_per_hour\",\n          \"datasource\"\
+    : {\n            \"type\": \"prometheus\",\n            \"uid\": \"prometheus\"\
+    \n          }\n        }\n      ],\n      \"fieldConfig\": {\n        \"defaults\"\
+    : {\n          \"unit\": \"none\",\n          \"decimals\": 2,\n          \"color\"\
+    : {\n            \"mode\": \"fixed\",\n            \"fixedColor\": \"#52514e\"\
+    \n          }\n        },\n        \"overrides\": []\n      },\n      \"options\"\
+    : {\n        \"colorMode\": \"none\",\n        \"graphMode\": \"area\",\n    \
+    \    \"reduceOptions\": {\n          \"calcs\": [\n            \"lastNotNull\"\
+    \n          ]\n        },\n        \"textMode\": \"value\"\n      }\n    },\n\
+    \    {\n      \"id\": 3,\n      \"type\": \"stat\",\n      \"title\": \"碳排放速率（kg/小时）\"\
+    ,\n      \"description\": \"\",\n      \"datasource\": {\n        \"type\": \"\
+    prometheus\",\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n\
+    \        \"x\": 8,\n        \"y\": 0,\n        \"w\": 4,\n        \"h\": 4\n \
+    \     },\n      \"targets\": [\n        {\n          \"refId\": \"A\",\n     \
+    \     \"expr\": \"global:carbon_kg_per_hour\",\n          \"datasource\": {\n\
+    \            \"type\": \"prometheus\",\n            \"uid\": \"prometheus\"\n\
+    \          }\n        }\n      ],\n      \"fieldConfig\": {\n        \"defaults\"\
+    : {\n          \"unit\": \"none\",\n          \"decimals\": 2,\n          \"color\"\
+    : {\n            \"mode\": \"fixed\",\n            \"fixedColor\": \"#52514e\"\
+    \n          }\n        },\n        \"overrides\": []\n      },\n      \"options\"\
+    : {\n        \"colorMode\": \"none\",\n        \"graphMode\": \"area\",\n    \
+    \    \"reduceOptions\": {\n          \"calcs\": [\n            \"lastNotNull\"\
+    \n          ]\n        },\n        \"textMode\": \"value\"\n      }\n    },\n\
+    \    {\n      \"id\": 4,\n      \"type\": \"stat\",\n      \"title\": \"请求速率\"\
+    ,\n      \"description\": \"\",\n      \"datasource\": {\n        \"type\": \"\
+    prometheus\",\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n\
+    \        \"x\": 12,\n        \"y\": 0,\n        \"w\": 4,\n        \"h\": 4\n\
+    \      },\n      \"targets\": [\n        {\n          \"refId\": \"A\",\n    \
+    \      \"expr\": \"sum(site:requests:rate1m)\",\n          \"datasource\": {\n\
+    \            \"type\": \"prometheus\",\n            \"uid\": \"prometheus\"\n\
+    \          }\n        }\n      ],\n      \"fieldConfig\": {\n        \"defaults\"\
+    : {\n          \"unit\": \"reqps\",\n          \"decimals\": 2,\n          \"\
+    color\": {\n            \"mode\": \"fixed\",\n            \"fixedColor\": \"#52514e\"\
+    \n          }\n        },\n        \"overrides\": []\n      },\n      \"options\"\
+    : {\n        \"colorMode\": \"none\",\n        \"graphMode\": \"area\",\n    \
+    \    \"reduceOptions\": {\n          \"calcs\": [\n            \"lastNotNull\"\
+    \n          ]\n        },\n        \"textMode\": \"value\"\n      }\n    },\n\
+    \    {\n      \"id\": 5,\n      \"type\": \"stat\",\n      \"title\": \"SLO 达成率（5\
+    \ 分钟）\",\n      \"description\": \"\",\n      \"datasource\": {\n        \"type\"\
+    : \"prometheus\",\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\"\
+    : {\n        \"x\": 16,\n        \"y\": 0,\n        \"w\": 4,\n        \"h\":\
+    \ 4\n      },\n      \"targets\": [\n        {\n          \"refId\": \"A\",\n\
+    \          \"expr\": \"global:slo_attainment:ratio5m\",\n          \"datasource\"\
+    : {\n            \"type\": \"prometheus\",\n            \"uid\": \"prometheus\"\
+    \n          }\n        }\n      ],\n      \"fieldConfig\": {\n        \"defaults\"\
+    : {\n          \"unit\": \"percentunit\",\n          \"decimals\": 3,\n      \
+    \    \"color\": {\n            \"mode\": \"fixed\",\n            \"fixedColor\"\
+    : \"#52514e\"\n          }\n        },\n        \"overrides\": []\n      },\n\
+    \      \"options\": {\n        \"colorMode\": \"none\",\n        \"graphMode\"\
+    : \"area\",\n        \"reduceOptions\": {\n          \"calcs\": [\n          \
+    \  \"lastNotNull\"\n          ]\n        },\n        \"textMode\": \"value\"\n\
+    \      }\n    },\n    {\n      \"id\": 6,\n      \"type\": \"stat\",\n      \"\
+    title\": \"信号时钟（时）\",\n      \"description\": \"电网信号时间的小时数；演示时可加速\",\n      \"\
+    datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"prometheus\"\
+    \n      },\n      \"gridPos\": {\n        \"x\": 20,\n        \"y\": 0,\n    \
+    \    \"w\": 4,\n        \"h\": 4\n      },\n      \"targets\": [\n        {\n\
+    \          \"refId\": \"A\",\n          \"expr\": \"cpc_grid_signal_hour\",\n\
+    \          \"datasource\": {\n            \"type\": \"prometheus\",\n        \
+    \    \"uid\": \"prometheus\"\n          }\n        }\n      ],\n      \"fieldConfig\"\
+    : {\n        \"defaults\": {\n          \"unit\": \"none\",\n          \"decimals\"\
+    : 2,\n          \"color\": {\n            \"mode\": \"fixed\",\n            \"\
+    fixedColor\": \"#52514e\"\n          }\n        },\n        \"overrides\": []\n\
+    \      },\n      \"options\": {\n        \"colorMode\": \"none\",\n        \"\
+    graphMode\": \"area\",\n        \"reduceOptions\": {\n          \"calcs\": [\n\
+    \            \"lastNotNull\"\n          ]\n        },\n        \"textMode\": \"\
+    value\"\n      }\n    },\n    {\n      \"id\": 10,\n      \"type\": \"timeseries\"\
+    ,\n      \"title\": \"站点设施功率\",\n      \"description\": \"\",\n      \"datasource\"\
+    : {\n        \"type\": \"prometheus\",\n        \"uid\": \"prometheus\"\n    \
+    \  },\n      \"gridPos\": {\n        \"x\": 0,\n        \"y\": 4,\n        \"\
+    w\": 12,\n        \"h\": 8\n      },\n      \"targets\": [\n        {\n      \
+    \    \"refId\": \"A\",\n          \"expr\": \"site:facility_power_watts:sum\"\
+    ,\n          \"legendFormat\": \"{{site}}\",\n          \"datasource\": {\n  \
+    \          \"type\": \"prometheus\",\n            \"uid\": \"prometheus\"\n  \
+    \        }\n        }\n      ],\n      \"fieldConfig\": {\n        \"defaults\"\
+    : {\n          \"unit\": \"watt\",\n          \"custom\": {\n            \"lineWidth\"\
+    : 2,\n            \"fillOpacity\": 0,\n            \"showPoints\": \"never\",\n\
+    \            \"spanNulls\": true,\n            \"lineInterpolation\": \"linear\"\
+    ,\n            \"axisSoftMin\": 0\n          },\n          \"color\": {\n    \
+    \        \"mode\": \"palette-classic\"\n          }\n        },\n        \"overrides\"\
+    : [\n          {\n            \"matcher\": {\n              \"id\": \"byName\"\
+    ,\n              \"options\": \"sh\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#2a78d6\"\n                }\n              }\n            ]\n          },\n\
+    \          {\n            \"matcher\": {\n              \"id\": \"byName\",\n\
+    \              \"options\": \"gd\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#eb6834\"\n                }\n              }\n            ]\n          },\n\
+    \          {\n            \"matcher\": {\n              \"id\": \"byName\",\n\
+    \              \"options\": \"gz\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#1baf7a\"\n                }\n              }\n            ]\n          },\n\
+    \          {\n            \"matcher\": {\n              \"id\": \"byName\",\n\
+    \              \"options\": \"nm\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#eda100\"\n                }\n              }\n            ]\n          }\n\
+    \        ]\n      },\n      \"options\": {\n        \"legend\": {\n          \"\
+    displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\"\
+    : true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n \
+    \         \"sort\": \"desc\"\n        }\n      }\n    },\n    {\n      \"id\"\
+    : 11,\n      \"type\": \"timeseries\",\n      \"title\": \"分时电价（元/kWh）\",\n  \
+    \    \"description\": \"\",\n      \"datasource\": {\n        \"type\": \"prometheus\"\
+    ,\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n        \"\
+    x\": 12,\n        \"y\": 4,\n        \"w\": 12,\n        \"h\": 8\n      },\n\
+    \      \"targets\": [\n        {\n          \"refId\": \"A\",\n          \"expr\"\
+    : \"max by (site) (cpc_grid_price_yuan_per_kwh)\",\n          \"legendFormat\"\
+    : \"{{site}}\",\n          \"datasource\": {\n            \"type\": \"prometheus\"\
+    ,\n            \"uid\": \"prometheus\"\n          }\n        }\n      ],\n   \
+    \   \"fieldConfig\": {\n        \"defaults\": {\n          \"unit\": \"none\"\
+    ,\n          \"custom\": {\n            \"lineWidth\": 2,\n            \"fillOpacity\"\
+    : 0,\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n\
+    \            \"lineInterpolation\": \"stepAfter\",\n            \"axisSoftMin\"\
+    : 0\n          },\n          \"color\": {\n            \"mode\": \"palette-classic\"\
+    \n          }\n        },\n        \"overrides\": [\n          {\n           \
+    \ \"matcher\": {\n              \"id\": \"byName\",\n              \"options\"\
+    : \"sh\"\n            },\n            \"properties\": [\n              {\n   \
+    \             \"id\": \"color\",\n                \"value\": {\n             \
+    \     \"mode\": \"fixed\",\n                  \"fixedColor\": \"#2a78d6\"\n  \
+    \              }\n              }\n            ]\n          },\n          {\n\
+    \            \"matcher\": {\n              \"id\": \"byName\",\n             \
+    \ \"options\": \"gd\"\n            },\n            \"properties\": [\n       \
+    \       {\n                \"id\": \"color\",\n                \"value\": {\n\
+    \                  \"mode\": \"fixed\",\n                  \"fixedColor\": \"\
+    #eb6834\"\n                }\n              }\n            ]\n          },\n \
+    \         {\n            \"matcher\": {\n              \"id\": \"byName\",\n \
+    \             \"options\": \"gz\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#1baf7a\"\n                }\n              }\n            ]\n          },\n\
+    \          {\n            \"matcher\": {\n              \"id\": \"byName\",\n\
+    \              \"options\": \"nm\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#eda100\"\n                }\n              }\n            ]\n          }\n\
+    \        ]\n      },\n      \"options\": {\n        \"legend\": {\n          \"\
+    displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\"\
+    : true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n \
+    \         \"sort\": \"desc\"\n        }\n      }\n    },\n    {\n      \"id\"\
+    : 12,\n      \"type\": \"timeseries\",\n      \"title\": \"在线节点数\",\n      \"\
+    description\": \"\",\n      \"datasource\": {\n        \"type\": \"prometheus\"\
+    ,\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n        \"\
+    x\": 0,\n        \"y\": 12,\n        \"w\": 12,\n        \"h\": 8\n      },\n\
+    \      \"targets\": [\n        {\n          \"refId\": \"A\",\n          \"expr\"\
+    : \"max by (site) (cpc_site_nodes_on)\",\n          \"legendFormat\": \"{{site}}\"\
+    ,\n          \"datasource\": {\n            \"type\": \"prometheus\",\n      \
+    \      \"uid\": \"prometheus\"\n          }\n        }\n      ],\n      \"fieldConfig\"\
+    : {\n        \"defaults\": {\n          \"unit\": \"none\",\n          \"custom\"\
+    : {\n            \"lineWidth\": 2,\n            \"fillOpacity\": 0,\n        \
+    \    \"showPoints\": \"never\",\n            \"spanNulls\": true,\n          \
+    \  \"lineInterpolation\": \"stepAfter\",\n            \"axisSoftMin\": 0\n   \
+    \       },\n          \"color\": {\n            \"mode\": \"palette-classic\"\n\
+    \          }\n        },\n        \"overrides\": [\n          {\n            \"\
+    matcher\": {\n              \"id\": \"byName\",\n              \"options\": \"\
+    sh\"\n            },\n            \"properties\": [\n              {\n       \
+    \         \"id\": \"color\",\n                \"value\": {\n                 \
+    \ \"mode\": \"fixed\",\n                  \"fixedColor\": \"#2a78d6\"\n      \
+    \          }\n              }\n            ]\n          },\n          {\n    \
+    \        \"matcher\": {\n              \"id\": \"byName\",\n              \"options\"\
+    : \"gd\"\n            },\n            \"properties\": [\n              {\n   \
+    \             \"id\": \"color\",\n                \"value\": {\n             \
+    \     \"mode\": \"fixed\",\n                  \"fixedColor\": \"#eb6834\"\n  \
+    \              }\n              }\n            ]\n          },\n          {\n\
+    \            \"matcher\": {\n              \"id\": \"byName\",\n             \
+    \ \"options\": \"gz\"\n            },\n            \"properties\": [\n       \
+    \       {\n                \"id\": \"color\",\n                \"value\": {\n\
+    \                  \"mode\": \"fixed\",\n                  \"fixedColor\": \"\
+    #1baf7a\"\n                }\n              }\n            ]\n          },\n \
+    \         {\n            \"matcher\": {\n              \"id\": \"byName\",\n \
+    \             \"options\": \"nm\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#eda100\"\n                }\n              }\n            ]\n          }\n\
+    \        ]\n      },\n      \"options\": {\n        \"legend\": {\n          \"\
+    displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\"\
+    : true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n \
+    \         \"sort\": \"desc\"\n        }\n      }\n    },\n    {\n      \"id\"\
+    : 13,\n      \"type\": \"timeseries\",\n      \"title\": \"电力碳排放因子（kgCO2/kWh）\"\
+    ,\n      \"description\": \"\",\n      \"datasource\": {\n        \"type\": \"\
+    prometheus\",\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n\
+    \        \"x\": 12,\n        \"y\": 12,\n        \"w\": 12,\n        \"h\": 8\n\
+    \      },\n      \"targets\": [\n        {\n          \"refId\": \"A\",\n    \
+    \      \"expr\": \"max by (site) (cpc_grid_carbon_kg_per_kwh)\",\n          \"\
+    legendFormat\": \"{{site}}\",\n          \"datasource\": {\n            \"type\"\
+    : \"prometheus\",\n            \"uid\": \"prometheus\"\n          }\n        }\n\
+    \      ],\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"unit\"\
+    : \"none\",\n          \"custom\": {\n            \"lineWidth\": 2,\n        \
+    \    \"fillOpacity\": 0,\n            \"showPoints\": \"never\",\n           \
+    \ \"spanNulls\": true,\n            \"lineInterpolation\": \"linear\",\n     \
+    \       \"axisSoftMin\": 0\n          },\n          \"color\": {\n           \
+    \ \"mode\": \"palette-classic\"\n          }\n        },\n        \"overrides\"\
+    : [\n          {\n            \"matcher\": {\n              \"id\": \"byName\"\
+    ,\n              \"options\": \"sh\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#2a78d6\"\n                }\n              }\n            ]\n          },\n\
+    \          {\n            \"matcher\": {\n              \"id\": \"byName\",\n\
+    \              \"options\": \"gd\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#eb6834\"\n                }\n              }\n            ]\n          },\n\
+    \          {\n            \"matcher\": {\n              \"id\": \"byName\",\n\
+    \              \"options\": \"gz\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#1baf7a\"\n                }\n              }\n            ]\n          },\n\
+    \          {\n            \"matcher\": {\n              \"id\": \"byName\",\n\
+    \              \"options\": \"nm\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#eda100\"\n                }\n              }\n            ]\n          }\n\
+    \        ]\n      },\n      \"options\": {\n        \"legend\": {\n          \"\
+    displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\"\
+    : true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n \
+    \         \"sort\": \"desc\"\n        }\n      }\n    },\n    {\n      \"id\"\
+    : 14,\n      \"type\": \"timeseries\",\n      \"title\": \"各站点请求速率\",\n      \"\
+    description\": \"\",\n      \"datasource\": {\n        \"type\": \"prometheus\"\
+    ,\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n        \"\
+    x\": 0,\n        \"y\": 20,\n        \"w\": 12,\n        \"h\": 8\n      },\n\
+    \      \"targets\": [\n        {\n          \"refId\": \"A\",\n          \"expr\"\
+    : \"site:requests:rate1m\",\n          \"legendFormat\": \"{{site}}\",\n     \
+    \     \"datasource\": {\n            \"type\": \"prometheus\",\n            \"\
+    uid\": \"prometheus\"\n          }\n        }\n      ],\n      \"fieldConfig\"\
+    : {\n        \"defaults\": {\n          \"unit\": \"reqps\",\n          \"custom\"\
+    : {\n            \"lineWidth\": 2,\n            \"fillOpacity\": 0,\n        \
+    \    \"showPoints\": \"never\",\n            \"spanNulls\": true,\n          \
+    \  \"lineInterpolation\": \"linear\",\n            \"axisSoftMin\": 0\n      \
+    \    },\n          \"color\": {\n            \"mode\": \"palette-classic\"\n \
+    \         }\n        },\n        \"overrides\": [\n          {\n            \"\
+    matcher\": {\n              \"id\": \"byName\",\n              \"options\": \"\
+    sh\"\n            },\n            \"properties\": [\n              {\n       \
+    \         \"id\": \"color\",\n                \"value\": {\n                 \
+    \ \"mode\": \"fixed\",\n                  \"fixedColor\": \"#2a78d6\"\n      \
+    \          }\n              }\n            ]\n          },\n          {\n    \
+    \        \"matcher\": {\n              \"id\": \"byName\",\n              \"options\"\
+    : \"gd\"\n            },\n            \"properties\": [\n              {\n   \
+    \             \"id\": \"color\",\n                \"value\": {\n             \
+    \     \"mode\": \"fixed\",\n                  \"fixedColor\": \"#eb6834\"\n  \
+    \              }\n              }\n            ]\n          },\n          {\n\
+    \            \"matcher\": {\n              \"id\": \"byName\",\n             \
+    \ \"options\": \"gz\"\n            },\n            \"properties\": [\n       \
+    \       {\n                \"id\": \"color\",\n                \"value\": {\n\
+    \                  \"mode\": \"fixed\",\n                  \"fixedColor\": \"\
+    #1baf7a\"\n                }\n              }\n            ]\n          },\n \
+    \         {\n            \"matcher\": {\n              \"id\": \"byName\",\n \
+    \             \"options\": \"nm\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#eda100\"\n                }\n              }\n            ]\n          }\n\
+    \        ]\n      },\n      \"options\": {\n        \"legend\": {\n          \"\
+    displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\"\
+    : true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n \
+    \         \"sort\": \"desc\"\n        }\n      }\n    },\n    {\n      \"id\"\
+    : 15,\n      \"type\": \"timeseries\",\n      \"title\": \"首 token 时延 P99\",\n\
+    \      \"description\": \"\",\n      \"datasource\": {\n        \"type\": \"prometheus\"\
+    ,\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n        \"\
+    x\": 12,\n        \"y\": 20,\n        \"w\": 12,\n        \"h\": 8\n      },\n\
+    \      \"targets\": [\n        {\n          \"refId\": \"A\",\n          \"expr\"\
+    : \"site:ttft_seconds:p99_1m\",\n          \"legendFormat\": \"{{site}}\",\n \
+    \         \"datasource\": {\n            \"type\": \"prometheus\",\n         \
+    \   \"uid\": \"prometheus\"\n          }\n        }\n      ],\n      \"fieldConfig\"\
+    : {\n        \"defaults\": {\n          \"unit\": \"s\",\n          \"custom\"\
+    : {\n            \"lineWidth\": 2,\n            \"fillOpacity\": 0,\n        \
+    \    \"showPoints\": \"never\",\n            \"spanNulls\": true,\n          \
+    \  \"lineInterpolation\": \"linear\",\n            \"axisSoftMin\": 0\n      \
+    \    },\n          \"color\": {\n            \"mode\": \"palette-classic\"\n \
+    \         }\n        },\n        \"overrides\": [\n          {\n            \"\
+    matcher\": {\n              \"id\": \"byName\",\n              \"options\": \"\
+    sh\"\n            },\n            \"properties\": [\n              {\n       \
+    \         \"id\": \"color\",\n                \"value\": {\n                 \
+    \ \"mode\": \"fixed\",\n                  \"fixedColor\": \"#2a78d6\"\n      \
+    \          }\n              }\n            ]\n          },\n          {\n    \
+    \        \"matcher\": {\n              \"id\": \"byName\",\n              \"options\"\
+    : \"gd\"\n            },\n            \"properties\": [\n              {\n   \
+    \             \"id\": \"color\",\n                \"value\": {\n             \
+    \     \"mode\": \"fixed\",\n                  \"fixedColor\": \"#eb6834\"\n  \
+    \              }\n              }\n            ]\n          },\n          {\n\
+    \            \"matcher\": {\n              \"id\": \"byName\",\n             \
+    \ \"options\": \"gz\"\n            },\n            \"properties\": [\n       \
+    \       {\n                \"id\": \"color\",\n                \"value\": {\n\
+    \                  \"mode\": \"fixed\",\n                  \"fixedColor\": \"\
+    #1baf7a\"\n                }\n              }\n            ]\n          },\n \
+    \         {\n            \"matcher\": {\n              \"id\": \"byName\",\n \
+    \             \"options\": \"nm\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#eda100\"\n                }\n              }\n            ]\n          }\n\
+    \        ]\n      },\n      \"options\": {\n        \"legend\": {\n          \"\
+    displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\"\
+    : true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n \
+    \         \"sort\": \"desc\"\n        }\n      }\n    },\n    {\n      \"id\"\
+    : 16,\n      \"type\": \"timeseries\",\n      \"title\": \"需求响应：功率上限余量\",\n  \
+    \    \"description\": \"设施功率上限 − 实际设施功率；为负表示越限。仅在有上限的时段显示\",\n      \"datasource\"\
+    : {\n        \"type\": \"prometheus\",\n        \"uid\": \"prometheus\"\n    \
+    \  },\n      \"gridPos\": {\n        \"x\": 0,\n        \"y\": 28,\n        \"\
+    w\": 12,\n        \"h\": 8\n      },\n      \"targets\": [\n        {\n      \
+    \    \"refId\": \"A\",\n          \"expr\": \"site:power_cap_headroom_watts\"\
+    ,\n          \"legendFormat\": \"{{site}}\",\n          \"datasource\": {\n  \
+    \          \"type\": \"prometheus\",\n            \"uid\": \"prometheus\"\n  \
+    \        }\n        }\n      ],\n      \"fieldConfig\": {\n        \"defaults\"\
+    : {\n          \"unit\": \"watt\",\n          \"custom\": {\n            \"lineWidth\"\
+    : 2,\n            \"fillOpacity\": 0,\n            \"showPoints\": \"never\",\n\
+    \            \"spanNulls\": true,\n            \"lineInterpolation\": \"linear\"\
+    ,\n            \"axisSoftMin\": 0\n          },\n          \"color\": {\n    \
+    \        \"mode\": \"palette-classic\"\n          }\n        },\n        \"overrides\"\
+    : [\n          {\n            \"matcher\": {\n              \"id\": \"byName\"\
+    ,\n              \"options\": \"sh\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#2a78d6\"\n                }\n              }\n            ]\n          },\n\
+    \          {\n            \"matcher\": {\n              \"id\": \"byName\",\n\
+    \              \"options\": \"gd\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#eb6834\"\n                }\n              }\n            ]\n          },\n\
+    \          {\n            \"matcher\": {\n              \"id\": \"byName\",\n\
+    \              \"options\": \"gz\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#1baf7a\"\n                }\n              }\n            ]\n          },\n\
+    \          {\n            \"matcher\": {\n              \"id\": \"byName\",\n\
+    \              \"options\": \"nm\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#eda100\"\n                }\n              }\n            ]\n          }\n\
+    \        ]\n      },\n      \"options\": {\n        \"legend\": {\n          \"\
+    displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\"\
+    : true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n \
+    \         \"sort\": \"desc\"\n        }\n      }\n    },\n    {\n      \"id\"\
+    : 17,\n      \"type\": \"timeseries\",\n      \"title\": \"每输出 token 设施能耗（J/token）\"\
+    ,\n      \"description\": \"\",\n      \"datasource\": {\n        \"type\": \"\
+    prometheus\",\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n\
+    \        \"x\": 12,\n        \"y\": 28,\n        \"w\": 12,\n        \"h\": 8\n\
+    \      },\n      \"targets\": [\n        {\n          \"refId\": \"A\",\n    \
+    \      \"expr\": \"site:joules_per_output_token:rate1m\",\n          \"legendFormat\"\
+    : \"{{site}}\",\n          \"datasource\": {\n            \"type\": \"prometheus\"\
+    ,\n            \"uid\": \"prometheus\"\n          }\n        }\n      ],\n   \
+    \   \"fieldConfig\": {\n        \"defaults\": {\n          \"unit\": \"none\"\
+    ,\n          \"custom\": {\n            \"lineWidth\": 2,\n            \"fillOpacity\"\
+    : 0,\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n\
+    \            \"lineInterpolation\": \"linear\",\n            \"axisSoftMin\":\
+    \ 0\n          },\n          \"color\": {\n            \"mode\": \"palette-classic\"\
+    \n          }\n        },\n        \"overrides\": [\n          {\n           \
+    \ \"matcher\": {\n              \"id\": \"byName\",\n              \"options\"\
+    : \"sh\"\n            },\n            \"properties\": [\n              {\n   \
+    \             \"id\": \"color\",\n                \"value\": {\n             \
+    \     \"mode\": \"fixed\",\n                  \"fixedColor\": \"#2a78d6\"\n  \
+    \              }\n              }\n            ]\n          },\n          {\n\
+    \            \"matcher\": {\n              \"id\": \"byName\",\n             \
+    \ \"options\": \"gd\"\n            },\n            \"properties\": [\n       \
+    \       {\n                \"id\": \"color\",\n                \"value\": {\n\
+    \                  \"mode\": \"fixed\",\n                  \"fixedColor\": \"\
+    #eb6834\"\n                }\n              }\n            ]\n          },\n \
+    \         {\n            \"matcher\": {\n              \"id\": \"byName\",\n \
+    \             \"options\": \"gz\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#1baf7a\"\n                }\n              }\n            ]\n          },\n\
+    \          {\n            \"matcher\": {\n              \"id\": \"byName\",\n\
+    \              \"options\": \"nm\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#eda100\"\n                }\n              }\n            ]\n          }\n\
+    \        ]\n      },\n      \"options\": {\n        \"legend\": {\n          \"\
+    displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\"\
+    : true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n \
+    \         \"sort\": \"desc\"\n        }\n      }\n    },\n    {\n      \"id\"\
+    : 18,\n      \"type\": \"timeseries\",\n      \"title\": \"排队请求数\",\n      \"\
+    description\": \"\",\n      \"datasource\": {\n        \"type\": \"prometheus\"\
+    ,\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n        \"\
+    x\": 0,\n        \"y\": 36,\n        \"w\": 12,\n        \"h\": 8\n      },\n\
+    \      \"targets\": [\n        {\n          \"refId\": \"A\",\n          \"expr\"\
+    : \"max by (site) (cpc_site_queue_length)\",\n          \"legendFormat\": \"{{site}}\"\
+    ,\n          \"datasource\": {\n            \"type\": \"prometheus\",\n      \
+    \      \"uid\": \"prometheus\"\n          }\n        }\n      ],\n      \"fieldConfig\"\
+    : {\n        \"defaults\": {\n          \"unit\": \"none\",\n          \"custom\"\
+    : {\n            \"lineWidth\": 2,\n            \"fillOpacity\": 0,\n        \
+    \    \"showPoints\": \"never\",\n            \"spanNulls\": true,\n          \
+    \  \"lineInterpolation\": \"linear\",\n            \"axisSoftMin\": 0\n      \
+    \    },\n          \"color\": {\n            \"mode\": \"palette-classic\"\n \
+    \         }\n        },\n        \"overrides\": [\n          {\n            \"\
+    matcher\": {\n              \"id\": \"byName\",\n              \"options\": \"\
+    sh\"\n            },\n            \"properties\": [\n              {\n       \
+    \         \"id\": \"color\",\n                \"value\": {\n                 \
+    \ \"mode\": \"fixed\",\n                  \"fixedColor\": \"#2a78d6\"\n      \
+    \          }\n              }\n            ]\n          },\n          {\n    \
+    \        \"matcher\": {\n              \"id\": \"byName\",\n              \"options\"\
+    : \"gd\"\n            },\n            \"properties\": [\n              {\n   \
+    \             \"id\": \"color\",\n                \"value\": {\n             \
+    \     \"mode\": \"fixed\",\n                  \"fixedColor\": \"#eb6834\"\n  \
+    \              }\n              }\n            ]\n          },\n          {\n\
+    \            \"matcher\": {\n              \"id\": \"byName\",\n             \
+    \ \"options\": \"gz\"\n            },\n            \"properties\": [\n       \
+    \       {\n                \"id\": \"color\",\n                \"value\": {\n\
+    \                  \"mode\": \"fixed\",\n                  \"fixedColor\": \"\
+    #1baf7a\"\n                }\n              }\n            ]\n          },\n \
+    \         {\n            \"matcher\": {\n              \"id\": \"byName\",\n \
+    \             \"options\": \"nm\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#eda100\"\n                }\n              }\n            ]\n          }\n\
+    \        ]\n      },\n      \"options\": {\n        \"legend\": {\n          \"\
+    displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\"\
+    : true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n \
+    \         \"sort\": \"desc\"\n        }\n      }\n    },\n    {\n      \"id\"\
+    : 19,\n      \"type\": \"timeseries\",\n      \"title\": \"GPU 功率（按站点汇总，DCGM 兼容指标）\"\
+    ,\n      \"description\": \"\",\n      \"datasource\": {\n        \"type\": \"\
+    prometheus\",\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n\
+    \        \"x\": 12,\n        \"y\": 36,\n        \"w\": 12,\n        \"h\": 8\n\
+    \      },\n      \"targets\": [\n        {\n          \"refId\": \"A\",\n    \
+    \      \"expr\": \"site:gpu_power_watts:sum\",\n          \"legendFormat\": \"\
+    {{site}}\",\n          \"datasource\": {\n            \"type\": \"prometheus\"\
+    ,\n            \"uid\": \"prometheus\"\n          }\n        }\n      ],\n   \
+    \   \"fieldConfig\": {\n        \"defaults\": {\n          \"unit\": \"watt\"\
+    ,\n          \"custom\": {\n            \"lineWidth\": 2,\n            \"fillOpacity\"\
+    : 0,\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n\
+    \            \"lineInterpolation\": \"linear\",\n            \"axisSoftMin\":\
+    \ 0\n          },\n          \"color\": {\n            \"mode\": \"palette-classic\"\
+    \n          }\n        },\n        \"overrides\": [\n          {\n           \
+    \ \"matcher\": {\n              \"id\": \"byName\",\n              \"options\"\
+    : \"sh\"\n            },\n            \"properties\": [\n              {\n   \
+    \             \"id\": \"color\",\n                \"value\": {\n             \
+    \     \"mode\": \"fixed\",\n                  \"fixedColor\": \"#2a78d6\"\n  \
+    \              }\n              }\n            ]\n          },\n          {\n\
+    \            \"matcher\": {\n              \"id\": \"byName\",\n             \
+    \ \"options\": \"gd\"\n            },\n            \"properties\": [\n       \
+    \       {\n                \"id\": \"color\",\n                \"value\": {\n\
+    \                  \"mode\": \"fixed\",\n                  \"fixedColor\": \"\
+    #eb6834\"\n                }\n              }\n            ]\n          },\n \
+    \         {\n            \"matcher\": {\n              \"id\": \"byName\",\n \
+    \             \"options\": \"gz\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#1baf7a\"\n                }\n              }\n            ]\n          },\n\
+    \          {\n            \"matcher\": {\n              \"id\": \"byName\",\n\
+    \              \"options\": \"nm\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"color\",\n                \"value\"\
+    : {\n                  \"mode\": \"fixed\",\n                  \"fixedColor\"\
+    : \"#eda100\"\n                }\n              }\n            ]\n          }\n\
+    \        ]\n      },\n      \"options\": {\n        \"legend\": {\n          \"\
+    displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\"\
+    : true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n \
+    \         \"sort\": \"desc\"\n        }\n      }\n    }\n  ],\n  \"templating\"\
+    : {\n    \"list\": []\n  },\n  \"annotations\": {\n    \"list\": []\n  },\n  \"\
+    editable\": true\n}"

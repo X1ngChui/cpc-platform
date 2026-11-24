@@ -1,0 +1,100 @@
+# 工商业峰谷分时电价的时段结构与浮动比例。
+#
+# 说明：
+# 1. 时段与浮动比例取自各省发改委文件（出处见每项的 source 字段与 data/grid/README.md）。
+# 2. flat_price（平段电价，元/kWh）是示意值，用于仿真；实际值随月度"代理购电价格表"变化，
+#    使用前请按目标月份的电网企业代理购电公告更新。
+# 3. 简化：本模型把浮动比例作用于整个平段电价；实际政策中政府性基金及附加、容量（需量）电价不参与浮动。
+# 4. 2026 年起部分省份对直接参与市场交易的工商业用户取消了固定分时电价，改为随现货市场价格浮动；
+#    若需研究市场价格，请通过 grid.traces 提供逐时价格 CSV 覆盖本文件。
+#
+# 结构：每个省份由若干 season 组成；每个 season 覆盖若干月份。
+# periods 中未列出的小时为平段（flat）；小时区间为 [start, end)，取 0–24。
+# sharp：尖峰，价格 = 高峰价 × multiplier_over_peak；deep_valley：深谷，价格 = 低谷价 × multiplier_over_valley。
+
+guangdong:
+  name: 广东
+  source: 广东省发展改革委《关于进一步完善我省峰谷分时电价政策有关问题的通知》（粤发改价格〔2021〕331号），2021-10-01 起执行
+  flat_price: 0.65
+  seasons:
+    - months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+      periods:
+        peak: [[10, 12], [14, 19]]
+        valley: [[0, 8]]
+      multipliers: {peak: 1.70, valley: 0.38}
+      sharp:
+        months: [7, 8, 9]   # 另含日最高气温≥35℃的高温日，此处未建模
+        hours: [[11, 12], [15, 17]]
+        multiplier_over_peak: 1.25
+
+guizhou:
+  name: 贵州
+  source: 贵州省发展改革委《关于完善峰谷分时电价机制有关事项的通知》（黔发改价格〔2023〕481号），2023-08-01 起执行
+  flat_price: 0.50
+  seasons:
+    - months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+      periods:
+        peak: [[10, 13], [17, 22]]
+        valley: [[0, 8]]
+      multipliers: {peak: 1.60, valley: 0.40}
+
+inner_mongolia:
+  name: 内蒙古（蒙西电网）
+  source: 内蒙古自治区发展改革委《关于完善蒙西电网工商业分时电价政策的通知（试行）》（2023-12-28 发布，2024-02-01 起执行）
+  note: 文件给出大风季的峰谷时段；小风季沿用相同时段为本数据的假设，待核实。
+  flat_price: 0.40
+  seasons:
+    - months: [1, 2, 3, 4, 5, 9, 10, 11, 12]   # 大风季
+      periods:
+        peak: [[6, 8], [18, 22]]
+        valley: [[11, 16]]
+      multipliers: {peak: 1.68, valley: 0.48}
+    - months: [6, 7, 8]                         # 小风季
+      periods:
+        peak: [[6, 8], [18, 22]]
+        valley: [[11, 16]]
+      multipliers: {peak: 1.54, valley: 0.44}
+      sharp:
+        hours: [[19, 21]]
+        multiplier_over_peak: 1.20
+      deep_valley:
+        hours: [[13, 15]]
+        multiplier_over_valley: 0.80
+
+shanghai:
+  name: 上海
+  source: 上海市发展改革委《关于进一步完善我市分时电价机制有关事项的通知》（沪发改价管〔2022〕50号），2023-01-01 起执行；此处为两部制工商业用户
+  flat_price: 0.70
+  seasons:
+    - months: [7, 8, 9]                          # 夏季
+      periods:
+        peak: [[8, 15], [18, 21]]
+        valley: [[22, 24], [0, 6]]
+      multipliers: {peak: 1.80, valley: 0.40}
+      sharp:
+        months: [7, 8]
+        hours: [[12, 14]]
+        multiplier_over_peak: 1.25
+    - months: [1, 12]                            # 冬季
+      periods:
+        peak: [[8, 11], [18, 21]]
+        valley: [[22, 24], [0, 6]]
+      multipliers: {peak: 1.80, valley: 0.40}
+      sharp:
+        hours: [[19, 21]]
+        multiplier_over_peak: 1.25
+    - months: [2, 3, 4, 5, 6, 10, 11]            # 其他月份
+      periods:
+        peak: [[8, 11], [18, 21]]
+        valley: [[22, 24], [0, 6]]
+      multipliers: {peak: 1.60, valley: 0.50}
+
+# 未单独收录的省份使用 default：单一平段价格（不分时）。
+default:
+  name: 默认（不分时）
+  source: 示意
+  flat_price: 0.60
+  seasons:
+    - months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+      periods: {}
+      multipliers: {}

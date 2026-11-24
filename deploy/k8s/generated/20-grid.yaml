@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grid
+  namespace: cpc
+  labels:
+    app: grid
+    app.kubernetes.io/part-of: cpc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grid
+  template:
+    metadata:
+      labels:
+        app: grid
+        app.kubernetes.io/part-of: cpc
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: '9000'
+    spec:
+      containers:
+      - name: grid
+        image: cpc-platform:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        - grid
+        - -s
+        - /app/configs/scenario.yaml
+        - --host
+        - 0.0.0.0
+        - --speedup
+        - '60'
+        ports:
+        - containerPort: 9000
+          name: http
+        env:
+        - name: CPC_ENDPOINTS
+          value: /etc/cpc/endpoints.yaml
+        volumeMounts:
+        - name: cpc-endpoints
+          mountPath: /etc/cpc
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            memory: 512Mi
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 9000
+          periodSeconds: 5
+      volumes:
+      - name: cpc-endpoints
+        configMap:
+          name: cpc-endpoints
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grid
+  namespace: cpc
+  labels:
+    app: grid
+spec:
+  selector:
+    app: grid
+  ports:
+  - name: http
+    port: 9000
+    targetPort: 9000
+    nodePort: 30900
+  type: NodePort
