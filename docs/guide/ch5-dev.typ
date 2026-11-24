@@ -60,7 +60,7 @@ Linux 上若缺少中文字体，安装 `fonts-noto-cjk`。
 
 = 常见问题 <g-faq>
 
-#let qa(q, a) = block(below: 1em, [#strong(q) \ #a])
+#let qa(q, a) = block(below: 1em, { set par(justify: false, first-line-indent: 0em); [#strong(q) \ #a] })
 
 #qa[端口被占用怎么办？][`cpc up` 默认使用 9000、8080、9300、9101 起的端口。可准备一个地址文件指定其他端口，用 `-e` 传入；
 Compose 部署修改 `docker-compose.yml` 中的端口映射。Windows 上用 `netstat -ano | findstr :8080` 查看占用进程。]
