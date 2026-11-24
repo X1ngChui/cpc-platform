@@ -250,3 +250,14 @@ def test_read_all_marks_field_errors():
     s = FakeSensor([Reading("fake", "gpu0", "gpu", power_w=None, errors={"power_w": "GPU is lost"})])
     rs = read_all([s], board)
     assert len(rs) == 1 and board.items["fake"].up is False and "GPU is lost" in board.items["fake"].last_error
+
+
+def test_cli_lists_sensor_types(capsys):
+    from cpc.cli import main as cli_main
+    from cpc.sched import ROUTING
+    from cpc.sensors import SENSORS
+
+    cli_main(["sensors", "--list"])
+    out = capsys.readouterr().out
+    assert "nvml" in out and "rapl" in out and "http-json" in out
+    assert {"nvml", "ipmi"} <= set(SENSORS.all()) and "cost_aware" in ROUTING.names()

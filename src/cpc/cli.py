@@ -189,9 +189,9 @@ def cmd_sensors(args) -> None:
     from .sensors.exporter import read_all
 
     if args.list:
-        for name, cls in SENSORS.items():
+        for name, cls in SENSORS.all().items():
             ok = "具备" if cls.detect() else ""
-            print(f"{name:<14s} {cls.requires:<40s} {'已实测' if cls.verified else '按文档实现'}  {ok}")
+            print(f"{name:<14s} {cls.requires:<40s} {ok}")
         return
     sensors = _sensors_from_args(args)
     print("传感器：", [s.id for s in sensors])

@@ -12,7 +12,7 @@ logs/
 logs-up.txt
 results/
 
-# 文档编译缓存（Typst 包缓存保留在 docs/.typst-packages 中以便离线编译）
+# 文档编译的临时文件
 docs/**/*.pdf.tmp
 
 # 本地部署文件（含真实 IP、模型路径等）

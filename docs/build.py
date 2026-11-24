@@ -2,7 +2,7 @@
 
 依赖：pip install typst（Typst 编译器的 Python 封装，无需单独安装 Typst）。
 字体：Noto Serif CJK SC / Noto Sans CJK SC（Debian/Ubuntu 软件包 fonts-noto-cjk）。
-Typst 包（fletcher 等）缓存在 docs/.typst-packages，已随仓库提供，可离线编译。
+插图为 docs/figures/*.pdf，由 docs/figures/export.py 从 draw.io 源文件（docs/figures/src/）导出。
 
 用法：python docs/build.py [design] [guide]
 """
@@ -28,7 +28,6 @@ def build(name: str) -> Path:
         str(DOCS / name / "main.typ"),
         output=str(out),
         root=str(DOCS),
-        package_cache_path=str(DOCS / ".typst-packages"),
         font_paths=[str(DOCS / "fonts")] if (DOCS / "fonts").exists() else [],
     )
     print(f"{out}  ({out.stat().st_size / 1024:.0f} KB, {time.time() - t0:.1f}s)")

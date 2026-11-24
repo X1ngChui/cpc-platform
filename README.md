@@ -1,89 +1,77 @@
-# cpc-platform：算电协同跨数据中心 AI 计算任务调度虚拟化平台
+# cpc-platform：算电协同跨数据中心 AI 计算任务调度平台
 
-面向"算电协同"研究的实验平台：把多个（虚拟）数据中心站点、电网侧信号（分时电价、碳排放因子、需求响应）、
-**全局请求路由**与**节点容量管理**组织为一套接口统一的系统，并以**多硬件能耗感知**为基础。
+面向算电协同研究的跨数据中心 AI 推理调度平台。平台以统一的数据规范接入负载、电网信号与功率特性数据，
+以场景描述数据中心、服务器池与电网环境，以全局（跨数据中心）与本地（数据中心内部）两级策略接口组织调度，
+并以同一套服务器模型、数据中心运行时与策略实现支持离散事件仿真与接入真实推理实例的实验。
 
-- **三种运行形态，共用一套策略代码**：离散事件仿真（24 小时约 1 分钟跑完）、容器化虚拟部署（单机 / Docker Compose / Kubernetes）、接入真实 GPU 服务器（vLLM + 硬件功率传感器），三者可混合。
-- **标准接口**：推理接口兼容 OpenAI API；指标为 Prometheus 格式，GPU 指标与 NVIDIA dcgm-exporter 同名；部署为 Docker 镜像与 Kubernetes 清单。
-- **能耗感知**：设备 → 服务器 → 设施（PUE）→ 电网四层；支持 NVIDIA（NVML / nvidia-smi）、AMD（AMD SMI / hwmon）、Intel 独显（hwmon）、CPU（RAPL）、华为昇腾（DCMI）、服务器整机（IPMI / Redfish）以及任意 Prometheus 导出器、命令行工具、HTTP 接口。
-- **运行环境**：服务端组件只面向 Linux（x86_64、aarch64）；开发环境为 Linux 或 WSL2（Ubuntu）。
-- **数据集驱动**：负载、电网信号与节点功率特性经统一的数据集接口接入，清单记录版本、来源、许可、校验和与引用（`cpc data list`）。
-  已接入 Azure LLM Inference Trace 2023 / 2024、BurstGPT、Mooncake FAST'25 trace、ML.ENERGY Benchmark v3、EIA-930，
-  以及各省分时电价政策与生态环境部 2023 年省级电力排放因子；默认场景的节点参数由 ML.ENERGY 测量数据标定。
-- **策略可插拔**：路由策略、容量策略、功率传感器都是带注册装饰器的 Python 类；仓库只提供演示数据通路用的参考实现。
-- **失败显式化**：配置与环境错误在启动时报错；运行期故障（传感器、站点、电网信号服务）被隔离在其所属范围内，
-  通过 `/healthz`、`/readyz`、状态字段与 `cpc_*_up` / `*_errors_total` 指标报告，缺失的读数不以其他值替代。
+- **数据规范**：数据集为描述文件（Frictionless Data Package v2 子集 + `cpc` 类别规范）与数据文件（CSV / Parquet）。
+  每类数据规定核心字段，其余信息以扩展字段承载并可传给策略；平台只做校验与列式加载，原始数据的转换范例见 `examples/datasets/`
+  （Azure LLM Inference Trace 2023 / 2024、BurstGPT、Mooncake、EIA-930、ML.ENERGY Benchmark、中国省级分时电价与排放因子）。
+- **仿真与实验共用**：场景、服务器模型（参数式或查表式）、数据中心运行时（服务器状态机、排队与派发、容量指令、能耗计量）、
+  全局与本地策略在两种运行方式中为同一实现；实验中仿真服务器与真实服务器可在同一站点共存。
+- **两级调度**：全局路由策略与容量策略只依赖数据中心状态摘要；站内派发策略与电源管理策略负责数据中心内部，
+  可利用请求扩展属性与异构服务器池。策略以 entry points 注册，新增实现不修改平台。
+- **能耗测量**：NVIDIA（NVML / nvidia-smi）、AMD（AMD SMI / hwmon）、Intel 独显（hwmon）、CPU（RAPL）、华为昇腾（DCMI）、
+  服务器整机（IPMI / Redfish）以及 Prometheus、命令行、HTTP 接口；指标为 Prometheus 格式，GPU 指标与 dcgm-exporter 同名。
+- **失败显式化**：配置与环境错误在启动时报错；运行期故障隔离在其所属范围内，以健康检查、状态字段与指标报告，
+  缺失的数据不以其他值替代。
+- **结果数据包**：仿真结果写为数据包（逐请求记录、时间序列、汇总、决策、运行描述），记录场景、策略、数据集与平台版本。
+
+服务端组件只面向 Linux（x86_64、aarch64）；开发环境为 Linux 或 WSL2（Ubuntu）。
 
 ## 文档
 
 | 文档 | 内容 |
 |---|---|
-| [docs/pdf/design.pdf](docs/pdf/design.pdf) | 《平台设计说明书》：需求、架构、能耗感知、请求路由、容量管理、接口、实验支撑、扩展与上手路线 |
-| [docs/pdf/guide.pdf](docs/pdf/guide.pdf) | 《部署与使用手册》：本机 / Compose / kind / 云服务器部署，能耗感知操作，开发指南，常见问题 |
-
-文档源文件为 Typst，`pip install typst && python docs/build.py` 重新编译。
+| [docs/pdf/design.pdf](docs/pdf/design.pdf) | 《平台设计说明书》：架构、数据规范、场景与模型、数据中心运行时、调度策略、能耗测量与核算、服务接口、仿真与实验、扩展 |
+| [docs/pdf/guide.pdf](docs/pdf/guide.pdf) | 《使用手册》：安装、数据准备、仿真、实验部署（本机 / Compose / kind / 云服务器 / 真实服务器）、观测与运维、开发 |
 
 ## 快速开始
 
 ```bash
-git clone https://github.com/X1ngChui/cpc-platform.git ~/cpc-platform && cd ~/cpc-platform
+git clone https://github.com/X1ngChui/cpc-platform.git && cd cpc-platform
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 
-pytest                                  # 单元测试（离线）
-cpc data fetch azure-llm-2024-conv      # 下载默认场景的负载数据集（约 1.1 GB）并校验
-python scripts/smoke_test.py            # 端到端冒烟测试（启动全部服务、压测、需求响应、故障隔离）
+pytest                                    # 单元测试
+python scripts/smoke_test.py --offline    # 端到端冒烟测试（测试场景，不需要下载数据）
 
-cpc up --speedup 60                     # 本机启动：电网信号 9000、站点 9101-9104、网关 8080、控制器 9300
-cpc loadgen --local --duration 120 --rate-scale 0.2   # 另一个终端回放负载（--local：本机模式地址）
-cpc compare --hours 24                  # 仿真对比四组策略组合
-cpc sensors --list                      # 列出功率传感器类型；cpc sensors --types nvml 读取指定传感器
+# 准备默认场景的数据集（写入 ${CPC_DATA_DIR:-~/.cache/cpc/datasets}）
+python examples/datasets/azure_llm.py --variant 2024-conv --zero-output fail
+python examples/datasets/cn_grid/convert.py --start 2026-01-01 --end 2027-01-01
+
+cpc sim --hours 24 --out results/base                  # 单次仿真，结果写为数据包
+cpc run examples/experiments/policies.yaml             # 按实验描述比较多组策略
+cpc up --speedup 60                                    # 本机启动全部实验服务
+cpc loadgen --local --duration 120 --rate-scale 0.2    # 另一个终端回放负载
 ```
 
-Docker Compose（含 Prometheus 与 Grafana 仪表盘）：
-
-```bash
-docker compose -f deploy/compose/docker-compose.yml up -d --build
-docker compose -f deploy/compose/docker-compose.yml run --rm loadgen
-# Grafana: http://localhost:3000   Prometheus: http://localhost:9090
-```
-
-Kubernetes（kind，每个站点一个带 region 标签的节点）：`python deploy/k8s/kind_up.py`
-
-云服务器（真实 GPU）：见 `deploy/cloud/` 与《部署与使用手册》第 6 章。
+Docker Compose（含 Prometheus 与 Grafana）：`docker compose -f deploy/compose/docker-compose.yml up -d --build`；
+Kubernetes（kind）：`python deploy/k8s/kind_up.py`；云服务器与真实服务器接入见《使用手册》。
 
 ## 镜像
 
-- Docker Hub：`xingchui/cpc-platform:0.1.0`（amd64 / arm64）
-- GHCR：`ghcr.io/x1ngchui/cpc-platform`（GitHub Actions 自动构建）
+`ghcr.io/x1ngchui/cpc-platform`（GitHub Actions 构建）与 `xingchui/cpc-platform`（Docker Hub），均为 amd64 / arm64。
 
 ```bash
-docker run --rm --gpus all xingchui/cpc-platform:0.1.0 sensors          # 容器内探测 GPU 功率
-docker run -d --gpus all -p 9400:9400 xingchui/cpc-platform:0.1.0 exporter --site gz
+docker run -d --gpus all -p 9400:9400 ghcr.io/x1ngchui/cpc-platform:0.2.0 exporter --types nvml --site gz
 ```
 
 ## 目录
 
 ```text
-src/cpc/      datasets 数据集 · grid 电网信号 · site 站点代理 · sensors 功率传感器 · gateway 路由网关 · controller 容量控制器
-              sched 策略插件 · sim 离散事件仿真 · loadgen 负载生成 · cli 命令行
-configs/      场景文件（实验世界）与地址文件（服务在哪里）
-deploy/       compose · k8s · cloud（站点栈 / 控制栈）· prometheus 记录规则 · grafana 仪表盘
-scripts/      冒烟测试、公开数据集检验、真实 GPU 检查、文档插图
-tests/        单元测试
-docs/         Typst 源文件、模板、插图与 PDF
+src/cpc/              datasets 数据集 · datacenter 数据中心运行时 · sched 策略 · sim 仿真 · results 结果数据包
+                      grid / site / gateway / controller / loadgen 实验服务 · sensors 功率传感器 · cli 命令行
+examples/datasets/    原始公开数据的转换范例
+examples/experiments/ 实验描述范例
+configs/              场景文件与地址文件
+deploy/               compose · k8s · cloud（站点栈 / 控制栈）· prometheus 记录规则 · grafana 仪表盘
+scripts/              端到端冒烟测试
+tests/                单元测试与测试数据
+docs/                 Typst 源文件、draw.io 插图源文件与 PDF
 ```
-
-## 已验证的环境
-
-- WSL2（Ubuntu 26.04）+ Python 3.12：单元测试与单进程冒烟测试通过；NVML 可读取 NVIDIA GeForce RTX 5070 Ti 的功率与能耗计数；
-- v0.1.0：单进程、Docker Compose、kind v0.31.0 三种部署均通过冒烟测试；
-- NVIDIA GeForce RTX 5070 Ti + vLLM v0.34.0（Qwen2.5-0.5B-Instruct）：真实站点的请求转发、就绪检查、NVML 实测功率、容器级开关机（v0.1.0）；
-- 发布镜像的 amd64 与 arm64 版本均可运行；容器内 NVML 可读到 GPU 功率。
-
-其余硬件的传感器依据官方接口文档实现，解析逻辑有单元测试，需在目标硬件上验证（`cpc sensors --list` 中标注）。
 
 ## 说明
 
-节点功率与性能模型的默认参数、电价的平段价格为示意值，仅用于让仿真量级合理；接入真实服务器后应按手册标定。
-平台附带的调度策略只用于演示接口与数据通路，不代表推荐的研究方法。
+服务器模型中不由测量数据标定的参数（空载功率、主机功率、预填充吞吐、开机时间）与分时电价的平段价格为示意值；
+接入真实服务器后应按手册标定。平台附带的调度策略用于演示接口与数据通路，不代表推荐的研究方法。

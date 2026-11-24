@@ -2,30 +2,34 @@
 
 = 概述 <g-overview>
 
-== 平台能做什么
+平台用于开展算电协同的跨数据中心 AI 推理调度研究，有两种运行方式：
 
-平台把多个（虚拟）数据中心站点、电网信号（分时电价、碳排放因子、需求响应）、全局请求路由与节点容量管理组织在一起，
-用于开展"算电协同"的跨数据中心调度实验。它有三种运行形态：
+- *仿真*：`cpc sim`、`cpc run` 以离散事件仿真运行一个场景，数十秒至数分钟完成 24 小时的运行，用于比较调度策略；
+- *实验*：电网信号服务、站点代理、网关、控制器等服务进程以真实时间运行；站点中的服务器可以是仿真服务器
+  （由服务器模型给出功率与时延），也可以是真实推理实例（如 vLLM），功率由传感器测量，两者可在同一场景中共存。
 
-- *仿真*：`cpc sim` / `cpc compare`，几十秒仿真 24 小时，用于大规模比较调度策略；
-- *虚拟化*：在一台电脑上用容器（或单进程）运行全部服务，节点由模型模拟，用于联调与演示；
-- *真实*：站点接入真实 GPU 服务器上的 vLLM 推理实例，功率来自硬件传感器。
-
-三种形态共用同一套策略代码与配置文件，并且可以混合（部分站点真实、部分站点仿真）。
-
-== 选择部署方式
+两种方式使用同一场景文件、同一服务器模型与同一套策略实现。典型的工作流程为：准备数据集（@g-data）→ 编写场景 →
+在仿真中比较策略（@g-sim）→ 部署实验系统并接入真实服务器验证（@g-deploy）。
 
 #figure(
   tbl(
-    columns: (9em, 1fr, 9em),
-    header: ("部署方式", "适合", "章节"),
-    [本机单进程], [第一次上手、开发调试；不需要 Docker], [@g-quick],
-    [Docker Compose], [单机完整环境，含 Prometheus 与 Grafana 仪表盘], [@g-compose],
-    [Kubernetes（kind）], [学习 Kubernetes 原生部署；为在真实集群上部署做准备], [@g-kind],
-    [云服务器], [接入真实 GPU 开展实验], [@g-cloud],
+    columns: (9em, 1fr, 6em),
+    header: ("部署方式", "适用情形", "章节"),
+    [本机单进程], [开发调试与功能演示；不需要 Docker], [@g-local],
+    [Docker Compose], [单机完整环境，含 Prometheus 与 Grafana], [@g-compose],
+    [Kubernetes（kind）], [Kubernetes 原生部署；每个站点固定在带 region 标签的节点上], [@g-kind],
+    [云服务器], [接入真实 GPU 服务器], [@g-cloud],
   ),
-  caption: [部署方式与章节],
+  caption: [实验系统的部署方式],
 )
+
+= 安装 <g-setup>
+
+== 运行环境
+
+服务端组件（电网信号服务、站点代理、路由网关、容量控制器、通用功率导出器）只面向 Linux（x86_64、aarch64），
+容器镜像同样提供这两种架构。开发环境为 Linux 或 WSL2（Ubuntu）；在 WSL2 中，仓库应位于 Linux 文件系统内（如 `~/`），
+不放在 `/mnt/*` 下，以避免跨文件系统访问的性能损失与文件权限问题。
 
 == 获取代码与镜像
 
@@ -34,147 +38,37 @@ git clone https://github.com/X1ngChui/cpc-platform.git
 cd cpc-platform
 ```
 
-平台的全部服务打包在同一个容器镜像中，已发布到两个镜像仓库（支持 amd64 与 arm64）：
-
-- Docker Hub：`xingchui/cpc-platform:0.1.0`（以及 `latest`）
-- GitHub Container Registry：`ghcr.io/x1ngchui/cpc-platform`（由 GitHub Actions 在每次推送 `main` 与发布标签时自动构建）
-
-也可以在仓库根目录用 `docker build -t cpc-platform:latest .` 自行构建；国内服务器构建时可加
-`--build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple` 使用 PyPI 镜像。
-
-= 环境准备 <g-setup>
-
-== 运行环境
-
-平台的服务端组件（电网信号服务、站点代理、路由网关、容量控制器、通用功率导出器）只面向 Linux（x86_64、aarch64），
-容器镜像同样提供这两种架构。开发环境为 Linux 或 WSL2（Ubuntu）；在 WSL2 中，仓库应克隆在 Linux 文件系统内（如 `~/`），
-不放在 `/mnt/*` 下，以避免跨文件系统访问的性能损失与文件权限问题。
+全部服务打包在同一个容器镜像中（amd64 与 arm64）：GitHub Container Registry 的 `ghcr.io/x1ngchui/cpc-platform`
+（推送 `main` 与版本标签时自动构建），以及 Docker Hub 的 `xingchui/cpc-platform`。也可在仓库根目录以
+`docker build -t cpc-platform:latest .` 构建，构建参数 `PIP_INDEX_URL` 可指定 PyPI 镜像。
 
 == Python 环境
 
-需要 Python 3.10 及以上（CI 使用 3.12）。在仓库根目录创建虚拟环境并以可编辑模式安装：
+需要 Python 3.10 及以上。在仓库根目录创建虚拟环境并以可编辑模式安装：
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"          # 平台 + 测试与作图依赖
-pip install -e ".[nvml,docker]"  # 可选：NVIDIA GPU 功率采集、通过 Docker 启停推理容器
+pip install -e ".[nvml,docker]"  # 可选：NVIDIA GPU 功率采集；通过 Docker 启停推理容器
 pip install -e ".[docs]"         # 可选：编译文档（Typst）
 ```
 
-Debian / Ubuntu 的系统 Python 需要先安装 `python3-venv`。也可以使用 uv：
-`uv venv --python 3.12 && uv pip install -e ".[dev]"`。安装后即可使用命令 `cpc`（等价于 `python -m cpc`）。
+Debian / Ubuntu 的系统 Python 需要先安装 `python3-venv`；也可以使用 uv（`uv venv --python 3.12 && uv pip install -e ".[dev]"`）。
+安装后即可使用命令 `cpc`（等价于 `python -m cpc`），`cpc <子命令> --help` 给出各子命令的参数。
 
-== Docker
+== Docker 与 Kubernetes 工具（可选）
 
-Docker Compose 与 kind 部署需要 Docker Engine 与 Compose 插件（`curl -fsSL https://get.docker.com | sh`）。
-验证：`docker version`、`docker compose version`。kind 部署需要运行 5 个节点容器，Docker 可用内存建议不少于 8 GB。
-
-== kind 与 kubectl（可选）
-
-kind（Kubernetes in Docker）是 Kubernetes 官方的本地集群工具，单个可执行文件。从
-#link("https://kind.sigs.k8s.io/docs/user/quick-start/#installation") 下载 Linux 版本（本平台在 v0.31.0 上验证），
-放到 `PATH` 中的目录；kubectl 从 Kubernetes 官网下载 Linux 版本。验证：`kind version`、`kubectl version --client`。
+Docker Compose 与 kind 部署需要 Docker Engine 与 Compose 插件；kind 部署运行 5 个节点容器，Docker 可用内存宜不少于 8 GB。
+kind（Kubernetes in Docker）与 kubectl 均为单个可执行文件，从各自官网下载 Linux 版本放入 `PATH` 即可。
 
 == 验证安装
 
 ```bash
-pytest                              # 单元测试，约 10 秒
-python scripts/smoke_test.py        # 端到端冒烟测试，约 1.5 分钟
+pytest                                  # 单元测试
+python scripts/smoke_test.py --offline  # 端到端冒烟测试（测试场景，不需要下载数据）
 ```
 
-冒烟测试使用默认场景的负载数据集（见下节的数据准备）；未下载数据集时可加 `--synthetic-workload`，改用合成负载。
-冒烟测试把各服务作为独立进程启动，依次检查：全部服务就绪；压测请求全部成功；控制器完成决策；能耗与电网信号指标；
-需求响应事件生效；传感器故障（真实后端站点的功率计不可用）与站点故障（停止一个站点进程）被隔离并显式报告，
-其余部分正常服务。最后输出"冒烟测试通过"即说明环境正常。
-
-= 本机快速开始 <g-quick>
-
-== 准备数据集
-
-默认场景的负载取自 Azure LLM Inference Trace 2024（约 1.1 GB），电价与排放因子数据随包提供。首次使用前下载并校验：
-
-```bash
-cpc data list                         # 已注册的数据集、版本、本地状态与许可
-cpc data fetch azure-llm-2024-conv    # 下载到 ~/.cache/cpc/datasets（或环境变量 CPC_DATA_DIR）
-```
-
-数据集缺失或校验失败时，`cpc sim`、`cpc loadgen` 等命令报错并给出获取方式，不会改用其他数据。
-
-== 启动全部服务
-
-```bash
-cpc up --speedup 60
-```
-
-`cpc up` 在一个进程中启动电网信号服务（9000）、4 个站点代理（9101–9104）、网关（8080）与容量控制器（9300）；
-任一服务启动失败时停止其余服务并以非零状态退出。
-`--speedup 60` 表示信号时钟加速 60 倍（真实 1 分钟 = 信号 1 小时），便于在短时间内看到电价变化。
-请求日志与决策日志写入 `logs/` 目录。常用选项：`--routing`、`--capacity` 指定策略，`--interval` 指定控制周期，
-`--no-controller` 不启动控制器，`-s` 指定其他场景文件。
-
-== 发送负载
-
-另开一个终端：
-
-```bash
-cpc loadgen --local --duration 120 --out logs/loadgen.jsonl                  # 按场景负载（约 50 请求/秒）回放 2 分钟
-cpc loadgen --local --duration 120 --rate-scale 0.2 --out logs/loadgen.jsonl # 到达率缩放到约 10 请求/秒
-```
-
-`--local` 表示使用与 `cpc up` 相同的本机模式地址；访问其他部署时用 `-e <地址文件>` 给出服务地址。
-负载按真实时间回放，与信号时钟的加速倍数无关；需要让负载的日内变化与加速后的信号时钟同步时，用 `--time-scale` 压缩 trace 时间，
-并以 `--rate-scale` 相应降低到达率。
-
-结束后打印汇总：发送数、成功数、端到端时延与 TTFT 的中位数和 P99、SLO 达成率、各站点分担比例。
-也可以用任何 OpenAI 客户端直接访问网关，例如：
-
-```bash
-curl http://localhost:8080/v1/chat/completions -H "Content-Type: application/json" \
-     -H "x-cpc-source: east" \
-     -d '{"model": "cpc", "messages": [{"role": "user", "content": "hello"}], "max_tokens": 32}'
-```
-
-== 观察运行状态
-
-#figure(
-  tbl(
-    columns: (19em, 1fr),
-    header: ("地址", "内容"),
-    [`http://localhost:9101/state`], [站点 sh 的状态快照：节点状态、在服务与排队请求、功率及其完整率],
-    [`http://localhost:8080/readyz`], [网关就绪状态：可用站点、电网信号状态与各上游的健康状态],
-    [`http://localhost:9101/metrics`], [站点指标（含 DCGM 兼容的 GPU 功率）],
-    [`http://localhost:8080/state`], [网关：各来源到达率、各站点负载视图、当前路由策略与权重],
-    [`http://localhost:9300/state`], [控制器：最近一次决策（目标、观测、电网信号）],
-    [`http://localhost:9000/v1/signals`], [各站点当前电价、碳排放因子、功率上限],
-    [`http://localhost:8080/docs`], [网关的交互式 API 文档（其他服务同理）],
-  ),
-  caption: [本机模式下的观察入口],
-)
-
-== 运行时操作
-
-```bash
-# 切换路由策略
-curl -X PUT http://localhost:8080/admin/policy -H "Content-Type: application/json" \
-     -d '{"policy": "cost_aware"}'
-# 切换容量策略
-curl -X PUT http://localhost:9300/admin/policy -H "Content-Type: application/json" \
-     -d '{"policy": "grid_aware"}'
-# 注入需求响应事件：站点 gd 设施功率不超过 8 kW，持续 120 分钟（信号时间）
-cpc event --local --site gd --cap-kw 8 --duration-min 120
-```
-
-== 仿真与对比
-
-```bash
-cpc signals --date 2026-07-15        # 打印某日 24 小时各站点电价、时段、碳排放因子
-cpc rtt                               # 打印来源—站点 RTT 矩阵
-cpc sim --routing cost_aware --capacity reactive --hours 24 --out results/my-run
-cpc compare --runs "nearest:static,least_loaded:reactive,cost_aware:reactive,weighted:grid_aware" \
-            --hours 24 --out results/compare
-cpc report results/compare            # 生成 comparison.png 与各组的 run.png
-```
-
-仿真输出目录中：`summary.json` 为汇总（请求数、SLO 达成率、TTFT 分位数、IT/设施用电、电费、碳排放、各站点明细、
-所用数据集、路由原因统计、跳过的控制周期、信号覆盖率），
-`timeseries.csv` 为每 5 分钟的各站点功率、节点数、请求率、电价、碳强度，`decisions.jsonl` 为容量决策记录。
+冒烟测试把各服务作为独立进程启动，依次检查：全部服务就绪；压测请求全部成功；控制器完成决策并下发指令；能耗与电网信号指标；
+需求响应事件生效；传感器故障（只有真实服务器的站点的功率计不可用）与站点故障（停止一个站点进程）被隔离并显式报告，
+其余部分正常服务。输出"冒烟测试通过"即说明环境正常。准备好默认场景的数据集（@g-data）后，
+`python scripts/smoke_test.py` 以默认场景运行同样的检查。

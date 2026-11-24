@@ -63,7 +63,6 @@ class Sensor:
 
     name = "base"  # 类型名（注册名）
     requires = ""  # 文档用途：依赖的驱动、库或接口
-    verified = False  # 是否已在真实硬件上验证（文档用途）
     supports_power_limit = False
 
     def __init__(self, **params: Any):

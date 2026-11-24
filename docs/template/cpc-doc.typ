@@ -81,8 +81,8 @@
   show raw: set text(font: mono, size: 9pt)
   show raw.where(block: false): it => box(fill: code-bg, inset: (x: 2.5pt, y: 0pt), outset: (y: 2.5pt), radius: 1.5pt, it)
   show raw.where(block: true): it => block(
-    width: 100%, fill: code-bg, inset: (x: 9pt, y: 7pt), radius: 2pt, stroke: 0.5pt + rgb("#e1e0d9"),
-    { set par(justify: false, first-line-indent: 0em); it },
+    width: 100%, fill: code-bg, inset: (x: 8pt, y: 7pt), radius: 2pt, stroke: 0.5pt + rgb("#e1e0d9"),
+    { set par(justify: false, first-line-indent: 0em); set text(size: 7.8pt); it },
   )
 
   // 图表与列表

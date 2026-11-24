@@ -59,6 +59,7 @@ class Registry(Generic[T]):
         self._load_entry_points()
         return sorted(self._items)
 
-    def items(self) -> dict[str, type[T]]:
+    def all(self) -> dict[str, type[T]]:
+        """全部已注册的实现（名称 → 类），含 entry points 提供的实现。"""
         self._load_entry_points()
         return dict(self._items)

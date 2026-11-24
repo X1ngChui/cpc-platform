@@ -286,3 +286,54 @@ azure2024trace:
   author: Microsoft Azure
   date: 2024
   url: https://github.com/Azure/AzurePublicDataset/blob/master/AzureLLMInferenceDataset2024.md
+frictionless2024datapackage:
+  type: web
+  title: "Data Package Standard, Version 2.0"
+  author: Frictionless Working Group
+  date: 2024-06
+  url: https://datapackage.org/standard/data-package/
+calheiros2011cloudsim:
+  type: article
+  title: "CloudSim: a toolkit for modeling and simulation of cloud computing environments and evaluation of resource provisioning algorithms"
+  author:
+  - Calheiros, Rodrigo N.
+  - Ranjan, Rajiv
+  - Beloglazov, Anton
+  - De Rose, César A. F.
+  - Buyya, Rajkumar
+  date: 2011
+  page-range: 23-50
+  parent:
+    type: periodical
+    title: "Software: Practice and Experience"
+    volume: 41
+    issue: 1
+  serial-number:
+    doi: 10.1002/spe.995
+sun2024llumnix:
+  type: article
+  title: "Llumnix: Dynamic Scheduling for Large Language Model Serving"
+  author:
+  - Sun, Biao
+  - Huang, Ziming
+  - Zhao, Hanyu
+  - Xiao, Wencong
+  - Zhang, Xinyi
+  - Li, Yong
+  - Lin, Wei
+  date: 2024
+  page-range: 173-191
+  parent:
+    type: proceedings
+    title: "18th USENIX Symposium on Operating Systems Design and Implementation (OSDI 24)"
+k8s-scheduling-framework:
+  type: web
+  title: Scheduling Framework
+  author: The Kubernetes Authors
+  url: https://kubernetes.io/docs/concepts/scheduling-eviction/scheduling-framework/
+openadr3:
+  type: web
+  title: "OpenADR 3.0 Specification"
+  author: OpenADR Alliance
+  date: 2023
+  url: https://www.openadr.org/specification

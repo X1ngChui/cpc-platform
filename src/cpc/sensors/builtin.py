@@ -86,7 +86,6 @@ class NvmlSensor(Sensor):
     """NVIDIA NVML：功率为必需能力；累计能耗计数器（Volta 及以后）与利用率为可选能力，构造时探测。"""
 
     requires = "NVIDIA 驱动 + nvidia-ml-py"
-    verified = True
     supports_power_limit = True
 
     def __init__(self, gpus: list[int] | None = None, **params):
@@ -155,7 +154,6 @@ class NvmlSensor(Sensor):
 @register_sensor("nvidia-smi")
 class NvidiaSmiSensor(Sensor):
     requires = "NVIDIA 驱动（nvidia-smi）"
-    verified = True
     QUERY = "index,name,power.draw,utilization.gpu"
 
     def __init__(self, **params):
