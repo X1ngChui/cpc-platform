@@ -1,12 +1,12 @@
-# 站点栈：部署在每台租用的 GPU 服务器上（一台服务器 = 一个虚拟数据中心站点）。
+# 站点栈：部署在每台租用的 GPU 服务器上（一台服务器上的推理实例 = 一个站点的真实服务器池）。
 #
 # 组成：
-#   vllm-0 / vllm-1   推理实例（OpenAI 兼容接口），每个实例占一张 GPU，对平台而言是一个"节点"
-#   site-agent        站点代理：排队与派发、按场景 power 声明采集功率、开关实例（Docker API）、可选功率封顶
+#   vllm-0 / vllm-1   推理实例（OpenAI 兼容接口），每个实例占一张 GPU，对平台而言是一台真实服务器
+#   site-agent        站点代理：排队与派发、按场景 measurement 声明采集功率、开关实例（Docker API）、可选功率封顶
 #   dcgm-exporter     （可选，数据中心级 GPU 推荐）NVIDIA 官方 GPU 指标导出器
 #   node-exporter     （可选）主机 CPU/内存/网络指标；裸金属上还可读取 RAPL 能耗
 #
-# 前置：NVIDIA 驱动 + Docker + NVIDIA Container Toolkit（见《部署与使用手册》第 4 章）。
+# 前置：NVIDIA 驱动 + Docker + NVIDIA Container Toolkit（见《使用手册》"实验部署"一章）。
 # 用法：
 #   cp .env.example .env   # 按本机修改 SITE_ID、MODEL 等
 #   docker compose up -d
@@ -57,7 +57,7 @@ services:
     volumes:
       - ./scenario.yaml:/app/cfg/scenario.yaml:ro
       - ./endpoints.yaml:/app/cfg/endpoints.yaml:ro
-      - /var/run/docker.sock:/var/run/docker.sock   # 用于启停 vLLM 容器（节点开关）
+      - /var/run/docker.sock:/var/run/docker.sock   # 用于启停 vLLM 容器（服务器开关）
     environment:
       CPC_ADMIN_TOKEN: ${CPC_ADMIN_TOKEN:?请在 .env 中设置与控制栈相同的 CPC_ADMIN_TOKEN}
     deploy:

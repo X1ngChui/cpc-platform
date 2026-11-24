@@ -104,14 +104,14 @@ data:
     : {\n        \"colorMode\": \"none\",\n        \"graphMode\": \"area\",\n    \
     \    \"reduceOptions\": {\n          \"calcs\": [\n            \"lastNotNull\"\
     \n          ]\n        },\n        \"textMode\": \"value\"\n      }\n    },\n\
-    \    {\n      \"id\": 2,\n      \"type\": \"stat\",\n      \"title\": \"用电成本速率（元/小时）\"\
+    \    {\n      \"id\": 2,\n      \"type\": \"stat\",\n      \"title\": \"用电成本速率（每小时）\"\
     ,\n      \"description\": \"\",\n      \"datasource\": {\n        \"type\": \"\
     prometheus\",\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n\
     \        \"x\": 4,\n        \"y\": 0,\n        \"w\": 4,\n        \"h\": 4\n \
     \     },\n      \"targets\": [\n        {\n          \"refId\": \"A\",\n     \
-    \     \"expr\": \"global:energy_cost_yuan_per_hour\",\n          \"datasource\"\
-    : {\n            \"type\": \"prometheus\",\n            \"uid\": \"prometheus\"\
-    \n          }\n        }\n      ],\n      \"fieldConfig\": {\n        \"defaults\"\
+    \     \"expr\": \"global:energy_cost_per_hour\",\n          \"datasource\": {\n\
+    \            \"type\": \"prometheus\",\n            \"uid\": \"prometheus\"\n\
+    \          }\n        }\n      ],\n      \"fieldConfig\": {\n        \"defaults\"\
     : {\n          \"unit\": \"none\",\n          \"decimals\": 2,\n          \"color\"\
     : {\n            \"mode\": \"fixed\",\n            \"fixedColor\": \"#52514e\"\
     \n          }\n        },\n        \"overrides\": []\n      },\n      \"options\"\
@@ -212,13 +212,13 @@ data:
     displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\"\
     : true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n \
     \         \"sort\": \"desc\"\n        }\n      }\n    },\n    {\n      \"id\"\
-    : 11,\n      \"type\": \"timeseries\",\n      \"title\": \"分时电价（元/kWh）\",\n  \
-    \    \"description\": \"\",\n      \"datasource\": {\n        \"type\": \"prometheus\"\
+    : 11,\n      \"type\": \"timeseries\",\n      \"title\": \"电价（每 kWh）\",\n    \
+    \  \"description\": \"\",\n      \"datasource\": {\n        \"type\": \"prometheus\"\
     ,\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n        \"\
     x\": 12,\n        \"y\": 4,\n        \"w\": 12,\n        \"h\": 8\n      },\n\
     \      \"targets\": [\n        {\n          \"refId\": \"A\",\n          \"expr\"\
-    : \"max by (site) (cpc_grid_price_yuan_per_kwh)\",\n          \"legendFormat\"\
-    : \"{{site}}\",\n          \"datasource\": {\n            \"type\": \"prometheus\"\
+    : \"max by (site) (cpc_grid_price_per_kwh)\",\n          \"legendFormat\": \"\
+    {{site}}\",\n          \"datasource\": {\n            \"type\": \"prometheus\"\
     ,\n            \"uid\": \"prometheus\"\n          }\n        }\n      ],\n   \
     \   \"fieldConfig\": {\n        \"defaults\": {\n          \"unit\": \"none\"\
     ,\n          \"custom\": {\n            \"lineWidth\": 2,\n            \"fillOpacity\"\
@@ -250,7 +250,7 @@ data:
     displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\"\
     : true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n \
     \         \"sort\": \"desc\"\n        }\n      }\n    },\n    {\n      \"id\"\
-    : 12,\n      \"type\": \"timeseries\",\n      \"title\": \"在线节点数\",\n      \"\
+    : 12,\n      \"type\": \"timeseries\",\n      \"title\": \"在线服务器数\",\n      \"\
     description\": \"\",\n      \"datasource\": {\n        \"type\": \"prometheus\"\
     ,\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n        \"\
     x\": 0,\n        \"y\": 12,\n        \"w\": 12,\n        \"h\": 8\n      },\n\
@@ -288,20 +288,20 @@ data:
     displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\"\
     : true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n \
     \         \"sort\": \"desc\"\n        }\n      }\n    },\n    {\n      \"id\"\
-    : 13,\n      \"type\": \"timeseries\",\n      \"title\": \"电力碳排放因子（kgCO2/kWh）\"\
+    : 13,\n      \"type\": \"timeseries\",\n      \"title\": \"电力碳强度（kgCO2/kWh）\"\
     ,\n      \"description\": \"\",\n      \"datasource\": {\n        \"type\": \"\
     prometheus\",\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n\
     \        \"x\": 12,\n        \"y\": 12,\n        \"w\": 12,\n        \"h\": 8\n\
     \      },\n      \"targets\": [\n        {\n          \"refId\": \"A\",\n    \
-    \      \"expr\": \"max by (site) (cpc_grid_carbon_kg_per_kwh)\",\n          \"\
-    legendFormat\": \"{{site}}\",\n          \"datasource\": {\n            \"type\"\
-    : \"prometheus\",\n            \"uid\": \"prometheus\"\n          }\n        }\n\
-    \      ],\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"unit\"\
-    : \"none\",\n          \"custom\": {\n            \"lineWidth\": 2,\n        \
-    \    \"fillOpacity\": 0,\n            \"showPoints\": \"never\",\n           \
-    \ \"spanNulls\": true,\n            \"lineInterpolation\": \"linear\",\n     \
-    \       \"axisSoftMin\": 0\n          },\n          \"color\": {\n           \
-    \ \"mode\": \"palette-classic\"\n          }\n        },\n        \"overrides\"\
+    \      \"expr\": \"max by (site) (cpc_grid_carbon_intensity_kg_per_kwh)\",\n \
+    \         \"legendFormat\": \"{{site}}\",\n          \"datasource\": {\n     \
+    \       \"type\": \"prometheus\",\n            \"uid\": \"prometheus\"\n     \
+    \     }\n        }\n      ],\n      \"fieldConfig\": {\n        \"defaults\":\
+    \ {\n          \"unit\": \"none\",\n          \"custom\": {\n            \"lineWidth\"\
+    : 2,\n            \"fillOpacity\": 0,\n            \"showPoints\": \"never\",\n\
+    \            \"spanNulls\": true,\n            \"lineInterpolation\": \"linear\"\
+    ,\n            \"axisSoftMin\": 0\n          },\n          \"color\": {\n    \
+    \        \"mode\": \"palette-classic\"\n          }\n        },\n        \"overrides\"\
     : [\n          {\n            \"matcher\": {\n              \"id\": \"byName\"\
     ,\n              \"options\": \"sh\"\n            },\n            \"properties\"\
     : [\n              {\n                \"id\": \"color\",\n                \"value\"\
