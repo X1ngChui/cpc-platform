@@ -20,7 +20,7 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install -e ".[dev]"
       - run: python -m pytest
-      - name: smoke test (all services in one process)
+      - name: smoke test (services as separate processes, offline scenario)
         run: python scripts/smoke_test.py --offline --duration 20   # 测试场景：合成负载与随测试提交的电网数据
 
   docs:
@@ -31,7 +31,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
-      - run: python -m pip install "typst>=0.12"
+      - run: python -m pip install "typst>=0.14"   # PDF 插图需要 Typst 0.14 及以上
       - run: python docs/build.py
       - uses: actions/upload-artifact@v4
         with:
