@@ -47,8 +47,12 @@ def load_points(d: Descriptor, where: dict[str, object] | None = None) -> list[P
 
 
 def profile_from_points(points: list[PowerPoint], slots: int, idle_w: float, host_w: float = 0.0,
-                        prefill_tokens_per_s: float | None = None, boot_s: float | None = None, source: str = "") -> dict:
-    """由同一组测量生成服务器类型（场景 node_profiles 中的一项）。只使用 0 < concurrency ≤ slots 的测量。"""
+                        prefill_tokens_per_s: float | None = None, boot_s: float | None = None, source: str = "",
+                        idle_measured: bool = False, off_w: float | None = None) -> dict:
+    """由同一组测量生成服务器类型（场景 node_profiles 中的一项）。只使用 0 < concurrency ≤ slots 的测量。
+
+    idle_measured 表示在线空载功率来自测量（cpc measure 的并发 0），只影响描述文字。
+    """
     if not points:
         raise DatasetError("没有符合选择条件的测量")
     keys = {(p.device, p.device_count, p.model) for p in points}
@@ -62,8 +66,9 @@ def profile_from_points(points: list[PowerPoint], slots: int, idle_w: float, hos
         raise DatasetError(f"多次测量的占用率相同（{us}）：请用 --where 进一步选择（如 task）")
     device, n, model = keys.pop()
     prof: dict = {
-        "description": f"{n}×{device}，{model}；在服务时的功率与 token 间隔取自 {source or '功率特性数据集'}，"
-                       f"在线空载功率 {idle_w:g} W 与主机功率 {host_w:g} W 为给定值",
+        "description": f"{n}×{device}，{model}；功率与 token 间隔取自 {source or '功率特性数据集'}，"
+                       + (f"在线空载功率 {idle_w:g} W 为实测值" if idle_measured else f"在线空载功率 {idle_w:g} W 为给定值")
+                       + (f"，主机功率 {host_w:g} W 为给定值" if host_w else ""),
         "slots": slots,
         "power_w": [[0.0, round(idle_w, 1)]] + [[u, round(p.power_w + host_w, 1)] for u, p in zip(us, pts)],
         "tpot_s": [[u, round(p.itl_s, 5)] for u, p in zip(us, pts)],
@@ -72,4 +77,6 @@ def profile_from_points(points: list[PowerPoint], slots: int, idle_w: float, hos
         prof["prefill_tokens_per_s"] = prefill_tokens_per_s
     if boot_s is not None:
         prof["boot_s"] = boot_s
+    if off_w is not None:
+        prof["off_w"] = round(off_w, 1)
     return prof

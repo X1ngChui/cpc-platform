@@ -123,3 +123,21 @@ def test_rate_estimate_is_cadence_independent():
         if k % 300 == 299:
             b.update_rate(t + 0.1)
     assert a.arrival_rate == pytest.approx(b.arrival_rate, rel=0.05) and 5 < a.arrival_rate < 10
+
+
+def test_cpu_only_upstream_requires_host_measurement():
+    """只用 CPU 的真实服务器须由主机部分计量：measurement.host 为 excluded 时报错。"""
+    import yaml
+
+    from cpc.config import Scenario
+    from conftest import TEST_SCENARIO
+
+    raw = yaml.safe_load(TEST_SCENARIO.read_text(encoding="utf-8"))
+    site = raw["sites"][0]
+    site["pools"] = [{"id": "cpu", "profile": site["pools"][0]["profile"], "backend": "openai",
+                      "upstreams": [{"id": "llm0", "url": "http://127.0.0.1:8000"}]}]
+    site["measurement"] = {"sensors": [{"type": "rapl"}], "host": "cpu_dram"}
+    Scenario.model_validate({**raw, "base_dir": TEST_SCENARIO.parent})
+    site["measurement"]["host"] = "excluded"
+    with pytest.raises(ValueError, match="须声明占用的加速卡"):
+        Scenario.model_validate({**raw, "base_dir": TEST_SCENARIO.parent})

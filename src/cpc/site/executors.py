@@ -133,7 +133,8 @@ class EmulatedExecutor:
 class OpenAIExecutor:
     """转发到真实推理实例。server.upstream.url 例如 http://127.0.0.1:8000。"""
 
-    def __init__(self, timeout_s: float = 600.0):
+    def __init__(self, timeout_s: float = 600.0, idle_timeout_s: float = 120.0):
+        self.idle_timeout_s = idle_timeout_s  # 流式响应相邻数据片段的最大间隔
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(timeout_s, connect=5.0), trust_env=False)
 
     @staticmethod
@@ -170,7 +171,17 @@ class OpenAIExecutor:
         try:
             async with self.client.stream("POST", url, json=body) as r:
                 out.status = r.status_code
-                async for chunk in r.aiter_raw():
+                it = r.aiter_raw().__aiter__()
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(it.__anext__(), self.idle_timeout_s)
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.TimeoutError:
+                        out.status = 502
+                        msg = f"upstream {node.id} stalled: no data in {self.idle_timeout_s:g} s"
+                        yield f"data: {json.dumps({'error': {'message': msg}})}\n\n".encode()
+                        return
                     _scan_usage(chunk, out)
                     yield chunk
         except httpx.HTTPError as e:
@@ -195,11 +206,11 @@ def _scan_usage(chunk: bytes, out: ExecResult) -> None:
 class SiteExecutor:
     """按服务器类型选择执行器：仿真服务器 → EmulatedExecutor，真实服务器 → OpenAIExecutor。"""
 
-    def __init__(self, servers: list[Server]):
+    def __init__(self, servers: list[Server], idle_timeout_s: float = 120.0):
         self.servers = servers
         self.has_emulated = any(s.upstream is None for s in servers)
         self.emulated = EmulatedExecutor()
-        self.real = OpenAIExecutor() if any(s.upstream is not None for s in servers) else None
+        self.real = OpenAIExecutor(idle_timeout_s=idle_timeout_s) if any(s.upstream is not None for s in servers) else None
 
     def validate(self, body: dict) -> None:
         if self.has_emulated:
@@ -248,6 +259,9 @@ class RealNodeHooks:
 
             if not isinstance(power, SensorPower):
                 raise ConfigError("开启功率封顶需要传感器功率来源")
+            bare = [u.id for u in upstreams if not u.device_names]
+            if bare:
+                raise ConfigError(f"服务器 {bare} 没有声明加速卡，无法进行硬件功率封顶")
             bad = [d for u in upstreams for d in u.device_names if not power.sensor_for(d).supports_power_limit]
             if bad:
                 raise ConfigError(f"加速卡 {bad} 的传感器不支持功率封顶")

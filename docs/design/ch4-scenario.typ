@@ -53,7 +53,8 @@ sites:
 
 仿真服务器池（`backend: emulated`）给出服务器数 `count`，并发槽数取服务器类型的 `slots`。
 真实服务器池（`backend: openai`）的每个 `upstreams` 项是一台真实服务器：OpenAI 兼容推理实例的地址、占用的加速卡
-（`gpu_indices` 或传感器层的设备名 `devices`，二者择一）、可选的容器名（用于开关机）、并发上限 `max_inflight` 与就绪检查路径。
+（`gpu_indices` 或传感器层的设备名 `devices`，二者择一；只用 CPU 的实例不填，其功率为主机部分，此时 `measurement.host`
+不得为 `excluded`）、可选的容器名（用于开关机）、并发上限 `max_inflight` 与就绪检查路径。
 真实服务器的功率由站点 `measurement` 中的传感器测量（@ch-energy）；其服务器类型的参数在实验中用于全局策略的容量与功率估计，
 在仿真中用于模拟该服务器。
 
@@ -95,7 +96,7 @@ $u$ 取请求开始服务时（含该请求）的占用率。
     [`tpot_s`], [token 间隔表 \[\[占用率, 秒\], …\]（必填），占用率严格递增],
     [`prefill_tokens_per_s`], [预填充吞吐 $R_"pre"$（必填）],
     [`boot_s`], [开机到可服务的时间（必填）],
-    [`off_w`], [关机时的功率（缺省 0）],
+    [`off_w`], [关机时的功率（缺省 0）。真实服务器的关机通常是停止推理实例而机器仍在运行，其值宜取实测],
     [`cap_min_ratio`、`cap_perf_exponent`], [功率封顶比例的下限（缺省 0.5）；速度对封顶比例的指数 $beta$（缺省 0.4）],
   ),
   caption: [服务器类型的字段],

@@ -41,13 +41,26 @@ class RunResult:
     decisions: list[dict]
 
 
+def _cell(v: str) -> float | str | None:
+    """时间序列 CSV 的单元格：空为 None，数值为 float，其余（如 time 列）保持字符串。"""
+    if v == "":
+        return None
+    try:
+        return float(v)
+    except ValueError:
+        return v
+
+
 def read_run(path: str | Path) -> dict:
-    """读取结果数据包：返回 summary（dict）、run（dict）、requests（pyarrow.Table）、timeseries（行列表）、decisions（列表）。"""
+    """读取结果数据包：返回 summary（dict）、run（dict）、requests（pyarrow.Table）、timeseries（行列表）、decisions（列表）。
+
+    timeseries 的每行是 dict：数值列为 float，空值（如没有功率上限、读数缺失）为 None，time 列为字符串。
+    """
     d = Path(path)
     if not (d / "summary.json").is_file():
         raise FileNotFoundError(f"{d} 不是结果目录（缺少 summary.json）")
     with open(d / "timeseries.csv", encoding="utf-8") as f:
-        ts = list(csv.DictReader(f))
+        ts = [{k: _cell(v) for k, v in row.items()} for row in csv.DictReader(f)]
     decisions = [json.loads(x) for x in (d / "decisions.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
     return {"summary": json.loads((d / "summary.json").read_text(encoding="utf-8")),
             "run": yaml.safe_load((d / "run.yaml").read_text(encoding="utf-8")),
@@ -151,3 +164,40 @@ def write_comparison(out: str | Path, rows: list[dict]) -> Path:
         w.writeheader()
         w.writerows(rows)
     return p
+
+
+def compare_runs(paths: list[str | Path]) -> tuple[list[str], list[tuple[str, str, list]]]:
+    """并列比较结果目录：返回（各目录的名称，[(范围, 指标, 各目录的取值)]）。范围为"总计"或站点 id。
+
+    指标：完成请求、失败请求（拒绝、未路由、失败之和）、SLO 达成率、首 token 时延 P50 / P90、IT 电量、设施电量、电费、碳排放。
+    """
+    runs = [read_run(p) for p in paths]
+    names = [Path(p).name for p in paths]
+    rows: list[tuple[str, str, list]] = []
+
+    def total(key):
+        return [r["summary"].get(key) for r in runs]
+
+    failed = [sum(r["summary"].get(k) or 0 for k in ("rejected", "unrouted", "failed")) for r in runs]
+    cur = next((r["summary"].get("currency") for r in runs if r["summary"].get("currency")), "")
+    rows += [("总计", "完成请求", total("served")), ("总计", "失败请求", failed),
+             ("总计", "SLO 达成率", total("slo_attainment")), ("总计", "TTFT P50 (s)", total("ttft_p50_s")),
+             ("总计", "TTFT P99 (s)", total("ttft_p99_s")), ("总计", "IT 电量 (kWh)", total("it_kwh")),
+             ("总计", "设施电量 (kWh)", total("facility_kwh")), ("总计", f"电费 ({cur})", total("cost")),
+             ("总计", "碳排放 (kg)", total("carbon_kg"))]
+    sites = sorted({sid for r in runs for sid in (r["summary"].get("sites") or {})})
+    for sid in sites:
+        served, p50, p90, it = [], [], [], []
+        for r in runs:
+            req = r["requests"]
+            site = np.array(req.column("site").to_pylist(), dtype=object)
+            ok = (site == sid) & (np.array(req.column("status").to_pylist(), dtype=object) == "served")
+            tt = np.array([np.nan if v is None else v for v in req.column("ttft_s").to_pylist()], dtype=float)[ok]
+            tt = tt[~np.isnan(tt)]
+            served.append(int(ok.sum()))
+            p50.append(float(np.percentile(tt, 50)) if len(tt) else None)
+            p90.append(float(np.percentile(tt, 90)) if len(tt) else None)
+            it.append(((r["summary"].get("sites") or {}).get(sid) or {}).get("it_kwh"))
+        rows += [(sid, "完成请求", served), (sid, "TTFT P50 (s)", p50), (sid, "TTFT P90 (s)", p90),
+                 (sid, "IT 电量 (kWh)", it)]
+    return names, rows

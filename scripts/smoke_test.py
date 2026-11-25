@@ -5,8 +5,8 @@
     python scripts/smoke_test.py --offline  # 同上，场景为 tests/data/scenario.yaml（合成负载 + 随测试提交的电网数据，CI 使用）
     python scripts/smoke_test.py --external -e configs/endpoints.compose-host.yaml   # 服务已由 Compose / Kubernetes 启动，只做 1–5
 
-本机模式的场景由基础场景派生，另加一个只有真实服务器的站点 lab：其推理实例与功率计（http-json 传感器）
-由本脚本内置的桩服务提供，用于注入传感器故障。
+本机模式的场景由基础场景派生，另加一个只有真实服务器的站点 lab：其推理实例与功率计由本脚本内置的桩服务提供
+（功率计以 command 传感器读取），用于注入传感器故障。
 
 检查项：
 1. 各服务就绪（/readyz）；
@@ -42,6 +42,8 @@ from cpc.config import load_endpoints, load_scenario  # noqa: E402
 
 OUT = ROOT / "logs" / "smoke"
 STUB_PORT = 9199
+# 读取桩功率计：桩服务返回 500 时命令以非零状态退出，传感器记为故障
+METER_CMD = f"import urllib.request as u; print(u.urlopen('http://127.0.0.1:{STUB_PORT}/meter', timeout=2).read().decode())"
 
 
 def check(cond: bool, msg: str) -> None:
@@ -144,8 +146,9 @@ def smoke_scenario(base: Path, offline: bool) -> Path:
         "id": "lab", "name": "真实服务器（桩服务）", "region": "guizhou", "lat": 26.6, "lon": 106.6, "pue": 1.2, "min_active": 1,
         "pools": [{"id": "gpu", "profile": next(iter(raw["node_profiles"])), "backend": "openai",
                    "upstreams": [{"id": "lab-0", "url": f"http://127.0.0.1:{STUB_PORT}", "devices": ["gpu0"], "max_inflight": 32}]}],
-        "measurement": {"sensors": [{"type": "http-json", "name": "meter", "url": f"http://127.0.0.1:{STUB_PORT}/meter",
-                                     "path": "power_w", "kind": "gpu", "device": "gpu0", "vendor": "test"}], "host": "excluded"},
+        "measurement": {"sensors": [{"type": "command", "name": "meter", "kind": "gpu", "device": "gpu0", "vendor": "test",
+                                     "cmd": [sys.executable, "-c", METER_CMD], "regex": r'"power_w":\s*([0-9.]+)'}],
+                        "host": "excluded"},
     })
     p = base.parent / ".scenario.smoke.yaml"  # 与基础场景同目录，场景中的相对路径保持有效
     p.write_text("# 由 scripts/smoke_test.py 生成\n" + yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")

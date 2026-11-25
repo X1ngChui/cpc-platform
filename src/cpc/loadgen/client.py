@@ -1,7 +1,9 @@
 """负载生成器：按场景的负载数据集（经显式变换）向网关发送 OpenAI 兼容请求。
 
 请求到达时间取变换后 trace 的相对时间（秒），按真实时间回放；来源区域按场景 sources[].share 分配。
-请求体带 max_tokens 与 ignore_eos=true（vLLM 扩展参数），使真实模型输出长度与 trace 一致，这是推理压测的通行做法。
+请求体带 max_tokens 与 ignore_eos=true（vLLM、llama.cpp 支持的扩展参数），使真实模型输出长度与 trace 一致，
+这是推理压测的通行做法。输入文本由常见的英文短词组成：常见分词器中每个词恰为 1 个 token，站点代理对输入长度的估计
+（空白分词数与字符数/4 取大）也恰为词数，因此真实服务器、站点中的仿真服务器与仿真器看到的输入长度与 trace 一致。
 场景 workload.attributes 选定的扩展字段以 x-cpc-attr-<字段名> 请求头发送，与仿真中策略可见的请求属性一致。
 
 给出电网信号服务地址时，先确认其可达（失败则报错退出）。
@@ -19,12 +21,12 @@ from pathlib import Path
 import httpx
 import numpy as np
 
-from ..common import attr_headers, sync_clock
-from ..config import Scenario
+from ..common import SSECheck, attr_headers, sync_clock
+from ..config import ConfigError, Scenario
 from ..datasets.workload import WorkloadTrace, assign_sources, load_workload
 
-VOCAB = ("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau "
-         "upsilon phi chi psi omega data center power grid energy carbon price route node").split()
+# 不超过 3 个字符的常见英文词：字符数/4 不超过词数；Qwen 等分词器中每个词（含前导空格）为 1 个 token
+VOCAB = "the of and to in is it on at as by be or an we he if up so no do my me go us am".split()
 
 
 @dataclass
@@ -87,7 +89,8 @@ async def replay(gateway: str, scn: Scenario, duration_s: float, grid: str | Non
         if trace is None:
             trace = load_workload(scn)
         if trace.duration_s < duration_s:
-            raise ValueError(f"负载 {trace.ref} 变换后只覆盖 {trace.duration_s:.0f} s，短于压测时长 {duration_s:.0f} s")
+            raise ConfigError(f"负载 {trace.ref} 变换后只覆盖 {trace.duration_s:.0f} s，短于时长 {duration_s:.0f} s；"
+                              f"请减小 --duration")
         arrivals = arrivals_from(trace, scn, duration_s)
         t_begin = time.time()
         rng = random.Random(scn.workload.seed)
@@ -103,15 +106,19 @@ async def replay(gateway: str, scn: Scenario, duration_s: float, grid: str | Non
                 try:
                     if stream:
                         ttft = None
+                        check = SSECheck()
                         async with client.stream("POST", url, json=body, headers=a.headers()) as r:
                             rec["status"] = r.status_code
                             rec["site"] = r.headers.get("x-cpc-site")
                             rec["route_reason"] = r.headers.get("x-cpc-route-reason")
                             rec["server"] = r.headers.get("x-cpc-node")
-                            async for _ in r.aiter_raw():
+                            async for chunk in r.aiter_raw():
+                                check.feed(chunk)
                                 if ttft is None:
                                     ttft = time.monotonic() - t0
                         rec["ttft_s"] = ttft
+                        if r.status_code == 200 and check.problem is not None:  # 流中出错或未正常结束：请求失败
+                            rec["status"], rec["error"] = 502, check.problem
                     else:
                         r = await client.post(url, json=body, headers=a.headers())
                         rec["status"] = r.status_code

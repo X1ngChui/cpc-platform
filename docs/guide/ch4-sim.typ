@@ -114,6 +114,9 @@ req = run["requests"].to_pandas()        # pyarrow 表转为 pandas（需安装 
 served = req[req.status == "served"]
 print(served.groupby("site").ttft_s.quantile(0.99))      # 各站点首 token 时延的 P99
 print(served.groupby("source").slo_ok.mean())            # 各来源区域的 SLO 达成率
+
+ts = run["timeseries"]                   # 每个时间片一个 dict；数值为 float，空值为 None
+print(max(row["gz_it_kw"] or 0 for row in ts))           # 站点 gz 的最大 IT 功率（kW）
 ```
 
 也可以在 Python 中直接运行仿真，便于批量扫描参数：
@@ -139,6 +142,17 @@ cpc report results/base               # 单次运行
 ```
 
 `run.png` 为各站点 IT 功率、开启的服务器数与电价随时间的变化；`comparison.png` 为各变体的电费、设施电量、碳排放与 SLO 达成率。
+
+== 比较两个结果目录：cpc compare
+
+`cpc compare` 并列给出两个或多个结果目录（仿真或实验）的总体与各站点指标：完成与失败的请求数、SLO 达成率、
+首 token 时延、IT 电量、设施电量、电费与碳排放；两个目录时最后一列为第二个与第一个的比值。
+
+```bash
+cpc compare results/quickstart/nearest-reactive results/quickstart/cost-reactive
+```
+
+常用于比较两组策略，或比较同一场景的实验与仿真（@g-calibrate）。
 
 == 结果的可复现性
 

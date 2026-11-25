@@ -40,22 +40,20 @@
 #figure(
   tbl(
     columns: (6.5em, 10em, 1fr),
-    header: ("类型", "硬件", "接口"),
-    [`nvml`], [NVIDIA GPU（数据中心卡与消费卡）], [NVIDIA 官方 NVML 的 Python 绑定 nvidia-ml-py：功率、累计能耗计数器、利用率、功率上限设置],
-    [`nvidia-smi`], [NVIDIA GPU], [`nvidia-smi --query-gpu`],
-    [`amdsmi`], [AMD Instinct / Radeon], [ROCm 自带的 AMD SMI Python 库；兼容不同版本的字段名],
-    [`hwmon`], [AMD GPU（amdgpu）、Intel 独显（i915 / xe）], [内核 hwmon sysfs：`power1_average`、`power1_input`（µW）、`energy1_input`（µJ）],
-    [`rapl`], [Intel / AMD CPU 封装、内存、平台], [内核 powercap sysfs（RAPL 能量计数器，处理回绕）],
-    [`ascend-dcmi`], [华为昇腾 NPU], [昇腾驱动的 DCMI 库（ctypes 调用 `dcmi_get_device_power_info`）],
-    [`ipmi`], [服务器整机（本机或远程 BMC）], [`ipmitool dcmi power reading`],
-    [`redfish`], [服务器整机（BMC）], [DMTF Redfish：`EnvironmentMetrics.PowerWatts` 或旧版 `Power.PowerControl`],
-    [`prometheus`], [任意已有导出器], [PromQL 查询：dcgm-exporter、Kepler、node_exporter、ipmi_exporter、昇腾 NPU-Exporter 等],
-    [`command`], [任意厂商命令行工具], [子进程 + 正则（寒武纪、海光、摩尔线程、昆仑芯等国产加速卡的管理工具）],
-    [`http-json`], [智能插座、PDU、自研采集板], [HTTP GET + 字段路径],
+    header: ("类型", "测量对象", "接口"),
+    [`nvml`], [NVIDIA GPU], [NVIDIA 官方 NVML 的 Python 绑定 nvidia-ml-py：功率、累计能耗计数器、利用率、功率上限设置],
+    [`rapl`], [CPU 封装、内存（Intel / AMD）], [内核 powercap sysfs（RAPL 能量计数器，处理回绕）],
+    [`ipmi`], [服务器整机（本机 BMC）], [`ipmitool dcmi power reading`（经 `/dev/ipmi0`）],
+    [`command`], [其他任意设备], [子进程 + 正则：调用厂商的管理工具或读取采集程序的输出，读数种类由配置给出],
   ),
   caption: [内置功率传感器（Linux）],
 )
 
+内置传感器每种测量一类对象（加速卡、CPU 与内存、整机），互不重叠，均在裸金属服务器上验证。其他硬件以 `command` 适配，
+或实现 `Sensor` 子类并以 entry point 组 `cpc.sensors` 注册（@ch-ext）。
+
+所有传感器接受通用参数 `max_w`（功率读数的合理上限）：超过上限的读数记为缺失并记录原因，不以其他值替代，
+用于排除 BMC 等偶发的异常读数。
 `cpc sensors --list` 列出全部传感器类型及本机是否具备其前提条件；`cpc sensors --types nvml,rapl` 读取指定传感器并打印读数。平台不自动选择传感器：站点与导出器使用的传感器均由配置显式给出，
 同一设备不应由两个传感器同时报告（站点代理在启动时检查加速卡设备名是否重复）。
 
@@ -92,8 +90,9 @@ DCGM 为 100 ms 以上，IPMI 为 1–5 s，机柜级电表约 2 s @patel2024cha
 
 站点 `measurement` 给出传感器列表与主机部分的确定方式，站点代理按以下规则把读数归属到真实服务器（`cpc.site.power.SensorPower`）：
 
-1. 加速卡（gpu、npu、soc）的读数按服务器声明的 `devices`（或 `gpu_indices`）归属；
-2. 主机部分（CPU、内存、主板、风扇等）按 `measurement.host` 确定：`server` 为整机读数（IPMI、Redfish、PDU）减去本机全部加速卡读数；
+1. 加速卡（gpu、npu、soc）的读数按服务器声明的 `devices`（或 `gpu_indices`）归属；未声明加速卡的服务器
+   （只用 CPU 的推理实例）只有主机部分；
+2. 主机部分（CPU、内存、主板、风扇等）按 `measurement.host` 确定：`server` 为整机读数（`ipmi`，或以 `command` 接入的 PDU 等）减去本机全部加速卡读数；
    `cpu_dram` 为 CPU 与内存读数（RAPL 等）之和，不含主板、风扇与电源损耗；`excluded` 表示不计主机部分，
    服务器 IT 功率只含加速卡，状态摘要的 `power_scope` 为 `accelerators`；
 3. 主机部分在未关机的真实服务器之间平均分摊（全部关机时在全部真实服务器之间分摊）；
@@ -110,7 +109,7 @@ measurement:
 
 设施功率 = IT 功率 × PUE，PUE 按站点在场景中给定。"东数西算"工程对东部、西部枢纽数据中心 PUE 的目标分别为不超过 1.25 和 1.2，
 《数据中心绿色低碳发展专项行动计划》要求到 2025 年底国家枢纽节点数据中心 PUE 不高于 1.2 @ndrc2024dc。
-有冷却与配电功率的实测数据时，可通过 `prometheus` 或 `http-json` 传感器接入。
+有冷却与配电功率的实测数据时，可通过 `command` 传感器或自行注册的传感器接入。
 
 == 标准化指标 <sec-metrics>
 

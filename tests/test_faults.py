@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -128,6 +129,19 @@ class Upstreams:
             self.capacity[sid] = json.loads(request.content)
             return httpx.Response(200, json=self.snaps[sid])
         if path.startswith("/v1/"):
+            if fault == "stream_stall":  # 站点返回 200 的流，发出一个片段后停滞
+                async def stall():
+                    yield b'data: {"choices": [{"delta": {"content": "a"}}]}\n\n'
+                    await asyncio.sleep(5)
+
+                return httpx.Response(200, content=stall(), headers={"content-type": "text/event-stream", "x-cpc-site": sid})
+            if fault == "http400":
+                return httpx.Response(400, json={"error": {"message": "context length exceeded"}}, headers={"x-cpc-site": sid})
+            if fault == "stream_error":  # 站点返回 200 的流，但流中是错误事件且没有 [DONE]
+                async def body():
+                    yield b'data: {"error": {"message": "upstream gone"}}\n\n'
+
+                return httpx.Response(200, content=body(), headers={"content-type": "text/event-stream", "x-cpc-site": sid})
             if fault == "overloaded":
                 return httpx.Response(503, json={"error": {"type": "overloaded"}}, headers={"x-cpc-site": sid})
             return httpx.Response(200, json={"choices": [], "usage": {}}, headers={"x-cpc-site": sid, "x-cpc-node": f"{sid}-n00"})
@@ -192,6 +206,64 @@ def test_gateway_retries_configured_causes_only(gw):
     with make() as c:
         r = c.post("/v1/chat/completions", json=CHAT, headers={"x-cpc-source": "east"})
         assert r.status_code == 503 and r.json()["error"]["type"] == "overloaded"
+
+
+def test_gateway_records_failed_stream_as_error(gw):
+    """流中出现错误事件或没有正常结束：网关记为失败（502），不计入完成请求。"""
+    scn, up, make = gw
+    up.faults["sh/v1/chat/completions"] = "stream_error"
+    with make() as c:
+        r = c.post("/v1/chat/completions", json={**CHAT, "stream": True}, headers={"x-cpc-source": "east"})
+        assert r.status_code == 200 and b"upstream gone" in r.content     # 响应头已发出，错误事件原样转发
+        assert metric(c, "cpc_gateway_requests_total", source="east", site="sh", status="502") == 1
+        assert metric(c, "cpc_gateway_requests_total", source="east", site="sh", status="200") is None
+
+
+def test_gateway_aborts_stalled_stream_and_passes_errors(gw):
+    """流式响应停滞超过 stream_idle_timeout_s：中止并记为失败；站点对流式请求返回 400：原样返回并记为 400。"""
+    scn, up, make = gw
+    scn.scheduler.stream_idle_timeout_s = 0.3
+    up.faults["sh/v1/chat/completions"] = "stream_stall"
+    with make() as c:
+        t0 = time.time()
+        r = c.post("/v1/chat/completions", json={**CHAT, "stream": True}, headers={"x-cpc-source": "east"})
+        assert r.status_code == 200 and time.time() - t0 < 3
+        assert metric(c, "cpc_gateway_requests_total", source="east", site="sh", status="502") == 1
+    up.faults["sh/v1/chat/completions"] = "http400"
+    with make() as c:
+        r = c.post("/v1/chat/completions", json={**CHAT, "stream": True}, headers={"x-cpc-source": "east"})
+        assert r.status_code == 400 and r.json()["error"]["message"] == "context length exceeded"
+        assert metric(c, "cpc_gateway_requests_total", source="east", site="sh", status="400") == 1
+
+
+def test_sse_check_and_site_error_body():
+    from cpc.common import SSECheck
+    from cpc.site.service import upstream_error_body
+
+    ok = SSECheck()
+    for part in (b'data: {"choices": [{"delta": {"content": "a"}}]}\n', b"\ndata: [DO", b"NE]\n\n"):
+        ok.feed(part)
+    assert ok.problem is None
+    cut = SSECheck()
+    cut.feed(b'data: {"choices": []}\n\n')
+    assert cut.problem == "stream_incomplete"
+    bad = SSECheck()
+    bad.feed(b'data: {"error": {"message": "boom"}}\n\ndata: [DONE]\n\n')
+    assert bad.problem == "stream_error: boom"
+    body = upstream_error_body("u0", b'data: {"error": {"message": "connection refused"}}\n\n')
+    assert body["error"]["message"] == "connection refused"
+    assert upstream_error_body("u0", b"")["error"]["type"] == "upstream_error"
+
+
+def test_admin_policy_rejects_unknown_name_with_400(gw):
+    """运行时切换策略：拼错的策略名或参数返回 400 与说明，而不是 500。"""
+    scn, up, make = gw
+    with make() as c:
+        r = c.put("/admin/policy", json={"policy": "neareast"})
+        assert r.status_code == 400 and "是否要写 nearest" in r.json()["detail"]
+        r = c.put("/admin/policy", json={"policy": "nearest", "params": {"max_wait": 1}})
+        assert r.status_code == 400 and "max_wait_s" in r.json()["detail"]
+        assert c.put("/admin/policy", json={"policy": "cost_aware"}).json()["policy"] == "cost_aware"
 
 
 def test_gateway_does_not_retry_after_request_sent(gw):

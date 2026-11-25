@@ -9,7 +9,7 @@ from cpc.config import ConfigError, MeasurementConfig, NodeProfile, UpstreamConf
 from cpc.datacenter import Server
 from cpc.health import HealthBoard
 from cpc.sensors import EnergyIntegrator, Reading, Sensor, SensorError, make_sensor
-from cpc.sensors.builtin import CommandSensor, HttpJsonSensor, HwmonSensor, IpmiSensor, NvidiaSmiSensor, RaplSensor, RedfishSensor
+from cpc.sensors.builtin import CommandSensor, IpmiSensor, RaplSensor
 from cpc.sensors.exporter import read_all
 from cpc.site.power import SensorPower
 
@@ -60,56 +60,21 @@ def test_rapl_unreadable_fails_at_construction(tmp_path):
         RaplSensor(root=str(tmp_path))  # 没有任何域
 
 
-def test_hwmon_power_source_chosen_at_construction(tmp_path):
-    a = tmp_path / "hwmon3"
-    write(a / "name", "amdgpu")
-    write(a / "power1_average", "152000000")  # 152 W
-    write(a / "device" / "gpu_busy_percent", "87")
-    i = tmp_path / "hwmon5"
-    write(i / "name", "i915")
-    write(i / "energy1_input", "1000000")
-    write(tmp_path / "hwmon0" / "name", "coretemp")  # 无关设备
-    s = HwmonSensor(root=str(tmp_path))
-    assert s.capabilities() == {"amdgpu0": {"power_source": "power1_average", "energy_counter": False},
-                                "i9150": {"power_source": "energy1_input", "energy_counter": True}}
-    rs = {r.device: r for r in s.read()}
-    assert rs["amdgpu0"].power_w == pytest.approx(152.0) and rs["amdgpu0"].vendor == "amd" and rs["amdgpu0"].util_pct == 87
-    assert rs["i9150"].vendor == "intel" and rs["i9150"].energy_j == 0.0 and rs["i9150"].power_w is None
-    assert "coretemp0" not in rs
-    (a / "power1_average").unlink()  # 运行期接口消失：该字段缺失并记录原因，不切换到其他接口
-    rs = {r.device: r for r in s.read()}
-    assert rs["amdgpu0"].power_w is None and "power_w" in rs["amdgpu0"].errors
-
-
-def test_hwmon_device_without_power_interface(tmp_path):
-    write(tmp_path / "hwmon1" / "name", "i915")  # 没有 power / energy 文件
-    with pytest.raises(SensorError, match="没有功率或能量接口"):
-        HwmonSensor(root=str(tmp_path))
-    write(tmp_path / "hwmon2" / "name", "amdgpu")
-    write(tmp_path / "hwmon2" / "power1_input", "1000000")
-    assert [d[0] for d in HwmonSensor(root=str(tmp_path), devices=["amdgpu0"]).devs] == ["amdgpu0"]
-
-
-def test_cli_parsers():
-    rs = NvidiaSmiSensor.parse("0, NVIDIA A100-SXM4-80GB, 312.45, 97\n1, NVIDIA A100-SXM4-80GB, [N/A], 0\n")
-    assert rs[0].power_w == pytest.approx(312.45) and rs[1].power_w is None and rs[1].device == "gpu1"
-    assert rs[1].errors == {"power_w": "[N/A]"}
+def test_ipmi_parser():
     ipmi = "    Instantaneous power reading:                   412 Watts\n    Minimum during sampling period:  300 Watts\n"
     assert IpmiSensor.parse(ipmi) == 412.0
     with pytest.raises(SensorError):
         IpmiSensor.parse("Error: unable to get power reading")
 
 
-def test_generic_adapters():
+def test_command_sensor():
     c = CommandSensor(cmd=["true"], regex=r"Power\s*:\s*([0-9.]+)\s*W", kind="npu", vendor="x")
     rs = c.parse("Card 0 Power : 75.5 W\nCard 1 Power : 80 W\n")
     assert [r.power_w for r in rs] == [75.5, 80.0] and rs[1].device == "npu1"
     with pytest.raises(SensorError):
         c.parse("no reading here")
-    assert HttpJsonSensor.extract({"meters": [{"power": 12.5}]}, "meters[0].power") == 12.5
-    assert RedfishSensor.parse("environment_metrics", {"PowerWatts": {"Reading": 640}}) == 640.0
-    assert RedfishSensor.parse("power", {"PowerControl": [{"PowerConsumedWatts": 512}]}) == 512.0
-    assert RedfishSensor.parse("power", {"PowerControl": []}) is None
+    one = CommandSensor(cmd=["true"], regex=r"([0-9.]+)", kind="server", device="pdu")
+    assert [(r.device, r.power_w) for r in one.parse("431.5\n")] == [("pdu", 431.5)]
     with pytest.raises(ConfigError, match="未知的功率传感器类型"):
         make_sensor({"type": "no-such-sensor"})
     with pytest.raises(SensorError, match="初始化失败"):
@@ -260,5 +225,59 @@ def test_cli_lists_sensor_types(capsys):
 
     cli_main(["sensors", "--list"])
     out = capsys.readouterr().out
-    assert "nvml" in out and "rapl" in out and "http-json" in out
-    assert {"nvml", "ipmi"} <= set(SENSORS.all()) and "cost_aware" in ROUTING.names()
+    assert "nvml" in out and "rapl" in out and "ipmi" in out and "command" in out
+    names = set(SENSORS.all())
+    assert {"nvml", "rapl", "ipmi", "command"} <= names and not {"nvidia-smi", "redfish", "http-json", "hwmon"} & names
+    assert "cost_aware" in ROUTING.names()
+
+
+def test_cpu_only_server_power_is_host_part():
+    """未声明加速卡的真实服务器（只用 CPU 的推理实例）：服务器功率 = 主机部分；RAPL 读数缺失时功率缺失。"""
+    prof = NodeProfile(slots=8, power_w=[(0, 100), (1, 400)], tpot_s=[(1, 0.02)], prefill_tokens_per_s=1e4, boot_s=0)
+    node = Server(id="c0", pool="p", profile=prof, slots=8, model_power=False, state="on",
+                  upstream=UpstreamConfig(id="c0", url="http://x"))
+    rd = [Reading("fake", "package-0", "cpu", power_w=90.0), Reading("fake", "dram-0", "dram", power_w=10.0)]
+    s = FakeSensor(rd)
+    p = make_power("cpu_dram", [s])
+    p.start([node])
+    p.sample([node])
+    assert node.it_power_w == pytest.approx(100.0) and node.gpu_power_w is None and not node.power_missing
+    s.readings = [rd[0], Reading("fake", "dram-0", "dram", power_w=None)]
+    p.sample([node])
+    assert node.it_power_w is None and node.power_missing == ["host"]
+
+
+def test_rapl_reads_nested_powercap_layout(tmp_path):
+    """/sys/devices/virtual/powercap 的层级布局（容器内挂载到其他路径时使用）。"""
+    top = tmp_path / "intel-rapl" / "intel-rapl:0"
+    write(top / "name", "package-0")
+    write(top / "energy_uj", "1000")
+    write(top / "intel-rapl:0:1" / "name", "dram")
+    write(top / "intel-rapl:0:1" / "energy_uj", "10")
+    write(top / "intel-rapl:0:0" / "name", "core")
+    write(top / "intel-rapl:0:0" / "energy_uj", "1")
+    s = RaplSensor(root=str(tmp_path))
+    assert sorted(s.capabilities()) == ["dram-0", "package-0"]
+
+
+def test_max_w_marks_implausible_reading_missing():
+    """超过 max_w 的读数（如 BMC 偶发的 16462 W）记为缺失：不积分，原因记入读数错误与健康状态。"""
+    from cpc.health import HealthBoard
+    from cpc.sensors.exporter import read_all
+
+    class Bmc(FakeSensor):
+        def __init__(self, readings):
+            super().__init__(readings, sid="bmc")
+            self.max_w = 2000.0
+
+    s = Bmc([Reading("bmc", "server", "server", power_w=16462.0)])
+    board = HealthBoard("sensor", None)
+    board.register(s.id)
+    r = read_all([s], board)[0]
+    assert r.power_w is None and "超出上限" in r.errors["power_w"] and not board.items["bmc"].up
+    s.readings = [Reading("bmc", "server", "server", power_w=98.0)]
+    assert read_all([s], board)[0].power_w == 98.0 and board.items["bmc"].up
+    with pytest.raises(SensorError, match="max_w"):
+        make_sensor({"type": "rapl", "max_w": 0})
+    with pytest.raises(SensorError, match="是否要写 max_w"):
+        make_sensor({"type": "ipmi", "max_W": 2000})  # 拼写错误的参数在构造时报错，而不是被忽略

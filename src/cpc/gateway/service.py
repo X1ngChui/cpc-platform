@@ -40,8 +40,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 from pydantic import BaseModel, Field, ValidationError
 
-from ..common import JsonlWriter, attr_headers, metrics_response, request_attrs, require_admin, sync_clock
-from ..config import Endpoints, Scenario
+from ..common import JsonlWriter, SSECheck, attr_headers, metrics_response, request_attrs, require_admin, sync_clock
+from ..config import ConfigError, Endpoints, Scenario
 from ..grid.signals import GridSignal
 from ..health import HealthBoard, describe
 from ..models import SimClock, rtt_matrix
@@ -292,6 +292,10 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
             hdr = {k: v for k, v in r.headers.items() if k.startswith("x-cpc-")}
             hdr["x-cpc-source"] = src
             hdr["x-cpc-route-reason"] = decision.reason
+            if stream and r.status_code != 200:  # 站点以错误状态回应流式请求（如上游拒绝）：按普通错误返回
+                await r.aread()
+                await r.aclose()
+                stream = False
             if not stream:
                 if rtt_s:
                     await asyncio.sleep(rtt_s / 2)
@@ -304,8 +308,21 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
 
             async def gen(r=r, rec=rec, sid=sid, rtt_s=rtt_s):
                 ttft = None
+                check = SSECheck()
+                idle = scn.scheduler.stream_idle_timeout_s
+                it = r.aiter_raw().__aiter__()
                 try:
-                    async for chunk in r.aiter_raw():
+                    while True:
+                        try:
+                            chunk = await asyncio.wait_for(it.__anext__(), idle)
+                        except StopAsyncIteration:
+                            break
+                        except asyncio.TimeoutError:
+                            rec["stream_error"] = f"stream_idle: {idle:g} s 内没有数据"
+                            log.warning("流式响应停滞（站点 %s）：%g s 内没有数据，中止", sid, idle,
+                                        extra={"event": "stream_interrupted", "site": sid, "request": req.id})
+                            break
+                        check.feed(chunk)
                         if ttft is None:
                             if rtt_s:
                                 await asyncio.sleep(rtt_s / 2)
@@ -317,6 +334,10 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
                                 extra={"event": "stream_interrupted", "site": sid, "request": req.id})
                 finally:
                     await r.aclose()
+                    if "stream_error" not in rec and check.problem is not None:
+                        rec["stream_error"] = check.problem
+                        log.warning("流式响应不完整（站点 %s）：%s", sid, check.problem,
+                                    extra={"event": "stream_interrupted", "site": sid, "request": req.id})
                     finish(rec, r.status_code if "stream_error" not in rec else 502, src, sid, t0, n_in, n_out, ttft)
 
             return StreamingResponse(gen(), status_code=r.status_code, media_type="text/event-stream", headers=hdr)
@@ -369,7 +390,7 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
     def set_policy(body: PolicyBody) -> dict:
         try:
             pol["policy"] = make_routing(body.policy, body.params)
-        except (KeyError, TypeError, ValueError, ValidationError) as e:
+        except (ConfigError, KeyError, TypeError, ValueError, ValidationError) as e:
             raise HTTPException(400, str(e))
         m_policy.clear()
         m_policy.labels(pol["policy"].name).set(1)

@@ -16,18 +16,6 @@ scrape_configs:
   - job_name: cpc-site
     static_configs:
       - targets: ["<服务器A_IP>:9100", "<服务器B_IP>:9100", "<服务器C_IP>:9100", "site-gd:9104"]
-  # 可选：NVIDIA dcgm-exporter（站点栈 --profile dcgm）。用 relabel 给指标补上 site 标签。
-  - job_name: dcgm
-    static_configs:
-      - {targets: ["<服务器A_IP>:9400"], labels: {site: sh}}
-      - {targets: ["<服务器B_IP>:9400"], labels: {site: gz}}
-      - {targets: ["<服务器C_IP>:9400"], labels: {site: nm}}
-    # 站点代理已导出同名 DCGM_FI_* 指标（来自 NVML），为避免重复求和，这里只保留 dcgm-exporter 独有的字段；
-    # 若希望以 dcgm-exporter 为准，可改为在站点代理的抓取任务中丢弃 DCGM_FI_* 指标。
-    metric_relabel_configs:
-      - source_labels: [__name__]
-        regex: "DCGM_FI_DEV_(POWER_USAGE|TOTAL_ENERGY_CONSUMPTION|GPU_UTIL)"
-        action: drop
   # 可选：node_exporter（站点栈 --profile host），主机 CPU/内存/网络；裸金属可读 RAPL 能耗
   - job_name: node
     static_configs:

@@ -36,7 +36,7 @@ def read_all(sensors: list[Sensor], board: HealthBoard) -> list[Reading]:
     out: list[Reading] = []
     for s in sensors:
         try:
-            rs = s.read()
+            rs = s.check_bounds(s.read())
         except Exception as e:  # noqa: BLE001 —— 隔离单个传感器的故障，原因记入健康状态
             board.fail(s.id, e)
             continue

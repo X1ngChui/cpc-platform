@@ -81,6 +81,80 @@ def test_actuation_failure_is_recorded(scn):
     asyncio.run(run())
 
 
+class SlowOffHooks:
+    """关机需要一段时间（如 docker stop）；记录操作顺序与容器是否在运行。"""
+
+    def __init__(self):
+        self.running, self.log = True, []
+
+    async def power_on(self, server):
+        self.log.append("on")
+        self.running = True
+
+    async def power_off(self, server):
+        self.log.append("off-begin")
+        await asyncio.sleep(0.05)
+        self.running = False
+        self.log.append("off-end")
+
+    async def set_cap(self, server, ratio):
+        return None
+
+    async def is_ready(self, server):
+        return self.running
+
+
+def _one_real_server(scn):
+    from cpc.config import MeasurementConfig, PoolConfig, UpstreamConfig
+
+    site = scn.site("sh")
+    site.pools = [PoolConfig(id="cpu", profile="a100x8", backend="openai",
+                             upstreams=[UpstreamConfig(id="u0", url="http://127.0.0.1:9")])]
+    site.measurement = MeasurementConfig(sensors=[], host="server")
+
+
+def test_power_actions_are_serialized_per_server(scn):
+    """关机未完成时到达的开机指令在关机完成后执行，服务器最终可服务（此前开机可能先于关机完成，容器停在已退出状态）。"""
+    _one_real_server(scn)
+
+    async def run():
+        hooks = SlowOffHooks()
+        agent = SiteAgent(scn, "sh", hooks=hooks)
+        s = agent.servers[0]
+        await agent.tick()
+        assert s.state == "on"
+        agent.apply(CapacityTarget(active_nodes=0))
+        agent.apply(CapacityTarget(active_nodes=1))
+        await asyncio.sleep(0.1)
+        assert hooks.log == ["off-begin", "off-end", "on"] and hooks.running
+        await agent.tick()
+        assert s.state == "on"
+
+    asyncio.run(run())
+
+
+def test_boot_timeout_marks_power_on_failed(scn, monkeypatch):
+    """真实服务器在启动期限内未就绪：开机失败，回到 off 并记录原因，而不是一直停留在 booting。"""
+    import cpc.site.core as core
+
+    _one_real_server(scn)
+    monkeypatch.setattr(core, "boot_timeout_s", lambda boot_s: 0.05)
+
+    async def run():
+        hooks = SlowOffHooks()
+        hooks.running = False
+        agent = SiteAgent(scn, "sh", hooks=hooks)
+        s = agent.servers[0]
+        await agent.tick()
+        assert s.state == "booting"
+        await asyncio.sleep(0.1)
+        await agent.tick()
+        assert s.state == "off" and "启动超时" in s.last_error
+        assert agent.dc.actuation_errors[("u0", "power_on")] == 1
+
+    asyncio.run(run())
+
+
 def test_site_service_api_and_readiness(scn):
     scn.node_profiles["a100x8"].tpot_s = [(0, 0.001), (1, 0.002)]
     scn.site("gz").scheduler.dispatch.policy = "affinity"
@@ -109,3 +183,45 @@ def test_site_service_api_and_readiness(scn):
         assert "DCGM_FI_DEV_POWER_USAGE{" not in m  # 加速卡指标只对实测服务器导出
         st = c.get("/state").json()
         assert st["power_scope"] == "node" and st["energy_coverage"] == pytest.approx(1.0) and st["pools"][0]["total"] == 6
+
+
+def test_loadgen_prompt_length_matches_trace():
+    """负载生成器的输入文本：站点代理估计的输入长度恰为 trace 的输入 token 数（与仿真器一致）。"""
+    import random
+
+    from cpc.loadgen.client import Arrival, make_body
+    from cpc.site.executors import approx_prompt_tokens
+
+    rng = random.Random(0)
+    for n in (1, 7, 256, 3000):
+        body = make_body(Arrival(0.0, "east", n, 16, {}), rng, stream=False)
+        assert approx_prompt_tokens(body) == n
+
+
+def test_failed_upstream_is_taken_out_and_restarted(scn, monkeypatch):
+    """在线的真实服务器就绪检查连续失败：退出服务（不再派发）、发出开机以重启推理实例，恢复后重新在线。"""
+    import cpc.site.core as core
+
+    _one_real_server(scn)
+    monkeypatch.setattr(core, "HEALTH_PROBE_S", 0.0)
+
+    async def run():
+        hooks = SlowOffHooks()
+        agent = SiteAgent(scn, "sh", hooks=hooks)
+        s = agent.servers[0]
+        await agent.tick()
+        assert s.state == "on"
+        hooks.running = False                 # 推理实例崩溃
+        hooks.log.clear()
+        await agent.tick()
+        assert s.state == "on"                # 一次失败不判定
+        await agent.tick()
+        assert s.state == "booting" and "就绪检查" in s.last_error
+        assert agent.dc.actuation_errors[("u0", "health")] == 1
+        assert agent.snapshot().slots_on == 0  # 失效的实例不再接收请求（新请求排队，待其恢复）
+        await asyncio.sleep(0.01)
+        assert hooks.log == ["on"] and hooks.running   # 执行器重启了推理实例
+        await agent.tick()
+        assert s.state == "on"
+
+    asyncio.run(run())

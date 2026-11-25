@@ -168,3 +168,37 @@ def request_attrs(headers) -> dict:
             except ValueError:
                 out[k[len(ATTR_PREFIX):]] = v
     return out
+
+
+class SSECheck:
+    """检查 OpenAI 兼容的流式响应（SSE）：是否以 data: [DONE] 结束、是否含错误事件。
+
+    依次 feed() 收到的字节片段；problem 在流完整且没有错误事件时为 None，否则为失败原因
+    （stream_error: <消息> 或 stream_incomplete）。
+    """
+
+    def __init__(self) -> None:
+        self._buf = b""
+        self.done = False
+        self.error: str | None = None
+
+    def feed(self, chunk: bytes) -> None:
+        self._buf += chunk
+        *lines, self._buf = self._buf.split(b"\n")
+        for line in lines:
+            line = line.strip()
+            if line == b"data: [DONE]":
+                self.done = True
+            elif line.startswith(b"data: {") and b'"error"' in line:
+                try:
+                    err = json.loads(line[6:]).get("error")
+                except ValueError:
+                    continue
+                if err and self.error is None:
+                    self.error = str(err.get("message", err) if isinstance(err, dict) else err)[:200]
+
+    @property
+    def problem(self) -> str | None:
+        if self.error is not None:
+            return f"stream_error: {self.error}"
+        return None if self.done else "stream_incomplete"

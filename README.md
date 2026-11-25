@@ -11,8 +11,8 @@
   全局与本地策略在两种运行方式中为同一实现；实验中仿真服务器与真实服务器可在同一站点共存。
 - **两级调度**：全局路由策略与容量策略只依赖数据中心状态摘要；站内派发策略与电源管理策略负责数据中心内部，
   可利用请求扩展属性与异构服务器池。策略以 entry points 注册，新增实现不修改平台。
-- **能耗测量**：NVIDIA（NVML / nvidia-smi）、AMD（AMD SMI / hwmon）、Intel 独显（hwmon）、CPU（RAPL）、华为昇腾（DCMI）、
-  服务器整机（IPMI / Redfish）以及 Prometheus、命令行、HTTP 接口；指标为 Prometheus 格式，GPU 指标与 dcgm-exporter 同名。
+- **能耗测量**：NVIDIA GPU（NVML）、CPU 与内存（RAPL）、服务器整机（本机 BMC，IPMI DCMI），其他设备以命令行适配
+  （command）或以 entry points 注册传感器；指标为 Prometheus 格式，GPU 指标与 dcgm-exporter 同名。
 - **失败显式化**：配置与环境错误在启动时报错；运行期故障隔离在其所属范围内，以健康检查、状态字段与指标报告，
   缺失的数据不以其他值替代。
 - **结果数据包**：仿真结果写为数据包（逐请求记录、时间序列、汇总、决策、运行描述），记录场景、策略、数据集与平台版本。
@@ -45,6 +45,7 @@ cpc check -s $S                                     # 检查场景与数据，�
 cpc sim -s $S --hours 0.9 --out results/qs          # 仿真，结果写为结果目录
 cpc run examples/quickstart/experiment.yaml         # 比较多组策略
 cpc live -s $S --duration 120 --rate-scale 0.2      # 以真实时间运行实验，结果格式与仿真相同
+cpc compare results/quickstart/nearest-reactive results/quickstart/cost-reactive   # 并列比较两个结果
 ```
 
 Python 中：`cpc.simulate("examples/quickstart/scenario.yaml", routing="cost_aware", hours=0.9)`、`cpc.read_run(<结果目录>)`。

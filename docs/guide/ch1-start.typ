@@ -61,9 +61,11 @@ cd cpc-platform
 
 == 创建 Python 环境并安装
 
-平台安装在一个独立的 Python 虚拟环境中，避免与系统中的其他 Python 包冲突：
+平台安装在一个独立的 Python 虚拟环境中，避免与系统中的其他 Python 包冲突。Debian / Ubuntu 的系统 Python 默认不含
+venv 模块，先安装 `python3-venv`：
 
 ```bash
+sudo apt install python3-venv  # Debian / Ubuntu；其他发行版通常已包含
 python3 -m venv .venv          # 在仓库目录下创建虚拟环境 .venv
 . .venv/bin/activate           # 激活虚拟环境；命令行提示符前出现 (.venv)
 pip install -e ".[dev]"        # 安装平台及测试、作图所需的依赖
@@ -77,8 +79,7 @@ cpc sim --help                 # 查看某个子命令的参数
 ```
 
 可选依赖按需安装：`pip install -e ".[nvml]"`（读取 NVIDIA GPU 功率）、`pip install -e ".[docker]"`（通过 Docker 启停推理容器）、
-`pip install -e ".[docs]"`（编译文档）。Debian / Ubuntu 的系统 Python 若提示缺少 venv 模块，先安装 `python3-venv` 软件包；
-也可以使用 uv（`uv venv --python 3.12 && uv pip install -e ".[dev]"`）。
+`pip install -e ".[docs]"`（编译文档）。也可以使用 uv（`uv venv --python 3.12 && uv pip install -e ".[dev]"`）。
 
 == 验证安装
 

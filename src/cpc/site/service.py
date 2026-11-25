@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -27,7 +28,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
-from ..common import metrics_response, request_attrs, require_admin
+from ..common import SSECheck, metrics_response, request_attrs, require_admin
 from ..config import Scenario
 from ..sched.routing import RequestInfo
 from ..schemas import CapacityTarget
@@ -43,6 +44,20 @@ NAN = float("nan")
 
 def _v(x: float | None) -> float:
     return NAN if x is None else x
+
+
+def upstream_error_body(node_id: str, first: bytes) -> dict:
+    """上游在流式响应开始前失败时返回的错误体：上游给出的 JSON 错误原样返回，其他内容作为消息。"""
+    text = first.decode("utf-8", errors="replace").strip()
+    if text.startswith("data: "):
+        text = text[6:]
+    try:
+        body = json.loads(text)
+        if isinstance(body, dict) and "error" in body:
+            return body
+    except ValueError:
+        pass
+    return {"error": {"message": f"upstream {node_id} error: {text[:500] or 'empty response'}", "type": "upstream_error"}}
 
 
 def build_agent(scn: Scenario, site_id: str, registry: CollectorRegistry | None = None, enable_power_cap: bool = False,
@@ -64,7 +79,7 @@ def build_agent(scn: Scenario, site_id: str, registry: CollectorRegistry | None 
         meter.sample(real)
         agent.meter = meter
         agent.dc.power_scope = meter.scope
-    return agent, SiteExecutor(agent.servers)
+    return agent, SiteExecutor(agent.servers, scn.scheduler.stream_idle_timeout_s)
 
 
 def create_app(scn: Scenario, site_id: str, tick_s: float = 0.5, enable_power_cap: bool = False,
@@ -110,7 +125,8 @@ def create_app(scn: Scenario, site_id: str, tick_s: float = 0.5, enable_power_ca
             lv = (cfg.id, n.pool, n.id)
             m_node_state.labels(*lv).set(STATE_CODE[n.state])
             m_node_it.labels(*lv, "model" if n.model_power else "sensors").set(_v(n.it_power_w))
-            host = None if n.it_power_w is None or n.gpu_power_w is None else n.it_power_w - n.gpu_power_w
+            accel = n.gpu_power_w if node_devices(n) else 0.0
+            host = None if n.it_power_w is None or accel is None else n.it_power_w - accel
             m_node_host.labels(*lv).set(_v(host))
             m_node_valid.labels(*lv).set(0 if n.power_missing else 1)
             m_node_busy.labels(*lv).set(n.busy)
@@ -215,27 +231,46 @@ def create_app(scn: Scenario, site_id: str, tick_s: float = 0.5, enable_power_ca
         hdr = {"x-cpc-site": cfg.id, "x-cpc-node": node.id, "x-cpc-queue-s": f"{wait:.4f}"}
         if body.get("stream"):
             res = ExecResult(200, None)
+            t1 = time.monotonic()
+            agen = executor.of(node).stream(node, path, body, res)
+            try:  # 先取得上游的首个片段：连接失败或上游返回错误时以相应的 HTTP 状态返回，而不是 200 的流
+                first = await agen.__anext__()
+            except StopAsyncIteration:
+                first, res.status = b"", 502
+            except BaseException:
+                agent.release(node, None)
+                raise
+            if res.status != 200:
+                await agen.aclose()
+                agent.release(node, None)  # 失败的请求不计入平均服务时间
+                m_req.labels(cfg.id, "error").inc()
+                return JSONResponse(upstream_error_body(node.id, first), status_code=res.status, headers=hdr)
 
             async def gen():
-                t1 = time.monotonic()
+                check = SSECheck()
                 try:
-                    async for chunk in executor.of(node).stream(node, path, body, res):
+                    check.feed(first)
+                    yield first
+                    async for chunk in agen:
+                        check.feed(chunk)
                         yield chunk
                 finally:
                     svc = time.monotonic() - t1
-                    agent.release(node, svc)
+                    ok = res.status == 200 and check.problem is None
+                    agent.release(node, svc if ok else None)
                     m_svc.labels(cfg.id).observe(svc)
-                    m_req.labels(cfg.id, "ok" if res.status == 200 else "error").inc()
+                    m_req.labels(cfg.id, "ok" if ok else "error").inc()
                     m_tok.labels(cfg.id, "prompt").inc(res.prompt_tokens)
                     m_tok.labels(cfg.id, "completion").inc(res.completion_tokens)
 
             return StreamingResponse(gen(), media_type="text/event-stream", headers=hdr)
         t1 = time.monotonic()
+        res = None
         try:
             res = await executor.of(node).complete(node, path, body)
         finally:
             svc = time.monotonic() - t1
-            agent.release(node, svc)
+            agent.release(node, svc if res is not None and res.status == 200 else None)
         m_svc.labels(cfg.id).observe(svc)
         m_req.labels(cfg.id, "ok" if res.status == 200 else "error").inc()
         m_tok.labels(cfg.id, "prompt").inc(res.prompt_tokens)

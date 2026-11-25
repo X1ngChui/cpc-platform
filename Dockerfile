@@ -14,6 +14,8 @@ ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
     CPC_DATA_DIR=/var/lib/cpc/datasets
 
 WORKDIR /app
+# ipmitool：裸金属服务器上经 /dev/ipmi0 读取整机功率（ipmi 传感器）
+RUN apt-get update && apt-get install -y --no-install-recommends ipmitool && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install ".[nvml,docker]"

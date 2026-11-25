@@ -59,15 +59,36 @@ class Reading:
 
 
 class Sensor:
-    """传感器基类。子类实现 read()；可选实现 detect()、capabilities() 与 set_power_limit()。"""
+    """传感器基类。子类实现 read()；可选实现 detect()、capabilities() 与 set_power_limit()。
+
+    通用参数 max_w：功率读数的合理上限（W）。超过上限的读数记为缺失（power_w 为 None，原因记入 errors），
+    用于排除 BMC 等偶发的异常读数；未给出时不检查。
+    """
 
     name = "base"  # 类型名（注册名）
     requires = ""  # 文档用途：依赖的驱动、库或接口
     supports_power_limit = False
 
-    def __init__(self, **params: Any):
-        self.params = params
+    def __init__(self, max_w: float | None = None, **params: Any):
+        if max_w is not None and not max_w > 0:
+            raise SensorError(f"max_w 须大于 0，实际为 {max_w}")
+        if params:
+            from ..registry import accepted_params, did_you_mean
+
+            bad, ok = sorted(params), accepted_params(type(self))
+            hint = did_you_mean(bad[0], ok) if len(bad) == 1 else ""
+            raise SensorError(f"不接受参数 {'、'.join(bad)}{hint}。可用参数：{'、'.join(ok)}")
+        self.max_w = max_w
         self.id = self.name  # 实例名；make_sensor 按配置的 name 覆盖
+
+    def check_bounds(self, readings: list[Reading]) -> list[Reading]:
+        """超过 max_w 的功率读数记为缺失。"""
+        if self.max_w is not None:
+            for r in readings:
+                if r.power_w is not None and r.power_w > self.max_w:
+                    r.errors["power_w"] = f"读数 {r.power_w:g} W 超出上限 max_w = {self.max_w:g} W"
+                    r.power_w = None
+        return readings
 
     @classmethod
     def detect(cls) -> bool:

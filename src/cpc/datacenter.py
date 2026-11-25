@@ -297,6 +297,27 @@ class Datacenter:
             s.state = "off"
             self._repower(s)
 
+    def server_failed(self, s: Server, error: str, now: float) -> None:
+        """在线或排空中的服务器失效（如推理实例的就绪检查连续失败）：退出服务并记录原因。
+
+        在线的服务器转为启动中并重新发出 power_on（由执行器重启推理实例，经就绪检查后恢复服务）；
+        排空中的服务器本应关机，转为关机。正在服务的请求由执行器以失败结束。
+        """
+        if s.state not in ("on", "draining"):
+            return
+        self._integrate(s, now)
+        s.last_error = f"health: {error}"
+        key = (s.id, "health")
+        self.actuation_errors[key] = self.actuation_errors.get(key, 0) + 1
+        if s.state == "on":
+            s.state = "booting"
+            s.boot_until = now + s.profile.boot_s
+            self.on_action(Action("power_on", s))
+        else:
+            s.state = "off"
+            self.on_action(Action("power_off", s))
+        self._repower(s)
+
     def _transition(self, s: Server, to: str, now: float) -> None:
         if to not in ("on", "off"):
             raise ValueError(f"电源管理策略 {self.power.name} 给出了无效的目标状态 {to}（服务器 {s.id}）")

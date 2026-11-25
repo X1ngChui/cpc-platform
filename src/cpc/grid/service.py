@@ -4,6 +4,7 @@
 - GET  /v1/clock                     信号时钟（其他服务据此同步）
 - GET  /v1/signals[?at=ISO时间]       各站点当前（或指定时刻）的电价、碳强度、功率上限；信号不可用的站点列入 missing
 - GET  /v1/events  POST /v1/events  DELETE /v1/events   需求响应事件的查询、注入与清除
+- GET  /v1/config                    场景文件的文本与各服务地址（需管理令牌），供其他机器上的站点代理启动时获取
 - GET  /healthz、/readyz              存活检查；就绪检查（数据加载与校验在启动时完成，服务运行即就绪）
 - GET  /metrics                      Prometheus 指标（cpc_grid_*）
 
@@ -24,7 +25,8 @@ from ..config import DREvent, Scenario
 from ..models import SimClock
 from .signals import GridModel
 
-def create_app(scn: Scenario, clock: SimClock | None = None) -> FastAPI:
+def create_app(scn: Scenario, clock: SimClock | None = None, config: dict | None = None) -> FastAPI:
+    """config：{"scenario": 场景文件文本, "endpoints": 服务地址}，给出时提供 GET /v1/config。"""
     model = GridModel(scn)
     clock = clock or SimClock(start=scn.clock.start, speedup=scn.clock.speedup)
     reg = CollectorRegistry()
@@ -81,6 +83,11 @@ def create_app(scn: Scenario, clock: SimClock | None = None) -> FastAPI:
     @app.get("/readyz")
     def readyz() -> dict:
         return {"ready": True, "sites": len(scn.sites), "events": len(model.events), "sources": model.sources()}
+
+    if config is not None:
+        @app.get("/v1/config", dependencies=[Depends(require_admin)])
+        def get_config() -> dict:
+            return config
 
     @app.get("/v1/clock")
     def get_clock() -> dict:

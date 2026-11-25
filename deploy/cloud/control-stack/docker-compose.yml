@@ -4,9 +4,7 @@
 # 安全：grid/gateway/controller/站点端口应只对同一 VPC 内的服务器开放（云安全组），并设置 CPC_ADMIN_TOKEN；
 #       Prometheus 与 Grafana 只绑定 127.0.0.1，通过 SSH 隧道访问。
 # 准备：
-#   printf "CPC_ADMIN_TOKEN=...
-GRAFANA_PASSWORD=...
-" > .env
+#   printf 'CPC_ADMIN_TOKEN=...\nGRAFANA_PASSWORD=...\nCPC_IMAGE=ghcr.io/x1ngchui/cpc-platform:0.3.0\n' > .env
 #   cp ../scenario.cloud.example.yaml scenario.yaml        # 按实验修改
 #   cp ../endpoints.cloud.example.yaml endpoints.yaml      # 填入各服务器 IP
 #   cp ../prometheus.cloud.example.yml prometheus.yml      # 填入各服务器 IP

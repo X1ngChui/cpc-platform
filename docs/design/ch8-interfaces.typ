@@ -13,7 +13,9 @@
   tbl(
     columns: (4em, 13em, 1fr),
     header: ("方法", "路径", "说明"),
-    [POST], [`/v1/chat/completions`], [OpenAI 兼容对话接口，支持 `stream`。请求头 `x-cpc-source`、`x-cpc-attr-<字段名>`（JSON 值）作为请求信息传给派发策略。响应头：`x-cpc-site`、`x-cpc-node`（服务器）、`x-cpc-queue-s`（站内排队时间）；非流式另有 `x-cpc-service-s`（服务时间）。队列已满返回 503（`type: overloaded`）；站点有仿真服务器而请求未给出 `max_tokens` 时返回 400。],
+    [POST], [`/v1/chat/completions`], [OpenAI 兼容对话接口，支持 `stream`。请求头 `x-cpc-source`、`x-cpc-attr-<字段名>`（JSON 值）作为请求信息传给派发策略。响应头：`x-cpc-site`、`x-cpc-node`（服务器）、`x-cpc-queue-s`（站内排队时间）；非流式另有 `x-cpc-service-s`（服务时间）。队列已满返回 503（`type: overloaded`）；站点有仿真服务器而请求未给出 `max_tokens` 时返回 400。流式请求在取得
+      上游的首个数据片段后才发出响应头：上游连接失败或返回错误时以相应状态（502、400 等）返回；流开始后上游中断或停滞
+      超过 `scheduler.stream_idle_timeout_s` 时以错误事件结束。],
     [POST], [`/v1/completions`], [OpenAI 兼容补全接口，同上。],
     [GET], [`/v1/models`], [模型列表（有真实服务器时转发给在线的推理实例）。],
     [GET], [`/state`], [状态摘要 `SiteSnapshot`（@ch-runtime），另含传感器等依赖的健康状态 `components`。],
@@ -33,7 +35,8 @@
   tbl(
     columns: (4em, 13em, 1fr),
     header: ("方法", "路径", "说明"),
-    [POST], [`/v1/chat/completions`、`/v1/completions`], [路由并转发。请求头 `x-cpc-source` 指定来源区域（未携带时归属 `network.default_source`；未配置或来源未知返回 400）；`x-cpc-attr-*` 作为请求属性传给路由策略并转发给站点。透传站点的 `x-cpc-*` 响应头，另加 `x-cpc-route-reason`。路由策略拒绝时返回 503（`type: route_rejected`，含 `reason`）；可重试的失败用尽尝试次数时返回 503（`retries_exhausted`）；不重试的转发失败返回 502（`upstream_error`）；错误响应均含逐次尝试记录 `attempts`。],
+    [POST], [`/v1/chat/completions`、`/v1/completions`], [路由并转发。请求头 `x-cpc-source` 指定来源区域（未携带时归属 `network.default_source`；未配置或来源未知返回 400）；`x-cpc-attr-*` 作为请求属性传给路由策略并转发给站点。透传站点的 `x-cpc-*` 响应头，另加 `x-cpc-route-reason`。路由策略拒绝时返回 503（`type: route_rejected`，含 `reason`）；可重试的失败用尽尝试次数时返回 503（`retries_exhausted`）；不重试的转发失败返回 502（`upstream_error`）；错误响应均含逐次尝试记录 `attempts`。流式响应中出现错误事件、
+      没有以 `data: [DONE]` 结束或停滞超过 `scheduler.stream_idle_timeout_s` 时，请求日志与指标记为 502。],
     [GET], [`/v1/models`], [转发给状态可用的站点中 id 最小者；无可用站点返回 503。],
     [GET], [`/state`], [需求统计（各来源到达率 `rates`、各站点分配速率 `site_rates`）、当前策略与权重、RTT 矩阵、路由视图中各站点的负载与信号可用性、上游健康状态 `upstreams`。],
     [GET], [`/readyz`], [至少一个站点状态可用时返回 200，并列出可用站点与电网信号状态。],
@@ -69,6 +72,8 @@
     [GET], [`/v1/events`], [已登记的需求响应事件。],
     [POST], [`/v1/events`（管理）], [注入事件：`{"site", "cap_kw", "start"/"end" 或 "duration_min", "kind"}`。],
     [DELETE], [`/v1/events[?site=]`（管理）], [清除全部或某站点的事件。],
+    [GET], [`/v1/config`（管理）], [场景文件的文本与各服务地址（`{"scenario", "endpoints"}`）。其他机器上的站点代理以
+      `cpc site --control <地址>` 启动时据此取得配置，场景与地址文件只需在控制节点上维护。],
   ),
   caption: [电网信号服务接口],
 )

@@ -6,8 +6,8 @@
 #   若服务器确实分布在不同地域，改为 false，并可在 network.overrides 中填入实测 RTT。
 #
 # measurement.host: excluded 表示服务器 IT 功率只含 GPU（云虚拟机通常不提供 RAPL 与 BMC）；
-# 有整机读数（IPMI / Redfish / PDU）时改为 host: server 并加入相应传感器。
-# 本文件复制为 site-stack/ 与 control-stack/ 中的 scenario.yaml，在容器内挂载到 /app/cfg/scenario.yaml。
+# 裸金属服务器有本机 BMC 时可加入 {type: ipmi, max_w: <上限>} 并改为 host: server（站点栈映射 /dev/ipmi0）。
+# 本文件复制为 control-stack/ 中的 scenario.yaml；各站点代理启动时从控制节点取得（站点栈 .env 中的 CONTROL_URL）。
 # 数据集放在控制节点的 CPC_DATA_DIR 中（电网信号服务与负载生成器使用），准备方法见 examples/datasets/README.md。
 
 name: cloud-3real-1sim

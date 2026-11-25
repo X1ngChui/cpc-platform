@@ -31,7 +31,7 @@ from prometheus_client import CollectorRegistry, Counter, Gauge
 from pydantic import BaseModel, Field, ValidationError
 
 from ..common import JsonlWriter, admin_headers, metrics_response, require_admin, sync_clock
-from ..config import Endpoints, Scenario
+from ..config import ConfigError, Endpoints, Scenario
 from ..grid.signals import GridSignal
 from ..health import HealthBoard, describe
 from ..models import SimClock, rtt_matrix
@@ -242,7 +242,7 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
     def set_policy(body: PolicyBody) -> dict:
         try:
             pol["policy"] = make_capacity(body.policy, body.params)
-        except (KeyError, TypeError, ValueError) as e:
+        except (ConfigError, KeyError, TypeError, ValueError) as e:
             raise HTTPException(400, str(e))
         g_pol.clear()
         g_pol.labels(pol["policy"].name).set(1)

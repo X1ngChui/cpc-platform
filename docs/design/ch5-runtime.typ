@@ -17,6 +17,8 @@
     [`apply(target, now)`], [执行数据中心指令：功率封顶比例与目标在线服务器数（由电源管理策略落实到具体服务器）。],
     [`boot_complete(server, now)`], [服务器启动完成，转为在线并从队首派发。],
     [`actuation_failed(server, action, error, now)`], [执行器操作失败：记录错误与失败计数；开机失败的服务器回到关机。],
+    [`server_failed(server, error, now)`], [在线或排空中的服务器失效（如推理实例崩溃）：记录原因；在线的转为启动中并重新发出
+      `power_on`，排空中的转为关机。],
     [`cancel(job)`], [撤销排队中的请求（如客户端断开）。],
     [`advance(now)`、`meter(now)`], [把能耗积分到 `now`；返回累计 IT 能耗、功率有效与缺失时长、非关机时长。],
     [`update_rate(now)`], [更新到达率估计。],
@@ -35,6 +37,10 @@
 #figure(image("../figures/server-states.pdf", width: 92%), caption: [服务器状态机]) <fig-states>
 
 - 开机：off → booting，发出 `power_on`；仿真服务器经 `boot_s` 后、真实服务器经就绪检查（`GET <url><ready_path>` 返回 200）后转为 on；
+  真实服务器在启动期限（`boot_s` 的 4 倍，不少于 300 秒）内未通过就绪检查视为开机失败，回到 off 并记录原因；
+  站点代理对同一服务器的执行器操作按发出顺序串行执行（关机完成后才执行随后的开机）；
+- 失效：站点代理每 5 秒检查在线真实服务器的就绪状态，连续 2 次失败即调用 `server_failed`：服务器不再接收请求，
+  执行器重新启动推理实例（如启动已退出的容器），就绪检查通过后恢复服务，启动期限内未恢复则回到 off 并记录原因；
   开机失败回到 off；
 - 关机：booting → off，或 on 且没有在服务的请求 → off，发出 `power_off`；on 且有在服务的请求 → draining，
   最后一个请求完成后 → off，发出 `power_off`；

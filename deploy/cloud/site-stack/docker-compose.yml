@@ -1,16 +1,16 @@
-# 站点栈：部署在每台租用的 GPU 服务器上（一台服务器上的推理实例 = 一个站点的真实服务器池）。
+# 站点栈（GPU）：部署在每台 GPU 服务器上（一台服务器上的推理实例 = 一个站点的真实服务器池）。
+# 没有 GPU 的服务器使用 docker-compose.cpu.yml（llama.cpp 推理）。
 #
 # 组成：
 #   vllm-0 / vllm-1   推理实例（OpenAI 兼容接口），每个实例占一张 GPU，对平台而言是一台真实服务器
-#   site-agent        站点代理：排队与派发、按场景 measurement 声明采集功率、开关实例（Docker API）、可选功率封顶
-#   dcgm-exporter     （可选，数据中心级 GPU 推荐）NVIDIA 官方 GPU 指标导出器
+#   site-agent        站点代理：启动时从控制节点取得场景与服务地址；排队与派发、按场景 measurement 声明采集功率、
+#                     开关实例（Docker API）、可选功率封顶
 #   node-exporter     （可选）主机 CPU/内存/网络指标；裸金属上还可读取 RAPL 能耗
 #
 # 前置：NVIDIA 驱动 + Docker + NVIDIA Container Toolkit（见《使用手册》"实验部署"一章）。
 # 用法：
-#   cp .env.example .env   # 按本机修改 SITE_ID、MODEL 等
+#   cp .env.example .env   # 按本机修改 SITE_ID、CONTROL_URL、CPC_ADMIN_TOKEN、MODEL 等
 #   docker compose up -d
-#   docker compose --profile dcgm up -d     # 同时启动 dcgm-exporter
 
 name: cpc-site
 
@@ -52,12 +52,15 @@ services:
   site-agent:
     image: ${CPC_IMAGE:-cpc-platform:latest}
     restart: unless-stopped
-    command: ["site", "-s", "/app/cfg/scenario.yaml", "-e", "/app/cfg/endpoints.yaml", "--site", "${SITE_ID}",
-              "--host", "0.0.0.0", "--port", "9100"]
+    command: ["site", "--control", "${CONTROL_URL:?请在 .env 中设置控制节点的电网信号服务地址 CONTROL_URL}",
+              "--site", "${SITE_ID}", "--host", "0.0.0.0", "--port", "9100"]
     volumes:
-      - ./scenario.yaml:/app/cfg/scenario.yaml:ro
-      - ./endpoints.yaml:/app/cfg/endpoints.yaml:ro
       - /var/run/docker.sock:/var/run/docker.sock   # 用于启停 vLLM 容器（服务器开关）
+      # 裸金属服务器上使用 rapl 传感器时取消注释，并在场景中写 {type: rapl, root: /host/powercap}
+      # （Docker 默认屏蔽容器内的 /sys/devices/virtual/powercap）：
+      # - /sys/devices/virtual/powercap:/host/powercap:ro
+    # 裸金属服务器上使用 ipmi 传感器（本机 BMC）时取消注释：
+    # devices: ["/dev/ipmi0:/dev/ipmi0"]
     environment:
       CPC_ADMIN_TOKEN: ${CPC_ADMIN_TOKEN:?请在 .env 中设置与控制栈相同的 CPC_ADMIN_TOKEN}
     deploy:
@@ -65,17 +68,6 @@ services:
         reservations:
           devices: [{driver: nvidia, count: all, capabilities: [gpu]}]   # 仅用于读取 NVML 功率
     ports: ["9100:9100"]
-
-  dcgm-exporter:
-    image: nvcr.io/nvidia/k8s/dcgm-exporter:${DCGM_EXPORTER_TAG:-4.5.2-4.8.1-ubuntu22.04}
-    profiles: ["dcgm"]
-    restart: unless-stopped
-    cap_add: [SYS_ADMIN]
-    deploy:
-      resources:
-        reservations:
-          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
-    ports: ["9400:9400"]
 
   node-exporter:
     image: prom/node-exporter:v1.9.1

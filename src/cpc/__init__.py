@@ -20,7 +20,7 @@ Python 接口：
 - results     结果数据包与实验描述
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0.dev0"
 
 
 def simulate(scenario, *, routing: str | None = None, routing_params: dict | None = None, capacity: str | None = None,

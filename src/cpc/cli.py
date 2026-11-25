@@ -206,13 +206,34 @@ def cmd_profile(args) -> None:
 
     d = load_descriptor(args.dataset)
     where = {}
-    for kv in args.where:
+    for kv in args.where or []:
         if "=" not in kv:
             raise ConfigError(f"--where 的每一项须为 字段=值，当前为 {kv}")
         k, v = kv.split("=", 1)
         where[k] = int(v) if k == "device_count" else v
-    prof = profile_from_points(load_points(d, where), args.slots, args.idle_w, args.host_w, args.prefill_tokens_per_s,
-                               args.boot_s, source=d.ref)
+    m = (d.cpc or {}).get("measurement") or {}  # cpc measure 写入的测量条件与结果
+    notes = []
+
+    def pick(arg, key, label):
+        if arg is not None:
+            return arg
+        if m.get(key) is not None:
+            notes.append(f"{label}取自测量（{key} = {m[key]}）")
+            return m[key]
+        return None
+
+    slots = pick(args.slots, "slots", "并发槽数")
+    idle = pick(args.idle_w, "idle_w", "在线空载功率")
+    boot = pick(args.boot_s, "boot_s", "开机时间")
+    off = pick(args.off_w, "off_w", "关机功率")
+    if slots is None or idle is None:
+        raise ConfigError("须给出 --slots 与 --idle-w（数据集中没有 cpc measure 记录的测量值）")
+    prefill = args.prefill_tokens_per_s
+    if prefill is None and m.get("prefill_tokens_per_s_est") is not None:
+        prefill = m["prefill_tokens_per_s_est"]
+        notes.append(f"预填充吞吐由并发 1 时的首 token 时延估计（{prefill} token/s）")
+    prof = profile_from_points(load_points(d, where), int(slots), float(idle), args.host_w, prefill, boot, source=d.ref,
+                               idle_measured=args.idle_w is None, off_w=off)
 
     class Flow(list):
         pass
@@ -221,10 +242,90 @@ def cmd_profile(args) -> None:
     for k in ("power_w", "tpot_s"):
         prof[k] = [Flow(p) for p in prof[k]]
     text = yaml.safe_dump({args.name: prof}, allow_unicode=True, sort_keys=False, width=200)
+    for n in notes:
+        text += f"    # {n}\n"
+    if m.get("warning"):
+        text += f"    # 警告：{m['warning']}\n"
+        print(f"警告：{m['warning']}", file=sys.stderr)
     missing = [k for k in ("prefill_tokens_per_s", "boot_s") if k not in prof]
     if missing:
         text += f"    # 须补充：{'、'.join(missing)}（测量数据中没有这些参数）\n"
     print(text, end="")
+
+
+def cmd_measure(args) -> None:
+    """测量站点中一台真实服务器在各级并发下的功率与 token 间隔，写出 power_profile 数据集。"""
+    import pyarrow as pa
+
+    from .datasets.build import write_dataset
+    from .measure import run_measure
+
+    levels = None if args.concurrency is None else sorted({int(x) for x in args.concurrency.split(",")})
+    print(f"测量站点 {args.site} 的真实服务器（每级预热 {args.warmup:g} s、测量 {args.duration:g} s）")
+
+    async def main():
+        from .measure import pick_node
+
+        lv = levels
+        if lv is None:
+            async with httpx.AsyncClient(timeout=10.0, trust_env=False) as c:
+                _, n = await pick_node(c, args.site.rstrip("/"), args.node)
+            k, lv = 1, [0]
+            while k < n["slots"]:
+                lv.append(k)
+                k *= 2
+            lv.append(n["slots"])
+        return await run_measure(args.site, args.node, lv, args.warmup, args.duration, args.input_tokens,
+                                 args.output_tokens, args.model, args.boot)
+
+    import httpx
+
+    try:
+        meta, res = asyncio.run(main())
+    except httpx.HTTPError as e:
+        raise StartupError(f"无法访问站点 {args.site}：{type(e).__name__} {e}") from e
+    from .measure import flat_power_warning
+
+    warn = flat_power_warning(res)
+    if warn:
+        meta["warning"] = warn
+        print(f"警告：{warn}", file=sys.stderr)
+    idle = next((x for x in res if x.concurrency == 0), None)
+    if idle is not None and idle.power_w is not None:
+        meta["idle_w"] = round(idle.power_w, 1)
+    rows = [x for x in res if x.concurrency > 0 and x.power_w is not None and x.itl_s is not None]
+    if not rows:
+        raise ConfigError("没有可用的测量（功率或 token 间隔缺失）")
+    first = min(rows, key=lambda x: x.concurrency)
+    if first.ttft_s:
+        meta["prefill_tokens_per_s_est"] = round(args.input_tokens / first.ttft_s)
+    task = f"synthetic-in{args.input_tokens}-out{args.output_tokens}"
+    cols = {
+        "device": [args.device] * len(rows), "device_count": [args.device_count] * len(rows),
+        "model": [args.model_name] * len(rows), "concurrency": [round(x.busy_mean, 3) for x in rows],
+        "power_w": [round(x.power_w, 2) for x in rows], "itl_s": [round(x.itl_s, 6) for x in rows],
+        "max_concurrency": [meta["slots"]] * len(rows),
+        "throughput_tokens_per_s": [round(x.throughput_tokens_per_s, 2) for x in rows],
+        "ttft_s": [round(x.ttft_s, 4) if x.ttft_s is not None else None for x in rows],
+        "energy_per_token_j": [round(x.power_w / x.throughput_tokens_per_s, 4) if x.throughput_tokens_per_s else None
+                               for x in rows],
+        "task": [task] * len(rows),
+        "target_concurrency": [x.concurrency for x in rows],
+        "power_coverage": [round(x.power_coverage, 4) for x in rows],
+        "requests": [x.requests for x in rows],
+    }
+    spec = [("device", "string", None), ("device_count", "integer", None), ("model", "string", None),
+            ("concurrency", "number", None), ("power_w", "number", "W"), ("itl_s", "number", "s"),
+            ("max_concurrency", "integer", None), ("throughput_tokens_per_s", "number", "token/s"),
+            ("ttft_s", "number", "s"), ("energy_per_token_j", "number", "J"), ("task", "string", None),
+            ("target_concurrency", "integer", None), ("power_coverage", "number", None), ("requests", "integer", None)]
+    fields = [{"name": n, "type": t, **({"unit": u} if u else {})} for n, t, u in spec]
+    out = Path(args.out)
+    d = write_dataset(out, name=args.name or out.name, version=datetime.now().strftime("%Y.%m.%d"), kind="power_profile",
+                      table=pa.table(cols), fields=fields, fmt="csv", cpc={"measurement": meta},
+                      description=f"cpc measure：站点 {meta['site']} 的服务器 {meta['node']}，功率范围 {meta['power_scope']}")
+    print(f"已写出数据集 {d.ref}：{out}/（{len(rows)} 级）")
+    print(f"生成服务器类型：cpc profile {out} --name <名称>")
 
 
 # ------------------------------------------------------------------ 仿真
@@ -255,6 +356,18 @@ def _run_variant(scenario: str, name: str, routing: dict | None, capacity: dict 
     write_run(out, res, scn, {"name": name, "mode": "simulation", "hours": hours, "bin_s": bin_s,
                               "routing": r.model_dump(), "capacity": c.model_dump()})
     return {"variant": name, **res.summary}
+
+
+def _width(s: str) -> int:
+    """终端显示宽度：全角字符计 2。"""
+    import unicodedata
+
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in s)
+
+
+def _pad(s: str, n: int, right: bool = False) -> str:
+    fill = " " * max(0, n - _width(s))
+    return fill + s if right else s + fill
 
 
 def _print_summary(s: dict) -> None:
@@ -310,11 +423,48 @@ def cmd_run(args) -> None:
         rows = [f.result() for f in futs]
     p = write_comparison(out, rows)
     cur = rows[0].get("currency") or ""
-    print(f"  {'变体':<24s} {'完成':>9s} {'拒绝':>6s} {'SLO':>7s} {'TTFT P99':>9s} {'设施 kWh':>10s} {'电费 ' + cur:>10s} {'碳 kg':>9s}")
+    w = max(18, max(_width(r["variant"]) for r in rows) + 2)
+    cols = [("完成", 7), ("拒绝", 7), ("SLO", 9), ("TTFT P99", 10), ("设施 kWh", 10), ("电费 " + cur, 10), ("碳 kg", 7)]
+    print("  " + _pad("变体", w) + "".join(_pad(h, n, right=True) for h, n in cols))
     for r in rows:
-        print(f"  {r['variant']:<24s} {r['served']:>9d} {r['rejected']:>6d} {r['slo_attainment']:>7.2%} "
-              f"{(r['ttft_p99_s'] or 0):>9.3f} {r['facility_kwh']:>10.1f} {r['cost']:>10.1f} {r['carbon_kg']:>9.1f}")
+        vals = [f"{r['served']}", f"{r['rejected']}", f"{r['slo_attainment']:.2%}", f"{(r['ttft_p99_s'] or 0):.3f}",
+                f"{r['facility_kwh']:.1f}", f"{r['cost']:.1f}", f"{r['carbon_kg']:.1f}"]
+        print("  " + _pad(r["variant"], w) + "".join(_pad(v, n, right=True) for v, (_, n) in zip(vals, cols)))
     print(f"结果已写入 {out}/，对比表 {p}")
+
+
+def cmd_compare(args) -> None:
+    """并列比较结果目录（仿真或实验）：总体与各站点的请求、时延与能耗；两个目录时给出第二个与第一个的比值。"""
+    from .results import compare_runs
+
+    if len(args.dirs) < 2:
+        raise ConfigError("cpc compare 需要至少两个结果目录")
+    for d in args.dirs:
+        if not (Path(d) / "summary.json").is_file():
+            raise ConfigError(f"{d} 不是结果目录（缺少 summary.json）")
+    names, rows = compare_runs(args.dirs)
+    w = max(12, *(_width(n) + 2 for n in names))
+    ratio = len(names) == 2
+    print("  " + _pad("范围", 8) + _pad("指标", 18) + "".join(_pad(n, w, right=True) for n in names)
+          + (_pad("比值", 8, right=True) if ratio else ""))
+
+    def fmt(v, metric):
+        if v is None:
+            return "—"
+        if metric == "SLO 达成率":
+            return f"{v:.1%}"
+        return f"{v:d}" if isinstance(v, int) else f"{v:.3f}"
+
+    last = None
+    for scope, metric, vals in rows:
+        line = "  " + _pad(scope if scope != last else "", 8) + _pad(metric, 18)
+        line += "".join(_pad(fmt(v, metric), w, right=True) for v in vals)
+        if ratio:
+            a, b = vals
+            line += _pad(f"{b / a:.2f}" if isinstance(a, (int, float)) and isinstance(b, (int, float)) and a else "—", 8,
+                         right=True)
+        print(line)
+        last = scope
 
 
 def cmd_report(args) -> None:
@@ -443,14 +593,55 @@ def cmd_grid(args) -> None:
     scn = _scn(args)
     if args.speedup is not None:
         scn.clock.speedup = args.speedup
-    _serve(create_app(scn), *_bind(args, _ep(args, scn).grid))
+    ep = _ep(args, scn)
+    config = {"scenario": Path(args.scenario).read_text(encoding="utf-8"), "endpoints": ep.model_dump()}
+    _serve(create_app(scn, config=config), *_bind(args, ep.grid))
+
+
+def fetch_control_config(control: str, timeout_s: float, client=None) -> tuple[Scenario, Endpoints]:
+    """从控制节点的电网信号服务取得场景与服务地址（GET /v1/config）；在 timeout_s 内重试连接。"""
+    import httpx
+
+    from .common import admin_headers
+    from .config import scenario_from_text
+
+    url = control.rstrip("/") + "/v1/config"
+    own = client is None
+    client = client or httpx.Client(timeout=10.0, trust_env=False)
+    deadline = time.monotonic() + timeout_s
+    try:
+        while True:
+            try:
+                r = client.get(url, headers=admin_headers())
+                break
+            except httpx.TransportError as e:
+                if time.monotonic() > deadline:
+                    raise StartupError(f"无法连接控制节点 {control}：{e}") from e
+                time.sleep(2.0)
+    finally:
+        if own:
+            client.close()
+    if r.status_code in (401, 403):
+        raise ConfigError(f"控制节点 {control} 拒绝访问配置：管理令牌 CPC_ADMIN_TOKEN 不一致")
+    if r.status_code != 200:
+        raise ConfigError(f"控制节点 {control} 返回 {r.status_code}：{r.text[:200]}")
+    body = r.json()
+    scn = scenario_from_text(body["scenario"], f"控制节点 {control} 的场景")
+    try:
+        ep = Endpoints.model_validate(body["endpoints"])
+    except ValueError as e:
+        raise ConfigError(f"控制节点 {control} 的服务地址无效：{e}") from e
+    return scn, ep
 
 
 def cmd_site(args) -> None:
     from .site.service import create_app
 
-    scn = _scn(args)
-    ep = _ep(args, scn)
+    if args.control:
+        scn, ep = fetch_control_config(args.control, args.startup_timeout)
+    else:
+        scn = _scn(args)
+        ep = _ep(args, scn)
     if args.site not in ep.sites:
         raise ConfigError(f"站点 {args.site} 不在场景中，可选：{sorted(ep.sites)}")
     app = create_app(scn, args.site, enable_power_cap=args.enable_power_cap, initial_active=args.initial_active)
@@ -598,15 +789,39 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("profile", help="由功率特性数据集生成服务器类型（打印 YAML）")
     sp.add_argument("dataset", help="power_profile 数据集目录或描述文件")
-    sp.add_argument("--where", nargs="+", required=True, metavar="字段=值",
+    sp.add_argument("--where", nargs="+", default=None, metavar="字段=值",
                     help="选择同一组测量，如 device=H100 device_count=8 model=... task=...")
-    sp.add_argument("--slots", type=int, required=True, help="并发槽数（推理引擎的最大批大小）")
-    sp.add_argument("--idle-w", type=float, required=True, help="服务器在线空载功率（W），作为表的第一个点")
+    sp.add_argument("--slots", type=int, default=None, help="并发槽数（推理引擎的最大批大小）；cpc measure 的数据集可省略")
+    sp.add_argument("--idle-w", type=float, default=None, help="服务器在线空载功率（W），作为表的第一个点；cpc measure 的数据集可省略")
     sp.add_argument("--host-w", type=float, default=0.0, help="加到每个测量点上的主机部分功率（W，缺省 0）")
     sp.add_argument("--prefill-tokens-per-s", type=float, default=None, help="预填充吞吐（不在测量中）")
-    sp.add_argument("--boot-s", type=float, default=None, help="开机到可服务的时间（不在测量中）")
+    sp.add_argument("--boot-s", type=float, default=None, help="开机到可服务的时间；cpc measure --boot 的数据集可省略")
+    sp.add_argument("--off-w", type=float, default=None,
+                    help="关机时的功率（W，缺省 0）；cpc measure --boot 的数据集中记录了实测值")
     sp.add_argument("--name", default="server", help="服务器类型名称（缺省 server）")
     sp.set_defaults(fn=cmd_profile)
+
+    sp = sub.add_parser("compare", help="并列比较结果目录（仿真或实验）的总体与各站点指标")
+    sp.add_argument("dirs", nargs="+", help="结果目录（两个或以上；两个时给出比值）")
+    sp.set_defaults(fn=cmd_compare)
+
+    sp = sub.add_parser("measure", help="测量站点中一台真实服务器的功率与 token 间隔，写出 power_profile 数据集")
+    sp.add_argument("--site", required=True, help="站点代理地址，如 http://10.0.0.11:9100")
+    sp.add_argument("--node", default=None, help="被测服务器 id（站点中只有一台开启的真实服务器时可省略）")
+    sp.add_argument("--concurrency", default=None, help="各级并发，如 0,1,2,4（缺省 0、1、2、4…直至并发上限）")
+    sp.add_argument("--warmup", type=_nonnegative, default=15.0, help="每级的预热时间（秒，缺省 15）")
+    sp.add_argument("--duration", type=_positive, default=60.0, help="每级的测量时间（秒，缺省 60）")
+    sp.add_argument("--input-tokens", type=int, default=256, help="每个请求的输入长度（缺省 256）")
+    sp.add_argument("--output-tokens", type=int, default=256, help="每个请求的输出长度（缺省 256）")
+    sp.add_argument("--model", default="cpc", help="请求中的模型名（缺省 cpc）")
+    sp.add_argument("--device", required=True, help="设备型号，写入数据集（如 A100、2xE5-2650v2）")
+    sp.add_argument("--device-count", type=int, default=1, help="一个推理实例占用的设备数（缺省 1）")
+    sp.add_argument("--model-name", required=True, help="推理模型名，写入数据集（如 Qwen2.5-7B-Instruct）")
+    sp.add_argument("--boot", action="store_true",
+                    help="同时测量关机功率与开机时间（经管理接口关闭再开启服务器，需要 CPC_ADMIN_TOKEN）")
+    sp.add_argument("--out", required=True, help="数据集目录")
+    sp.add_argument("--name", default=None, help="数据集名称（缺省为目录名）")
+    sp.set_defaults(fn=cmd_measure)
 
     # 仿真
     sp = scenario(sub.add_parser("sim", help="运行一次仿真，结果写为结果数据包"))
@@ -686,6 +901,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp = scenario(sub.add_parser("site", help="站点代理"))
     endpoints(sp)
     sp.add_argument("--site", required=True)
+    sp.add_argument("--control", default=None,
+                    help="从控制节点取得场景与服务地址（电网信号服务的地址，如 http://10.0.0.10:9000），代替 -s 与 -e")
+    sp.add_argument("--startup-timeout", type=_positive, default=120.0, help="等待控制节点可达的期限（秒，缺省 120）")
     sp.add_argument("--enable-power-cap", action="store_true", help="通过传感器设置加速卡功率上限（NVML 需要 root）")
     sp.add_argument("--initial-active", type=int, default=None)
     sp.set_defaults(fn=cmd_site)

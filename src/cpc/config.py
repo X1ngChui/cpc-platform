@@ -210,7 +210,7 @@ class UpstreamConfig(_Strict):
     id: str
     url: str
     gpu_indices: list[int] = Field(default_factory=list)  # 占用的本机 NVIDIA GPU 序号（等价于 devices: [gpu<i>]）
-    devices: list[str] = Field(default_factory=list)  # 占用的加速卡在传感器层中的设备名
+    devices: list[str] = Field(default_factory=list)  # 占用的加速卡在传感器层中的设备名；只用 CPU 的实例不填
     container: str | None = None  # 填写时通过 Docker 启停该容器；不填写为逻辑开关（只停止派发）
     max_inflight: int = 16  # 并发上限（相当于 slots）
     ready_path: str = "/health"
@@ -272,9 +272,6 @@ class PoolConfig(_Strict):
         else:
             if not self.upstreams or self.count:
                 raise ValueError(f"服务器池 {self.id}：真实服务器池须给出 upstreams，且不配置 count")
-            for u in self.upstreams:
-                if not u.device_names:
-                    raise ValueError(f"服务器池 {self.id} 的 upstream {u.id} 未声明占用的加速卡（gpu_indices 或 devices）")
         return self
 
     @property
@@ -414,6 +411,8 @@ class SchedulerConfig(_Strict):
     retry: RetryConfig = RetryConfig()
     state_refresh_s: float = 1.0
     state_stale_s: float = 5.0
+    # 流式响应开始后相邻两个数据片段的最大间隔：超过即中止该请求并记为失败（网络中断或推理实例停滞时不无限等待）
+    stream_idle_timeout_s: float = Field(120.0, gt=0)
 
 
 class Scenario(_Strict):
@@ -447,6 +446,11 @@ class Scenario(_Strict):
                     raise ValueError(f"站点 {s.id} 的服务器池 {p.id} 引用了不存在的 node profile: {p.profile}")
             if s.real != (s.measurement is not None):
                 raise ValueError(f"站点 {s.id}：有真实服务器池时须配置 measurement，否则不应配置")
+            if s.measurement is not None and s.measurement.host == "excluded":
+                bare = [u.id for p in s.pools for u in p.upstreams if not u.device_names]
+                if bare:
+                    raise ValueError(f"站点 {s.id}：measurement.host 为 excluded 时服务器功率只含加速卡，upstream {bare} "
+                                     "须声明占用的加速卡（gpu_indices 或 devices）；只用 CPU 的推理实例请把 host 设为 server 或 cpu_dram")
             ups = [u.id for p in s.pools for u in p.upstreams]
             devs = [d for p in s.pools for u in p.upstreams for d in u.device_names]
             if len(set(ups)) != len(ups) or len(set(devs)) != len(devs):
@@ -486,6 +490,20 @@ def load_scenario(path: str | os.PathLike) -> Scenario:
         return Scenario.model_validate({**raw, "base_dir": path.parent})
     except ValidationError as e:
         raise ConfigError(describe_validation(e, Scenario, f"场景文件 {path}")) from e
+
+
+def scenario_from_text(text: str, what: str, base_dir: Path | None = None) -> Scenario:
+    """由场景文件的文本构造场景（如站点代理从控制节点取得的场景）。"""
+    try:
+        raw = yaml.safe_load(text) or {}
+    except yaml.YAMLError as e:
+        raise ConfigError(f"{what} 不是有效的 YAML：{e}") from e
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{what} 的顶层应为映射（键: 值）")
+    try:
+        return Scenario.model_validate({**raw, "base_dir": base_dir or Path.cwd()})
+    except ValidationError as e:
+        raise ConfigError(describe_validation(e, Scenario, what)) from e
 
 
 def override_policy(current: PolicyConfig, name: str | None, params: dict | None) -> PolicyConfig:

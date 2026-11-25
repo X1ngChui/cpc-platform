@@ -1,16 +1,16 @@
 # 能耗感知的"标准化指标"——Prometheus 记录规则（recording rules）。
 #
-# 设计：各类采集器（站点代理的模型/NVML 读数、NVIDIA dcgm-exporter、Kepler、IPMI exporter）
+# 设计：各类采集器（站点代理的服务器模型 / 传感器读数、通用功率导出器 cpc exporter）
 # 输出的原始指标名各不相同；这里统一汇总为以 site 为维度的标准指标，调度器、仪表盘与实验分析只依赖这些标准指标。
 # 命名遵循 Prometheus 官方约定 level:metric:operations。
 groups:
   - name: cpc-energy
     interval: 5s
     rules:
-      # ---- 设备层：GPU 功率（与 dcgm-exporter 同名指标，仿真站点与真实站点通用）
+      # ---- 设备层：GPU 功率（指标名与 NVIDIA dcgm-exporter 相同，仿真站点与真实站点通用）
       - record: site:gpu_power_watts:sum
         expr: sum by (site) (DCGM_FI_DEV_POWER_USAGE)
-      # ---- 设备层（通用导出器 cpc exporter，覆盖 NVIDIA/AMD/Intel/昇腾/CPU RAPL/整机 BMC 等）
+      # ---- 设备层（通用导出器 cpc exporter：NVIDIA GPU、CPU RAPL、本机 BMC 与 command 传感器）
       - record: host_kind:device_power_watts:sum
         expr: sum by (host, kind) (cpc_device_power_watts)
       - record: host:device_energy_joules:rate1m

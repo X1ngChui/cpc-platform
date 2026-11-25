@@ -1,7 +1,8 @@
 """真实服务器的功率测量（传感器层 → 服务器）。仿真服务器的功率由服务器模型给出，不经过本模块。
 
 SensorPower 从传感器层（cpc.sensors）读取实测功率并归属到真实服务器：
-    * 加速卡（gpu/npu/soc）读数按 upstream 声明的设备归属到各服务器；
+    * 加速卡（gpu/npu/soc）读数按 upstream 声明的设备归属到各服务器；未声明加速卡的服务器（只用 CPU 的推理实例）
+      只有主机部分；
     * 主机部分（CPU、内存、主板等）的确定方式由站点配置 measurement.host 显式给出：
         server   = 整机读数（server/platform）− 本机全部加速卡读数；
         cpu_dram = CPU 与内存读数之和；
@@ -106,7 +107,7 @@ class SensorPower:
                         "model": [self.models[d] for d in devs],
                         "energy_mj": [r.energy_j * 1000.0 if r and r.energy_j is not None else None for r in rd]}
             n.power_missing = [f"device:{d}" for d, p in zip(devs, powers) if p is None]
-            n.gpu_power_w = None if n.power_missing else float(sum(powers))
+            n.gpu_power_w = None if n.power_missing or not devs else float(sum(powers))
         host = self.host_total(by_key)
         live = [n for n in nodes if n.state != "off"] or nodes
         for n in nodes:
@@ -115,7 +116,8 @@ class SensorPower:
                 share = None
             else:
                 share = host / len(live) if n in live else 0.0
-            n.it_power_w = None if n.gpu_power_w is None or share is None else n.gpu_power_w + share
+            accel = n.gpu_power_w if node_devices(n) else 0.0
+            n.it_power_w = None if accel is None or share is None else accel + share
 
     def sensor_for(self, device: str) -> Sensor:
         sid = self.accel_keys[device][0]

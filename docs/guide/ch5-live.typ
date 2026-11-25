@@ -258,7 +258,7 @@ python deploy/k8s/kind_up.py --down                     # 删除集群
 
 === 真实 Kubernetes 集群
 
-在真实集群中，可用 NVIDIA GPU Operator 安装设备插件与 dcgm-exporter；给节点加上 `topology.kubernetes.io/region` 标签表示站点；
+在真实集群中，可用 NVIDIA GPU Operator 安装设备插件；给节点加上 `topology.kubernetes.io/region` 标签表示站点；
 每个站点部署 vLLM 实例，站点代理的真实服务器池（`backend: openai`）的 `upstreams` 指向这些实例的 Service 地址。
 未配置容器名时，开关机只停止或恢复向实例派发请求。
 
@@ -313,11 +313,12 @@ sites:
     columns: (10em, 1fr),
     header: ("字段", "含义"),
     [`url`], [推理实例的地址；站点代理把请求转发到这里，并以 `url` + `ready_path`（缺省 `/health`）检查是否就绪],
-    [`gpu_indices` 或 `devices`], [实例占用的 GPU 序号（或传感器给出的设备名），用于把 GPU 功率归属到这台服务器],
+    [`gpu_indices` 或 `devices`], [实例占用的 GPU 序号（或传感器给出的设备名），用于把 GPU 功率归属到这台服务器；
+      只用 CPU 的推理实例不填，服务器功率为主机部分（`measurement.host` 设为 `server` 或 `cpu_dram`）],
     [`container`], [容器名（可选）。给出时，关机即停止容器、开机即启动容器；未给出时关机只停止派发请求],
     [`max_inflight`], [并发上限，宜与推理引擎的最大批大小（vLLM 的 `--max-num-seqs`）一致],
     [`measurement.sensors`], [功率传感器列表（@g-sensors）],
-    [`measurement.host`], [主机部分功率的计算方式：`server`（整机读数减 GPU 读数，需要 IPMI / Redfish 等整机传感器）、`cpu_dram`（CPU 与内存读数之和）、`excluded`（不计主机部分）],
+    [`measurement.host`], [主机部分功率的计算方式：`server`（整机读数减 GPU 读数，需要 `ipmi` 等整机读数）、`cpu_dram`（CPU 与内存读数之和）、`excluded`（不计主机部分）],
   ),
   caption: [真实服务器的字段],
 )
@@ -428,24 +429,48 @@ git clone https://github.com/X1ngChui/cpc-platform.git && cd cpc-platform
 docker pull ghcr.io/x1ngchui/cpc-platform:0.3.0
 ```
 
+=== 控制栈（控制节点，先启动）
+
+场景文件与地址文件只在控制节点上维护：各站点代理启动时从控制节点的电网信号服务取得（`GET /v1/config`，需要管理令牌），
+不需要在站点服务器上复制这两个文件。
+
+```bash
+cd deploy/cloud/control-stack
+cat > .env <<'EOF'
+CPC_ADMIN_TOKEN=<自定，各服务器相同>
+GRAFANA_PASSWORD=<自定>
+CPC_IMAGE=ghcr.io/x1ngchui/cpc-platform:0.3.0
+EOF
+cp ../scenario.cloud.example.yaml scenario.yaml      # 按实验修改
+cp ../endpoints.cloud.example.yaml endpoints.yaml    # 填入各服务器内网 IP
+cp ../prometheus.cloud.example.yml prometheus.yml    # 填入各服务器 IP
+docker compose up -d
+```
+
+控制栈的电网信号服务与负载生成器挂载控制节点的数据集目录（`CPC_DATA_DIR`），须先在控制节点准备场景所需的数据集（@g-data）。
+修改场景后，重启控制栈（`docker compose up -d --force-recreate`）与各站点代理（`docker compose restart site-agent`）。
+
 === 站点栈（每台 GPU 服务器）
 
 ```bash
 cd deploy/cloud/site-stack
-cp .env.example .env                 # 修改 SITE_ID、MODEL、CPC_ADMIN_TOKEN、CPC_IMAGE 等
-cp ../scenario.cloud.example.yaml scenario.yaml
-cp ../endpoints.cloud.example.yaml endpoints.yaml   # 填入各服务器内网 IP
+# 修改 SITE_ID、CONTROL_URL、CPC_ADMIN_TOKEN、MODEL、CPC_IMAGE
+cp .env.example .env
 docker compose up -d                 # 启动 vllm-0 与 site-agent
 docker compose logs -f site-agent    # 等待"功率传感器：['nvml']"与 vLLM 就绪
 ```
 
+`CONTROL_URL` 为控制节点电网信号服务的地址（如 `http://10.0.0.10:9000`）。站点代理在启动期限（缺省 120 秒）内等待控制节点可达，
+令牌不一致或场景无效时以非零状态退出，原因见 `docker compose logs site-agent`。
+
 站点的功率测量在场景文件的 `measurement` 中声明（示例为 NVML 读取 GPU，`host: excluded` 表示服务器 IT 功率只含 GPU）。
-站点代理启动时检查传感器可用、服务器声明的 GPU 有读数、配置的容器存在；任一不满足时容器以非零状态退出，
-原因见 `docker compose logs site-agent`。服务器提供整机功率读数（IPMI、Redfish）时，可加入相应传感器并改为 `host: server`。
+站点代理启动时检查传感器可用、服务器声明的 GPU 有读数、配置的容器存在；任一不满足时容器以非零状态退出。
+服务器有本机 BMC 时，可加入 `ipmi` 传感器并改为 `host: server`。裸金属服务器上，站点代理容器读取本机 BMC 需要设备
+`/dev/ipmi0`，读取 RAPL 需要把宿主机的 `/sys/devices/virtual/powercap` 挂载到 `/host/powercap`（Docker 默认屏蔽容器内的该目录），
+并在传感器配置中写 `{type: rapl, root: /host/powercap}`；`docker-compose.yml` 的 `site-agent` 中有相应的注释行。
 
 站点栈包含：`vllm-0`（每个推理实例占一张 GPU；双卡服务器可启用 `--profile gpu2` 的 `vllm-1`）、`site-agent`
-（排队与派发、NVML 功率采集、通过挂载的 Docker 套接字启停 vLLM 容器）、可选的 `dcgm-exporter`（`--profile dcgm`）
-与 `node-exporter`（`--profile host`，监听 9101）。
+（排队与派发、功率采集、通过挂载的 Docker 套接字启停 vLLM 容器）与可选的 `node-exporter`（`--profile host`，监听 9101）。
 
 `.env` 中的 `MODEL` 应选择能放进显存的模型；国内服务器下载模型可设置 `HF_ENDPOINT=https://hf-mirror.com`，或设置
 `VLLM_USE_MODELSCOPE=True` 从 ModelScope 下载。也可以先在宿主机下载好模型（`huggingface-cli download <模型名>`），
@@ -462,24 +487,44 @@ docker compose exec site-agent cpc sensors --types nvml               # 读取 N
 curl -s localhost:8000/v1/models
 ```
 
-=== 控制栈（控制节点）
+=== 没有 GPU 的服务器（CPU 推理）
+
+没有 GPU 的裸金属服务器可以用 llama.cpp 在 CPU 上推理，作为一个站点的真实服务器；功率由 RAPL（CPU 与内存）与本机 BMC
+（整机）测量。站点栈为 `docker-compose.cpu.yml`：
 
 ```bash
-cd deploy/cloud/control-stack
-cat > .env <<'EOF'
-CPC_ADMIN_TOKEN=<与站点相同>
-GRAFANA_PASSWORD=<自定>
-CPC_IMAGE=ghcr.io/x1ngchui/cpc-platform:0.3.0
-EOF
-cp ../scenario.cloud.example.yaml scenario.yaml      # 与各站点使用同一份场景文件
-cp ../endpoints.cloud.example.yaml endpoints.yaml
-cp ../prometheus.cloud.example.yml prometheus.yml    # 填入各服务器 IP
-docker compose up -d
-python3 ../../../scripts/smoke_test.py --external -e endpoints.yaml -s scenario.yaml
+cd deploy/cloud/site-stack
+cp .env.example .env     # 修改 SITE_ID、CONTROL_URL、CPC_ADMIN_TOKEN、CPC_IMAGE
+M=https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main
+mkdir -p /data/models && curl -L -o /data/models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
+  $M/qwen2.5-0.5b-instruct-q4_k_m.gguf
+docker compose -f docker-compose.cpu.yml up -d
 ```
 
-冒烟测试脚本需要 Python 环境：在控制节点上按 @g-setup 安装（`pip install -e .`）后运行。控制栈的电网信号服务与负载生成器
-挂载控制节点的数据集目录（`CPC_DATA_DIR`），须先在控制节点准备场景所需的数据集（@g-data）。
+场景中该站点的服务器池与测量（上游不声明加速卡，服务器功率为整机读数）：
+
+```yaml
+pools:
+  - id: cpu
+    profile: cpu-llm                     # 由 cpc measure 的测量生成（@g-calibrate）
+    backend: openai
+    upstreams:
+      - {id: sh-llm0, url: "http://llm-0:8080", container: cpc-llm-0, max_inflight: 4}
+measurement:
+  sensors: [{type: ipmi, max_w: 2000}, {type: rapl, root: /host/powercap}]
+  host: server
+```
+
+`max_inflight` 与 llama.cpp 的并发槽数 `PARALLEL`（缺省 4）一致。llama.cpp 把上下文长度 `CONTEXT`（缺省 65536）平均分给各并发槽，
+每槽的上下文须容纳负载中最长的请求，否则这些请求以 400 失败。
+
+=== 检查部署
+
+全部站点启动后，在控制节点上运行冒烟测试（需要按 @g-setup 安装的 Python 环境）：
+
+```bash
+python3 ../../../scripts/smoke_test.py --external -e endpoints.yaml -s scenario.yaml
+```
 
 === 运行实验与收集数据
 
@@ -502,14 +547,70 @@ sudo ./netem.sh eth0 del
 
 == 由真实服务器的测量生成服务器类型 <g-calibrate>
 
-使仿真中的服务器与真实服务器一致的步骤：
+使仿真中的服务器与真实服务器一致：先测量真实服务器在各级并发下的功率与 token 间隔，再由测量生成服务器类型。
 
-1. 只向一个真实服务器所在的站点发请求，逐级提高到达率（例如每级 3 分钟），直至并发接近上限：
-   `cpc loadgen -s scenario.yaml --gateway http://<站点地址>:9100 --grid http://<控制节点>:9000 --rate-scale <r> --duration 180`；
-2. 由 Prometheus 导出各时刻的在服务请求数与 GPU 功率（`cpc_node_busy_slots`、`DCGM_FI_DEV_POWER_USAGE`），
-   由请求日志得到 token 间隔；按稳态区间整理为 power_profile 数据集（每级一行：`device`、`device_count`、`model`、
-   `concurrency`、`power_w`、`itl_s`）；
-3. `cpc profile <数据集> --where ... --slots <并发上限> --idle-w <无请求时的实测功率>`，把输出写入场景的 `node_profiles`；
-   预填充吞吐可由首 token 时延估计；
-4. 在数据集描述文件中记录测量条件（GPU 型号、模型、推理引擎及其版本、批大小上限）。
+*第一步：准备。* 站点代理与推理实例已启动，被测服务器处于开启状态；测量期间站点不应承担其他负载，
+并停止容量控制器（`docker compose stop controller`），避免控制器在测量中开关服务器。
+
+*第二步：测量。* 在能访问站点代理的机器上：
+
+```bash
+export CPC_ADMIN_TOKEN=<与站点相同>          # 只在测量开机时间（--boot）时需要
+cpc measure --site http://<站点地址>:9100 --device A10 --model-name Qwen2.5-7B-Instruct \
+    --boot --out measurements/a10-qwen7b
+```
+
+`cpc measure` 依次在并发 0、1、2、4……直至服务器的并发上限下保持固定数目的流式请求（输入、输出各 256 token），
+每级预热 15 秒后测量 60 秒：每秒读取站点代理给出的该服务器实测功率，并由流式响应计算 token 间隔、首 token 时延与吞吐。
+并发 0 一级只测量功率，作为在线空载功率；`--boot` 经站点管理接口关闭服务器，测量关机状态的功率
+（推理实例停止而机器仍在运行时的功率），再开启服务器并测量开机到可服务的时间。
+运行中逐级打印结果：
+
+```text
+  并发 0：预热 0 s，测量 60 s …
+    功率 67.6 W（完整率 85%）  在服务 0.00  token 间隔 —  吞吐 0.0/s  请求 0  失败 0
+  并发 1：预热 15 s，测量 60 s …
+    功率 202.9 W（完整率 100%） 在服务 1.00 token 间隔 29.4 ms 吞吐 29.9/s 请求 14 失败 0
+  ...
+```
+
+结果写为 power_profile 数据集：每级一行（`concurrency` 为实测的平均在服务请求数），描述文件的 `cpc.measurement`
+记录测量条件（站点、服务器、功率范围、传感器、请求长度）与在线空载功率、关机功率、开机时间。
+功率范围与站点的 `measurement` 一致：`host: server` 或 `cpu_dram` 时为服务器功率，`host: excluded` 时只含加速卡。
+读数完整率低于 100% 表示部分采样的功率缺失（如传感器读数超出 `max_w`），这些采样不计入平均。各级的功率几乎相同时，
+`cpc measure` 给出警告并记入数据集：传感器读数可能不随负载变化（有的 BMC 的读数长期不更新），此时宜改用 RAPL。
+`--concurrency 0,1,2,3,4` 指定各级并发，`--duration`、`--warmup` 调整每级时长，`--input-tokens`、`--output-tokens` 调整请求长度。
+
+*第三步：生成服务器类型。*
+
+```bash
+cpc profile measurements/a10-qwen7b --name a10-qwen7b
+```
+
+并发槽数、在线空载功率、关机功率与开机时间取自测量，预填充吞吐由并发 1 时的首 token 时延估计，输出中以注释标明来源；
+也可以用 `--slots`、`--idle-w`、`--off-w`、`--boot-s`、`--prefill-tokens-per-s` 显式给出。若功率只含加速卡而希望服务器功率包含主机部分，
+用 `--host-w` 给出主机功率。把输出写入场景的 `node_profiles`，仿真中的该类服务器即按实测的表运行。
+
+*第四步：比较实验与仿真。* 用写入了实测服务器类型的场景运行一次实验，再对同一负载时间窗运行仿真，用 `cpc compare` 对比：
+
+```bash
+cpc live -s scenario.yaml -e endpoints.yaml --duration 900 --out results/live-1
+cpc sim -s scenario.yaml --hours 0.25 --out results/sim-1
+cpc compare results/live-1 results/sim-1
+```
+
+以两台 CPU 服务器（llama.cpp）为真实站点、另有一个仿真站点的 15 分钟实验为例，输出的一部分：
+
+```text
+  范围    指标                    live-1       sim-1    比值
+  总计    完成请求                   233         233    1.00
+          SLO 达成率               84.1%       83.7%    0.99
+          IT 电量 (kWh)            0.137       0.131    0.96
+  sh      完成请求                    60          63    1.05
+          TTFT P50 (s)             3.494       3.847    1.10
+          IT 电量 (kWh)            0.041       0.042    1.00
+```
+
+比值偏离 1 较多的项指出服务器类型与真实服务器的差异，例如另一台同型号服务器的空载功率不同、预填充吞吐的估计偏低等；
+据此重新测量或调整服务器类型的参数。
 
