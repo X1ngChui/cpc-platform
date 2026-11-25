@@ -14,7 +14,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm]   # services target Linux x86_64 and aarch64 only
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -26,7 +26,7 @@ jobs:
   docs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
