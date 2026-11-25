@@ -21,7 +21,7 @@ Modules:
 - results     result packages and experiment descriptions
 """
 
-__version__ = "0.4.0.dev0"
+__version__ = "0.4.0"
 
 
 def simulate(scenario, *, routing: str | None = None, routing_params: dict | None = None, capacity: str | None = None,

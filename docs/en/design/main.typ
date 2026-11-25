@@ -7,13 +7,13 @@
   subtitle: "Design document",
   doc-id: "CPC-DS-001",
   version: "v0.4",
-  date: "2026-11-25",
+  date: "2026-11-26",
   authors: ("Platform team",),
   revisions: (
     ("v0.1", "2026-11-24", "Platform team", "first draft"),
     ("v0.2", "2026-11-25", "Platform team", "datasets as descriptors and kind specifications; data-centre runtime shared by simulation and live experiments; two-level scheduling and server pools; result packages and experiment descriptions"),
     ("v0.3", "2026-11-25", "Platform team", "server types as tables only; unnecessary features removed; live runs (cpc live) write the result packages of simulations"),
-    ("v0.4", "2026-11-25", "Platform team", "English edition; four built-in sensors; cpc measure and cpc compare; site configuration from the control node; fewer built-in policies and deployments, all extension points kept"),
+    ("v0.4", "2026-11-26", "Platform team", "English edition; four built-in sensors; cpc measure and cpc compare; site configuration from the control node; fewer built-in policies and deployments, all extension points kept"),
   ),
   abstract: [
     This document describes the design of a platform for energy-aware scheduling of AI inference across

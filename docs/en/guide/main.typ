@@ -7,13 +7,13 @@
   subtitle: "User guide",
   doc-id: "CPC-UG-001",
   version: "v0.4",
-  date: "2026-11-25",
+  date: "2026-11-26",
   authors: ("Platform team",),
   revisions: (
     ("v0.1", "2026-11-24", "Platform team", "first draft"),
     ("v0.2", "2026-11-25", "Platform team", "data preparation by conversion scripts and dataset validation; result packages and experiment descriptions; server pools and real servers"),
     ("v0.3", "2026-11-25", "Platform team", "reorganised along the workflow: quick start, data, scenarios, simulation, live experiments, policies; cpc check, cpc live, cpc profile"),
-    ("v0.4", "2026-11-25", "Platform team", [English edition; `cpc measure`, `cpc compare` and `cpc live --local`; cloud deployment with CPU inference and power capping; local Compose and Kubernetes deployments removed]),
+    ("v0.4", "2026-11-26", "Platform team", [English edition; `cpc measure`, `cpc compare` and `cpc live --local`; cloud deployment with CPU inference and power capping; local Compose and Kubernetes deployments removed]),
   ),
   abstract: [
     This guide describes installing and using the platform: preparing datasets from public or your own

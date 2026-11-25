@@ -2,7 +2,7 @@
 
 Versions follow semantic versioning.
 
-## Unreleased
+## v0.4.0 (2026-11-26)
 
 ### Changed
 

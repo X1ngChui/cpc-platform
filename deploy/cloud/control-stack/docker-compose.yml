@@ -5,7 +5,7 @@
 # Security: open the grid/gateway/controller/site ports only to servers of the same VPC (security group) and
 #           set CPC_ADMIN_TOKEN; Prometheus and Grafana bind to 127.0.0.1 and are reached through SSH tunnels.
 # Preparation:
-#   printf 'CPC_ADMIN_TOKEN=...\nGRAFANA_PASSWORD=...\nCPC_IMAGE=ghcr.io/x1ngchui/cpc-platform:0.3.0\n' > .env
+#   printf 'CPC_ADMIN_TOKEN=...\nGRAFANA_PASSWORD=...\nCPC_IMAGE=ghcr.io/x1ngchui/cpc-platform:0.4.0\n' > .env
 #   cp ../scenario.cloud.example.yaml scenario.yaml        # adapt to the experiment
 #   cp ../endpoints.cloud.example.yaml endpoints.yaml      # fill in the server addresses
 #   cp ../prometheus.cloud.example.yml prometheus.yml      # fill in the server addresses
