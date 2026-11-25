@@ -8,7 +8,6 @@
   doc-id: "CPC-DS-001",
   version: "v0.4",
   date: "2026-11-25",
-  org: "Compute-power coordination research group",
   authors: ("Platform team",),
   revisions: (
     ("v0.1", "2026-11-24", "Platform team", "first draft"),

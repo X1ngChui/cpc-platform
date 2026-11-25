@@ -68,7 +68,7 @@
 // ---------------------------------------------------------------- document
 
 #let doc(
-  lang: "zh", title: "", cover-title: none, subtitle: "", doc-id: "", version: "v0.1", date: "", org: "",
+  lang: "zh", title: "", cover-title: none, subtitle: "", doc-id: "", version: "v0.1", date: "",
   authors: (), revisions: (), abstract: none, body,
 ) = {
   let L = labels.at(lang)
@@ -124,10 +124,8 @@
   }
 
   // ---------- cover
-  page(header: none, footer: none, margin: (x: 3cm, top: 5cm, bottom: 3cm), {
+  page(header: none, footer: none, margin: (x: 3cm, top: 6.5cm, bottom: 3cm), {
     set par(first-line-indent: 0em)
-    text(font: sans, size: 11pt, fill: ink2, org)
-    v(1.2cm)
     line(length: 100%, stroke: 1.2pt + ink)
     v(0.6cm)
     text(font: sans, size: 22pt, weight: "bold", if cover-title != none { cover-title } else { title })
