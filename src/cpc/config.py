@@ -16,9 +16,10 @@
 from __future__ import annotations
 
 import os
+import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Union, get_args, get_origin
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -28,6 +29,115 @@ CST = timezone(timedelta(hours=8))
 
 class ConfigError(Exception):
     """配置或运行环境错误：在启动阶段报告并退出。"""
+
+
+_TIME_HINT = "应为带时区的时间，如 2026-07-15T11:00:00+08:00"
+_ERROR_TEXT = {
+    "missing": "缺少必填字段",
+    "string_type": "应为字符串",
+    "int_type": "应为整数", "int_parsing": "应为整数", "int_from_float": "应为整数",
+    "float_type": "应为数值", "float_parsing": "应为数值",
+    "bool_type": "应为 true 或 false", "bool_parsing": "应为 true 或 false",
+    "list_type": "应为列表", "tuple_type": "应为列表",
+    "dict_type": "应为映射（键: 值）", "model_type": "应为映射（键: 值）", "model_attributes_type": "应为映射（键: 值）",
+    "datetime_type": _TIME_HINT, "datetime_parsing": _TIME_HINT, "datetime_from_date_parsing": _TIME_HINT,
+    "timezone_aware": "须带时区，如 +08:00",
+}
+_BOUNDS = {"greater_than": ("gt", "应大于"), "greater_than_equal": ("ge", "应不小于"),
+           "less_than": ("lt", "应小于"), "less_than_equal": ("le", "应不大于")}
+
+
+def _unwrap(t: Any) -> Any:
+    """X | None → X。"""
+    if get_origin(t) in (Union, types.UnionType):
+        args = [a for a in get_args(t) if a is not type(None)]
+        if len(args) == 1:
+            return args[0]
+    return t
+
+
+def _fields_at(model: type[BaseModel], loc: tuple) -> list[str]:
+    """沿字段路径 loc 找到的模型的字段名；路径不对应模型时为空。"""
+    t: Any = model
+    for part in loc:
+        t = _unwrap(t)
+        if isinstance(t, type) and issubclass(t, BaseModel):
+            f = t.model_fields.get(part) if isinstance(part, str) else None
+            if f is None:
+                return []
+            t = f.annotation
+        elif get_origin(t) in (list, tuple) and get_args(t):
+            t = get_args(t)[0]
+        elif get_origin(t) is dict and get_args(t):
+            t = get_args(t)[1]
+        else:
+            return []
+    t = _unwrap(t)
+    if isinstance(t, type) and issubclass(t, BaseModel):
+        return [k for k, f in t.model_fields.items() if not f.exclude]
+    return []
+
+
+def _loc(loc: tuple) -> str:
+    s = ""
+    for p in loc:
+        s += f"[{p}]" if isinstance(p, int) else (f".{p}" if s else str(p))
+    return s
+
+
+def _short(v: Any) -> str:
+    r = repr(v)
+    return r if len(r) <= 40 else r[:37] + "..."
+
+
+def describe_validation(e: ValidationError, model: type[BaseModel], what: str) -> str:
+    """把 pydantic 的校验错误整理为每处一行：字段路径、原因；拼错的字段名给出相近的正确字段名。"""
+    from .registry import did_you_mean
+
+    lines = []
+    for err in e.errors():
+        typ, loc, ctx = err["type"], tuple(err["loc"]), err.get("ctx") or {}
+        if typ == "extra_forbidden":
+            ok = _fields_at(model, loc[:-1])
+            hint = did_you_mean(str(loc[-1]), ok)
+            msg = "不认识的字段" + (hint or (f"；可用字段：{'、'.join(ok)}" if ok else ""))
+        elif typ in _ERROR_TEXT:
+            msg = _ERROR_TEXT[typ]
+        elif typ in _BOUNDS:
+            k, text = _BOUNDS[typ]
+            v = ctx.get(k)
+            msg = f"{text} {v:g}" if isinstance(v, (int, float)) else f"{text} {v}"
+        elif typ == "too_short":
+            msg = f"至少需要 {ctx.get('min_length')} 项"
+        elif typ in ("literal_error", "enum"):
+            msg = f"取值应为 {ctx.get('expected')}"
+        elif typ in ("value_error", "assertion_error") and "error" in ctx:
+            msg = str(ctx["error"])
+        else:
+            msg = err["msg"]
+        if typ not in ("missing", "extra_forbidden", "value_error", "assertion_error") and \
+                isinstance(err.get("input"), (str, int, float, bool, type(None))):
+            msg += f"（实际为 {_short(err['input'])}）"
+        where = _loc(loc)
+        lines.append(f"  {where}：{msg}" if where else f"  {msg}")
+    n = len(lines)
+    return f"{what} 有 {n} 处错误：\n" + "\n".join(lines) if n > 1 else f"{what} 有错误：{lines[0].strip()}"
+
+
+def read_yaml(path: Path, what: str) -> dict:
+    """读取 YAML 映射；文件不可读、语法错误或顶层不是映射时报 ConfigError。"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+    except OSError as e:
+        raise ConfigError(f"无法读取{what} {path}：{e.strerror or e}") from e
+    except yaml.YAMLError as e:
+        raise ConfigError(f"{what} {path} 不是有效的 YAML：{e}") from e
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{what} {path} 的顶层应为映射（键: 值）")
+    return raw
 
 
 class _Strict(BaseModel):
@@ -207,7 +317,7 @@ class ClockConfig(_Strict):
     """信号时钟：信号时间 = start + 经过时间 × speedup（仿真中 speedup 不起作用）。"""
 
     start: datetime = datetime(2026, 7, 15, 0, 0, tzinfo=CST)
-    speedup: float = 1.0
+    speedup: float = Field(1.0, gt=0)
 
     @model_validator(mode="after")
     def _tz(self) -> "ClockConfig":
@@ -371,15 +481,20 @@ class Scenario(_Strict):
 
 def load_scenario(path: str | os.PathLike) -> Scenario:
     path = Path(path).resolve()
+    raw = read_yaml(path, "场景文件")
     try:
-        with open(path, encoding="utf-8") as f:
-            raw = yaml.safe_load(f)
-    except OSError as e:
-        raise ConfigError(f"无法读取场景文件 {path}：{e}") from e
-    try:
-        return Scenario.model_validate({**(raw or {}), "base_dir": path.parent})
+        return Scenario.model_validate({**raw, "base_dir": path.parent})
     except ValidationError as e:
-        raise ConfigError(f"场景文件 {path} 无效：\n{e}") from e
+        raise ConfigError(describe_validation(e, Scenario, f"场景文件 {path}")) from e
+
+
+def override_policy(current: PolicyConfig, name: str | None, params: dict | None) -> PolicyConfig:
+    """覆盖全局策略：给出名称时换用该策略（参数为 params）；只给出参数时修改当前策略的这些参数。"""
+    if name is not None:
+        return PolicyConfig(policy=name, params=params or {})
+    if params is not None:
+        return PolicyConfig(policy=current.policy, params={**current.params, **params})
+    return current
 
 
 class Endpoints(_Strict):
@@ -413,12 +528,11 @@ def load_endpoints(path: str | os.PathLike | None, scn: Scenario, local: bool = 
         return default_local_endpoints(scn)
     if not path:
         raise ConfigError("未指定服务地址：请用 -e / CPC_ENDPOINTS 给出地址文件，或用 --local 使用本机模式地址")
+    raw = read_yaml(Path(path), "地址文件")
     try:
-        with open(path, encoding="utf-8") as f:
-            raw = yaml.safe_load(f)
         ep = Endpoints.model_validate(raw)
-    except (OSError, ValidationError) as e:
-        raise ConfigError(f"地址文件 {path} 无效：{e}") from e
+    except ValidationError as e:
+        raise ConfigError(describe_validation(e, Endpoints, f"地址文件 {path}")) from e
     ids = {s.id for s in scn.sites}
     if set(ep.sites) != ids:
         raise ConfigError(f"地址文件 {path} 的站点 {sorted(ep.sites)} 与场景 {sorted(ids)} 不一致")

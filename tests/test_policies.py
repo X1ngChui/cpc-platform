@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from cpc.config import ConfigError
 from cpc.datacenter import Datacenter
 from cpc.grid.signals import GridModel
 from cpc.models import rtt_matrix
@@ -59,8 +60,10 @@ def test_routing_decisions_and_reasons(scn):
     # 视图中没有站点（全部不可用）
     d = make_routing("least_loaded").choose(req, _view(scn, {}, drop=[s.id for s in scn.sites]))
     assert d.site is None and d.reason == "no_available_site"
-    with pytest.raises(TypeError):
+    with pytest.raises(ConfigError, match="不接受参数 max_wait（是否要写 max_wait_s？）"):
         make_routing("nearest", {"max_wait": 1})  # 参数拼写错误在构造时报错
+    with pytest.raises(ConfigError, match="是否要写 nearest"):
+        make_routing("neareast")
 
 
 # ------------------------------------------------------------------ 容量策略

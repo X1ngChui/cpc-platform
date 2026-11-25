@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 from typing import Iterable, Protocol
 
-from ..registry import Registry
+from ..registry import Registry, unknown_params
 from .routing import RequestInfo
 
 
@@ -43,7 +43,7 @@ class DispatchPolicy:
 
     def __init__(self, **params):
         if params:
-            raise TypeError(f"派发策略 {self.name} 不接受参数 {sorted(params)}")
+            raise unknown_params("派发策略", self, params)
 
     def filter(self, req: RequestInfo, s: ServerView) -> bool:
         return s.accepting
@@ -70,7 +70,7 @@ class PowerPolicy:
 
     def __init__(self, **params):
         if params:
-            raise TypeError(f"电源管理策略 {self.name} 不接受参数 {sorted(params)}")
+            raise unknown_params("电源管理策略", self, params)
 
     def plan(self, want: int, servers: list[ServerView]) -> dict[str, str]:
         """返回需要改变状态的服务器及其目标状态（"on" / "off"）；want 为目标在线（含启动中）服务器数。"""

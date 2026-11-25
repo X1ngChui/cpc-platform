@@ -64,8 +64,24 @@ def _bind(args, url: str) -> tuple[str, int]:
     return (args.host or h, args.port or p)
 
 
-def _policy(name: str | None, params: str | None) -> dict | None:
-    return {"policy": name, "params": json.loads(params) if params else {}} if name else None
+def _json_arg(flag: str, text: str | None) -> dict | None:
+    """解析 JSON 对象形式的命令行参数。"""
+    if text is None:
+        return None
+    try:
+        v = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ConfigError(f"{flag} 不是有效的 JSON（第 {e.colno} 个字符：{e.msg}）。"
+                          f"示例：{flag} '{{\"max_wait_s\": 1.0}}'（键与字符串用双引号）") from None
+    if not isinstance(v, dict):
+        raise ConfigError(f"{flag} 应为 JSON 对象，如 '{{\"max_wait_s\": 1.0}}'")
+    return v
+
+
+def _policy(name: str | None, params: str | None, flag: str) -> dict | None:
+    """--routing / --capacity 与对应的参数：只给出参数时修改场景中策略的参数。"""
+    p = _json_arg(flag, params)
+    return None if name is None and p is None else {"policy": name, "params": p}
 
 
 # ------------------------------------------------------------------ 准备
@@ -217,7 +233,7 @@ def cmd_profile(args) -> None:
 def _run_variant(scenario: str, name: str, routing: dict | None, capacity: dict | None, workload: dict, hours: float,
                  bin_s: float, out: str) -> dict:
     """运行一个变体（可在子进程中执行）：加载场景、覆盖策略与负载参数、仿真并写出结果数据包。"""
-    from .config import PolicyConfig
+    from .config import override_policy
     from .results import write_run
     from .sched import make_capacity, make_routing
     from .sim.des import Simulator
@@ -229,9 +245,9 @@ def _run_variant(scenario: str, name: str, routing: dict | None, capacity: dict 
                 raise ConfigError(f"变体 {name}：workload 没有字段 {k}")
             setattr(scn.workload, k, v)
     if routing is not None:
-        scn.scheduler.routing = PolicyConfig.model_validate(routing)
+        scn.scheduler.routing = override_policy(scn.scheduler.routing, routing["policy"], routing["params"])
     if capacity is not None:
-        scn.scheduler.capacity = PolicyConfig.model_validate(capacity)
+        scn.scheduler.capacity = override_policy(scn.scheduler.capacity, capacity["policy"], capacity["params"])
     r, c = scn.scheduler.routing, scn.scheduler.capacity
     t0 = time.time()
     res = Simulator(scn, make_routing(r.policy, r.params), make_capacity(c.policy, c.params), hours=hours, bin_s=bin_s).run()
@@ -256,8 +272,8 @@ def _print_summary(s: dict) -> None:
 
 def cmd_sim(args) -> None:
     scn = load_scenario(args.scenario)
-    routing = _policy(args.routing, args.routing_params)
-    capacity = _policy(args.capacity, args.capacity_params)
+    routing = _policy(args.routing, args.routing_params, "--routing-params")
+    capacity = _policy(args.capacity, args.capacity_params, "--capacity-params")
     name = f"{args.routing or scn.scheduler.routing.policy}__{args.capacity or scn.scheduler.capacity.policy}"
     out = args.out or f"results/sim-{name}"
     s = _run_variant(args.scenario, name, routing, capacity, _overrides(args), args.hours, args.bin_s, out)
@@ -269,11 +285,23 @@ def cmd_sim(args) -> None:
 def cmd_run(args) -> None:
     """按实验描述并行运行全部变体，写出各变体的结果与对比表。"""
     from .results import load_experiment, write_comparison
+    from .sched import make_capacity, make_routing
 
     exp = load_experiment(args.experiment)
     out = Path(args.out or f"results/{exp.name}")
     variants = [{"name": v.name, "routing": v.routing.model_dump() if v.routing else None,
                  "capacity": v.capacity.model_dump() if v.capacity else None, "workload": v.workload} for v in exp.variants]
+    scn = load_scenario(exp.scenario_path())
+    for v in variants:  # 在启动子进程之前检查各变体的策略名、参数与负载字段
+        try:
+            r, c = v["routing"] or scn.scheduler.routing.model_dump(), v["capacity"] or scn.scheduler.capacity.model_dump()
+            make_routing(r["policy"], r["params"])
+            make_capacity(c["policy"], c["params"])
+            for k in v["workload"] or {}:
+                if k not in type(scn.workload).model_fields:
+                    raise ConfigError(f"workload 没有字段 {k}")
+        except ConfigError as e:
+            raise ConfigError(f"变体 {v['name']}：{e}") from None
     ctx = multiprocessing.get_context("spawn")  # 子进程不继承父进程的线程与状态
     print(f"实验 {exp.name}：{len(variants)} 个变体，场景 {exp.scenario_path()}，{exp.hours:g} 小时")
     with ProcessPoolExecutor(max_workers=max(1, min(len(variants), args.jobs)), mp_context=ctx) as ex:
@@ -434,7 +462,7 @@ def cmd_gateway(args) -> None:
 
     scn = _scn(args)
     ep = _ep(args, scn)
-    params = json.loads(args.params) if args.params else None
+    params = _json_arg("--params", args.params)
     _serve(create_app(scn, ep, args.policy, params, args.log, args.startup_timeout), *_bind(args, ep.gateway))
 
 
@@ -443,7 +471,7 @@ def cmd_controller(args) -> None:
 
     scn = _scn(args)
     ep = _ep(args, scn)
-    params = json.loads(args.params) if args.params else None
+    params = _json_arg("--params", args.params)
     _serve(create_app(scn, ep, args.policy, params, args.interval, args.log, args.startup_timeout), *_bind(args, ep.controller))
 
 
@@ -508,6 +536,27 @@ def cmd_sensors(args) -> None:
 # ------------------------------------------------------------------ 解析
 
 
+def _number(text: str) -> float:
+    try:
+        return float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"应为数值，实际为 {text!r}") from None
+
+
+def _positive(text: str) -> float:
+    v = _number(text)
+    if not v > 0:
+        raise argparse.ArgumentTypeError(f"应大于 0，实际为 {text}")
+    return v
+
+
+def _nonnegative(text: str) -> float:
+    v = _number(text)
+    if not v >= 0:
+        raise argparse.ArgumentTypeError(f"应不小于 0，实际为 {text}")
+    return v
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="cpc", description="算电协同跨数据中心 AI 计算任务调度平台",
                                 formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__.split("\n\n", 1)[1])
@@ -519,10 +568,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     def workload(sp):
         g = sp.add_argument_group("负载变换（覆盖场景 workload 中的同名参数）")
-        g.add_argument("--start-s", type=float, default=None, help="时间窗起点（原始 trace 秒）")
-        g.add_argument("--duration-s", type=float, default=None, help="时间窗长度（原始 trace 秒）")
-        g.add_argument("--time-scale", type=float, default=None, help="时间压缩倍数（>1 压缩）")
-        g.add_argument("--rate-scale", type=float, default=None, help="到达率缩放倍数")
+        g.add_argument("--start-s", type=_nonnegative, default=None, help="时间窗起点（原始 trace 秒）")
+        g.add_argument("--duration-s", type=_positive, default=None, help="时间窗长度（原始 trace 秒）")
+        g.add_argument("--time-scale", type=_positive, default=None, help="时间压缩倍数（>1 压缩）")
+        g.add_argument("--rate-scale", type=_positive, default=None, help="到达率缩放倍数")
 
     def endpoints(sp, local=True, listen=True):
         sp.add_argument("--endpoints", "-e", default=None, help="服务地址文件（也可用环境变量 CPC_ENDPOINTS）")
@@ -562,11 +611,11 @@ def build_parser() -> argparse.ArgumentParser:
     # 仿真
     sp = scenario(sub.add_parser("sim", help="运行一次仿真，结果写为结果数据包"))
     sp.add_argument("--routing", default=None, help="覆盖场景的路由策略")
-    sp.add_argument("--routing-params", default=None, help="路由策略参数（JSON）")
+    sp.add_argument("--routing-params", default=None, help="路由策略参数（JSON）；不给出 --routing 时修改场景中策略的参数")
     sp.add_argument("--capacity", default=None, help="覆盖场景的容量策略")
-    sp.add_argument("--capacity-params", default=None, help="容量策略参数（JSON）")
-    sp.add_argument("--hours", type=float, default=24, help="仿真时长（小时，缺省 24）")
-    sp.add_argument("--bin-s", type=float, default=300.0, help="时间序列的时间片长度（秒，缺省 300）")
+    sp.add_argument("--capacity-params", default=None, help="容量策略参数（JSON）；不给出 --capacity 时修改场景中策略的参数")
+    sp.add_argument("--hours", type=_positive, default=24, help="仿真时长（小时，缺省 24）")
+    sp.add_argument("--bin-s", type=_positive, default=300.0, help="时间序列的时间片长度（秒，缺省 300）")
     workload(sp)
     sp.add_argument("--out", default=None, help="结果目录（缺省 results/sim-<路由>__<容量>）")
     sp.set_defaults(fn=cmd_sim)
@@ -587,22 +636,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--host", default=None, help="覆盖全部服务的监听地址")
     sp.add_argument("--routing", default=None, help="覆盖场景的路由策略")
     sp.add_argument("--capacity", default=None, help="覆盖场景的容量策略")
-    sp.add_argument("--interval", type=float, default=None, help="控制周期（秒）")
-    sp.add_argument("--speedup", type=float, default=None, help="信号时钟加速倍数")
+    sp.add_argument("--interval", type=_positive, default=None, help="控制周期（秒）")
+    sp.add_argument("--speedup", type=_positive, default=None, help="信号时钟加速倍数")
     sp.add_argument("--initial-active", type=int, default=None, help="各站点初始在线的服务器数")
     sp.add_argument("--no-controller", action="store_true", help="不启动控制器")
     sp.add_argument("--log-dir", default="logs", help="日志目录（缺省 logs）")
     sp.set_defaults(fn=cmd_up)
 
     sp = scenario(sub.add_parser("live", help="运行一次实验：回放负载、采样，结果写为结果数据包"))
-    sp.add_argument("--duration", type=float, required=True, help="实验时长（秒）")
+    sp.add_argument("--duration", type=_positive, required=True, help="实验时长（秒）")
     sp.add_argument("--endpoints", "-e", default=None, help="已部署服务的地址文件；缺省时在本进程中启动全部服务")
     sp.add_argument("--routing", default=None, help="覆盖场景的路由策略（只用于本进程启动的服务）")
     sp.add_argument("--capacity", default=None, help="覆盖场景的容量策略（只用于本进程启动的服务）")
-    sp.add_argument("--interval", type=float, default=None, help="控制周期（秒）")
-    sp.add_argument("--speedup", type=float, default=None, help="信号时钟加速倍数")
+    sp.add_argument("--interval", type=_positive, default=None, help="控制周期（秒）")
+    sp.add_argument("--speedup", type=_positive, default=None, help="信号时钟加速倍数")
     sp.add_argument("--initial-active", type=int, default=None, help="各站点初始在线的服务器数")
-    sp.add_argument("--sample-s", type=float, default=10.0, help="站点状态与电网信号的采样周期（秒，缺省 10）")
+    sp.add_argument("--sample-s", type=_positive, default=10.0, help="站点状态与电网信号的采样周期（秒，缺省 10）")
     sp.add_argument("--model", default="cpc", help="请求中的 model 字段（真实推理实例的模型名）")
     sp.add_argument("--no-stream", action="store_true", help="使用非流式请求（不测量首 token 时延）")
     workload(sp)
@@ -611,7 +660,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = scenario(sub.add_parser("loadgen", help="按场景负载向网关回放请求"))
     endpoints(sp, listen=False)
-    sp.add_argument("--duration", type=float, default=60, help="回放时长（秒）")
+    sp.add_argument("--duration", type=_positive, default=60, help="回放时长（秒）")
     workload(sp)
     sp.add_argument("--gateway", default=None, help="直接给出网关地址（与 --grid 一起使用时不需要地址文件）")
     sp.add_argument("--grid", default=None, help="直接给出电网信号服务地址")
@@ -623,15 +672,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp = scenario(sub.add_parser("event", help="向电网信号服务注入需求响应事件"))
     endpoints(sp, listen=False)
     sp.add_argument("--site", required=True)
-    sp.add_argument("--cap-kw", type=float, required=True, help="设施功率上限（kW）")
-    sp.add_argument("--duration-min", type=float, default=60, help="持续时间（信号时间，分钟）")
+    sp.add_argument("--cap-kw", type=_nonnegative, required=True, help="设施功率上限（kW）")
+    sp.add_argument("--duration-min", type=_positive, default=60, help="持续时间（信号时间，分钟）")
     sp.add_argument("--kind", default="peak_shaving")
     sp.set_defaults(fn=cmd_event)
 
     # 服务
     sp = scenario(sub.add_parser("grid", help="电网信号服务（信号时钟的权威来源）"))
     endpoints(sp)
-    sp.add_argument("--speedup", type=float, default=None, help="信号时钟加速倍数")
+    sp.add_argument("--speedup", type=_positive, default=None, help="信号时钟加速倍数")
     sp.set_defaults(fn=cmd_grid)
 
     sp = scenario(sub.add_parser("site", help="站点代理"))
@@ -646,16 +695,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--policy", default=None)
     sp.add_argument("--params", default=None, help="策略参数（JSON）")
     sp.add_argument("--log", default=None, help="请求日志（JSONL）")
-    sp.add_argument("--startup-timeout", type=float, default=30.0, help="等待电网信号服务可达的期限（秒）")
+    sp.add_argument("--startup-timeout", type=_positive, default=30.0, help="等待电网信号服务可达的期限（秒）")
     sp.set_defaults(fn=cmd_gateway)
 
     sp = scenario(sub.add_parser("controller", help="容量控制器"))
     endpoints(sp)
     sp.add_argument("--policy", default=None)
     sp.add_argument("--params", default=None, help="策略参数（JSON）")
-    sp.add_argument("--interval", type=float, default=None, help="控制周期（秒）")
+    sp.add_argument("--interval", type=_positive, default=None, help="控制周期（秒）")
     sp.add_argument("--log", default=None, help="决策日志（JSONL）")
-    sp.add_argument("--startup-timeout", type=float, default=30.0, help="等待电网信号服务可达的期限（秒）")
+    sp.add_argument("--startup-timeout", type=_positive, default=30.0, help="等待电网信号服务可达的期限（秒）")
     sp.set_defaults(fn=cmd_controller)
 
     # 功率测量
@@ -664,7 +713,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--types", default=None, help="逗号分隔的传感器类型，如 nvml,rapl")
     sp.add_argument("--spec", default=None, help="传感器配置（YAML，含参数）")
     sp.add_argument("--count", type=int, default=3)
-    sp.add_argument("--interval", type=float, default=1.0)
+    sp.add_argument("--interval", type=_positive, default=1.0)
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(fn=cmd_sensors)
 
@@ -674,7 +723,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--site", default=None, help="附加 site 标签")
     sp.add_argument("--types", default=None, help="逗号分隔的传感器类型")
     sp.add_argument("--spec", default=None, help="传感器配置（YAML）")
-    sp.add_argument("--interval", type=float, default=1.0, help="采样周期（秒）")
+    sp.add_argument("--interval", type=_positive, default=1.0, help="采样周期（秒）")
     sp.set_defaults(fn=cmd_exporter)
     return p
 
@@ -685,8 +734,11 @@ def main(argv: list[str] | None = None) -> None:
     try:
         args.fn(args)
     except (ConfigError, StartupError, SensorError, DatasetError) as e:
+        sys.stdout.flush()  # 先输出已打印的内容，错误信息在最后
         print(f"cpc {args.cmd}：{e}", file=sys.stderr)
         sys.exit(2)
+    except KeyboardInterrupt:
+        sys.exit(130)
 
 
 if __name__ == "__main__":

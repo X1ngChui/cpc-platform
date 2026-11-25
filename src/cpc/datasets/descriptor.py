@@ -134,7 +134,8 @@ def find_descriptor(path: str | os.PathLike, base: Path | None = None) -> Path:
         return found[0]
     if p.is_file():
         return p
-    raise DatasetError(f"数据集 {p} 不存在")
+    hint = f"；路径中的 ${{CPC_DATA_DIR}} 为 {data_dir()}" if "${CPC_DATA_DIR}" in str(path) else ""
+    raise DatasetError(f"数据集 {p} 不存在：请先准备该数据集（见《使用手册》\"数据\"一章）{hint}")
 
 
 def _field(d: dict, where: str) -> Field:

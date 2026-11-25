@@ -20,18 +20,19 @@ Python 接口：
 - results     结果数据包与实验描述
 """
 
-__version__ = "0.3.0.dev0"
+__version__ = "0.3.0"
 
 
 def simulate(scenario, *, routing: str | None = None, routing_params: dict | None = None, capacity: str | None = None,
              capacity_params: dict | None = None, hours: float = 24.0, bin_s: float = 300.0, out=None, **workload):
     """运行一次仿真并返回 RunResult（summary、timeseries、requests、decisions）。
 
-    scenario 为场景文件路径或已加载的 Scenario；routing / capacity 覆盖场景中的全局策略；
+    scenario 为场景文件路径或已加载的 Scenario；routing / capacity 覆盖场景中的全局策略，
+    只给出 routing_params / capacity_params 时修改场景中策略的这些参数；
     workload 的关键字参数覆盖场景 workload 中的同名字段（如 rate_scale、start_s、duration_s）；
     给出 out 时同时把结果数据包写入该目录。
     """
-    from .config import PolicyConfig, Scenario, load_scenario
+    from .config import Scenario, load_scenario, override_policy
     from .results import write_run
     from .sched import make_capacity, make_routing
     from .sim.des import Simulator
@@ -41,10 +42,8 @@ def simulate(scenario, *, routing: str | None = None, routing_params: dict | Non
         if k not in type(scn.workload).model_fields:
             raise TypeError(f"workload 没有字段 {k}")
         setattr(scn.workload, k, v)
-    if routing is not None:
-        scn.scheduler.routing = PolicyConfig(policy=routing, params=routing_params or {})
-    if capacity is not None:
-        scn.scheduler.capacity = PolicyConfig(policy=capacity, params=capacity_params or {})
+    scn.scheduler.routing = override_policy(scn.scheduler.routing, routing, routing_params)
+    scn.scheduler.capacity = override_policy(scn.scheduler.capacity, capacity, capacity_params)
     r, c = scn.scheduler.routing, scn.scheduler.capacity
     res = Simulator(scn, make_routing(r.policy, r.params), make_capacity(c.policy, c.params), hours=hours, bin_s=bin_s).run()
     if out is not None:

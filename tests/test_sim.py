@@ -7,7 +7,7 @@ import pytest
 import yaml
 
 from cpc.cli import main as cli_main
-from cpc.config import PoolConfig
+from cpc.config import ConfigError, PoolConfig
 from cpc.datasets import load_descriptor
 from cpc.sched import make_capacity, make_routing
 from cpc.sim.des import Simulator
@@ -53,7 +53,7 @@ def test_heterogeneous_pools_with_local_policies(scn):
 
 def test_horizon_longer_than_workload_is_rejected(scn):
     scn.workload.duration_s = 1800
-    with pytest.raises(ValueError, match="短于仿真时长"):
+    with pytest.raises(ConfigError, match="短于仿真时长"):
         run(scn, "nearest", "static", hours=1.0)
 
 

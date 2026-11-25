@@ -29,7 +29,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import __version__
-from .config import ConfigError, PolicyConfig, Scenario
+from .config import ConfigError, PolicyConfig, Scenario, describe_validation, read_yaml
 
 @dataclass
 class RunResult:
@@ -84,11 +84,11 @@ class Experiment(BaseModel):
 
 def load_experiment(path: str | Path) -> Experiment:
     path = Path(path).resolve()
+    raw = read_yaml(path, "实验描述")
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-        exp = Experiment.model_validate({**(raw or {}), "base_dir": path.parent})
-    except (OSError, ValidationError) as e:
-        raise ConfigError(f"实验描述 {path} 无效：{e}") from e
+        exp = Experiment.model_validate({**raw, "base_dir": path.parent})
+    except ValidationError as e:
+        raise ConfigError(describe_validation(e, Experiment, f"实验描述 {path}")) from e
     names = [v.name for v in exp.variants]
     if not names or len(set(names)) != len(names):
         raise ConfigError(f"实验描述 {path}：variants 须非空且名称不重复")

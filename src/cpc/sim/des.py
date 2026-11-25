@@ -21,7 +21,7 @@ from functools import partial
 
 import numpy as np
 
-from ..config import Scenario
+from ..config import ConfigError, Scenario
 from ..datacenter import Action, Datacenter, Job, Overloaded, Server
 from ..datasets.workload import WorkloadTrace, assign_sources, load_workload
 from ..grid.signals import GridModel, GridSignal, SignalUnavailable
@@ -53,7 +53,8 @@ class Simulator:
         self.trace = trace if trace is not None else load_workload(scn)
         span = self.trace.duration_s if scn.workload.duration_s is None else scn.workload.duration_s / scn.workload.time_scale
         if span + 1e-6 < self.horizon:
-            raise ValueError(f"负载 {self.trace.ref} 变换后覆盖 {span / 3600:.2f} h，短于仿真时长 {hours} h")
+            raise ConfigError(f"负载 {self.trace.ref} 只覆盖 {span / 3600:.2f} 小时，短于仿真时长 {hours:g} 小时；"
+                              f"请把仿真时长（--hours 或实验描述的 hours）设为不超过 {span / 3600:.2f}")
         self.rtt = rtt_matrix(scn)
         self.sites: dict[str, Datacenter] = {}
         for s in scn.sites:

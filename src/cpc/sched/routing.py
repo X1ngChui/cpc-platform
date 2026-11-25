@@ -21,7 +21,7 @@ from typing import Iterable, Literal
 
 from ..config import SLOConfig
 from ..grid.signals import GridSignal
-from ..registry import Registry
+from ..registry import Registry, unknown_params
 from ..schemas import SiteSnapshot
 
 
@@ -112,7 +112,7 @@ class RoutingPolicy:
 
     def __init__(self, **params):
         if params:
-            raise TypeError(f"路由策略 {self.name} 不接受参数 {sorted(params)}")
+            raise unknown_params("路由策略", self, params)
         self.params = params
 
     def choose(self, req: RequestInfo, view: ClusterView, exclude: Iterable[str] = ()) -> RouteDecision:

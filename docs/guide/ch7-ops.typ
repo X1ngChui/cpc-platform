@@ -99,7 +99,7 @@ cpc sensors --spec sensors.yaml
 ```bash
 cpc exporter --port 9400 --types nvml --site gz   # 按类型
 cpc exporter --port 9400 --spec sensors.yaml       # 按配置
-docker run -d --gpus all -p 9400:9400 ghcr.io/x1ngchui/cpc-platform:0.2.0 \
+docker run -d --gpus all -p 9400:9400 ghcr.io/x1ngchui/cpc-platform:0.3.0 \
        exporter --types nvml --site gz
 ```
 

@@ -17,8 +17,9 @@ cpc sim -s configs/scenario.yaml --hours 24 --out results/base
     header: ("参数", "含义"),
     [`-s`、`--scenario`], [场景文件，缺省 `configs/scenario.yaml`],
     [`--hours`], [仿真时长（小时，缺省 24），不得超过负载的长度],
-    [`--routing`、`--routing-params`], [覆盖场景中的路由策略及其参数（参数为 JSON，如 `'{"max_wait_s": 1}'`）],
-    [`--capacity`、`--capacity-params`], [覆盖场景中的容量策略及其参数],
+    [`--routing`、`--routing-params`], [覆盖场景中的路由策略及其参数（参数为 JSON，如 `'{"max_wait_s": 1}'`）；
+      只给出 `--routing-params` 时修改场景中路由策略的这些参数],
+    [`--capacity`、`--capacity-params`], [覆盖场景中的容量策略及其参数，规则同上],
     [`--start-s`、`--duration-s`、`--time-scale`、`--rate-scale`], [覆盖场景中的负载时间窗、时间压缩与到达率缩放],
     [`--bin-s`], [时间序列中每行的时长（秒，缺省 300）],
     [`--out`], [结果目录，缺省 `results/sim-<路由策略>__<容量策略>`],
@@ -126,8 +127,8 @@ for scale in (0.5, 1.0, 1.5):
     print(scale, res.summary["facility_kwh"], res.summary["slo_attainment"])
 ```
 
-`cpc.simulate` 的关键字参数：`routing`、`routing_params`、`capacity`、`capacity_params`、`hours`、`bin_s`、`out`
-（给出时同时写出结果目录），其余关键字参数覆盖场景 `workload` 中的同名字段。
+`cpc.simulate` 的关键字参数：`routing`、`routing_params`、`capacity`、`capacity_params`（含义同命令行参数）、
+`hours`、`bin_s`、`out`（给出时同时写出结果目录），其余关键字参数覆盖场景 `workload` 中的同名字段。
 
 == 作图
 

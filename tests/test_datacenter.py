@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from cpc.config import NodeProfile, PoolConfig, SiteConfig
+from cpc.config import ConfigError, NodeProfile, PoolConfig, SiteConfig
 from cpc.datacenter import Datacenter, Job, Overloaded
 from cpc.models import power_w
 from cpc.schemas import CapacityTarget
@@ -107,7 +107,7 @@ def test_affinity_dispatch_uses_request_attributes():
     for _ in range(2):
         dc.submit(job(session_id="u1"), 0.0)
     assert started[0][1] is started[1][1]  # 同一会话落在同一服务器
-    with pytest.raises(TypeError):
+    with pytest.raises(ConfigError, match="派发策略 least_loaded 不接受参数 bogus"):
         make_dispatch("least_loaded", {"bogus": 1})
 
 

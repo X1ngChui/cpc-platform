@@ -58,7 +58,7 @@ Kubernetes（kind）：`python deploy/k8s/kind_up.py`；云服务器与真实服
 `ghcr.io/x1ngchui/cpc-platform`（GitHub Actions 构建）与 `xingchui/cpc-platform`（Docker Hub），均为 amd64 / arm64。
 
 ```bash
-docker run -d --gpus all -p 9400:9400 ghcr.io/x1ngchui/cpc-platform:0.2.0 exporter --types nvml --site gz
+docker run -d --gpus all -p 9400:9400 ghcr.io/x1ngchui/cpc-platform:0.3.0 exporter --types nvml --site gz
 ```
 
 ## 目录

@@ -46,3 +46,31 @@ def test_live_experiment_writes_result_package(tmp_path, capsys):
     assert run["requests"].num_rows == s["arrived"] and set(run["requests"].column("status").to_pylist()) == {"served"}
     assert len(run["timeseries"]) >= 3 and float(run["timeseries"][0]["sh_it_kw"]) > 0
     assert (out / "logs" / "gateway.jsonl").is_file()
+
+
+def test_user_errors_are_one_line(tmp_path, capsys):
+    """常见的使用错误输出一行说明并以状态 2 退出，不输出 Python 调用栈。"""
+    def err(argv):
+        with pytest.raises(SystemExit) as e:
+            cli_main(argv)
+        assert e.value.code == 2
+        return capsys.readouterr().err
+
+    s = str(TEST_SCENARIO)
+    assert "是否要写 nearest" in err(["sim", "-s", s, "--routing", "neareast", "--hours", "0.1"])
+    assert "是否要写 max_wait_s" in err(["sim", "-s", s, "--routing", "nearest", "--routing-params", '{"max_wait": 1}'])
+    assert "不是有效的 JSON" in err(["sim", "-s", s, "--routing-params", "{bad"])
+    assert "短于仿真时长" in err(["sim", "-s", s, "--hours", "1000"])
+    assert "应大于 0" in err(["sim", "-s", s, "--hours", "-1"])
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(TEST_SCENARIO.read_text(encoding="utf-8").replace("slots:", "slot:", 1), encoding="utf-8")
+    out = err(["check", "-s", str(bad)])
+    assert "缺少必填字段" in out and "不认识的字段（是否要写 slots？）" in out and "Traceback" not in out
+    bad.write_text("name: x\n  y: [\n", encoding="utf-8")
+    assert "不是有效的 YAML" in err(["check", "-s", str(bad)])
+
+
+def test_policy_params_override_scenario_policy(tmp_path):
+    """只给出策略参数时修改场景中策略的参数，策略不变。"""
+    cpc.simulate(TEST_SCENARIO, routing_params={"max_wait_s": 2.0}, hours=0.2, rate_scale=0.05, out=tmp_path / "r")
+    assert cpc.read_run(tmp_path / "r")["run"]["routing"] == {"policy": "nearest", "params": {"max_wait_s": 2.0}}

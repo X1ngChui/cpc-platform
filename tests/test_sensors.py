@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from prometheus_client import CollectorRegistry
 
-from cpc.config import MeasurementConfig, NodeProfile, UpstreamConfig
+from cpc.config import ConfigError, MeasurementConfig, NodeProfile, UpstreamConfig
 from cpc.datacenter import Server
 from cpc.health import HealthBoard
 from cpc.sensors import EnergyIntegrator, Reading, Sensor, SensorError, make_sensor
@@ -110,7 +110,7 @@ def test_generic_adapters():
     assert RedfishSensor.parse("environment_metrics", {"PowerWatts": {"Reading": 640}}) == 640.0
     assert RedfishSensor.parse("power", {"PowerControl": [{"PowerConsumedWatts": 512}]}) == 512.0
     assert RedfishSensor.parse("power", {"PowerControl": []}) is None
-    with pytest.raises(KeyError):
+    with pytest.raises(ConfigError, match="未知的功率传感器类型"):
         make_sensor({"type": "no-such-sensor"})
     with pytest.raises(SensorError, match="初始化失败"):
         make_sensor({"type": "rapl", "root": "/nonexistent"})

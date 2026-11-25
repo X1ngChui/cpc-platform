@@ -21,9 +21,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import ClassVar, Literal
 
-from ..config import SLOConfig
+from ..config import ConfigError, SLOConfig
 from ..grid.signals import GridSignal
-from ..registry import Registry
+from ..registry import Registry, unknown_params
 from ..schemas import CapacityTarget, DemandSnapshot, SiteSnapshot
 
 INPUTS = frozenset({"signals", "demand"})
@@ -55,7 +55,7 @@ class CapacityPolicy:
 
     def __init__(self, **params):
         if params:
-            raise TypeError(f"容量策略 {self.name} 不接受参数 {sorted(params)}")
+            raise unknown_params("容量策略", self, params)
         self.params = params
 
     def decide(self, view: ControlView) -> CapacityPlan:
@@ -70,7 +70,7 @@ def make_capacity(name: str, params: dict | None = None) -> CapacityPolicy:
     cls = CAPACITY.get(name)
     unknown = set(cls.requires) - INPUTS
     if unknown:
-        raise ValueError(f"容量策略 {name} 声明了未知输入 {sorted(unknown)}，可选 {sorted(INPUTS)}")
+        raise ConfigError(f"容量策略 {name} 声明了未知输入 {sorted(unknown)}，可选 {sorted(INPUTS)}")
     return cls(**(params or {}))
 
 
