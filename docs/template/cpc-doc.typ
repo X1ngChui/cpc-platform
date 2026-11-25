@@ -1,10 +1,11 @@
-// 朴素、规范的中文技术文档模板（Typst）
-// 用法：
-//   #import "../template/cpc-doc.typ": *
-//   #show: doc.with(title: "...", subtitle: "...", version: "v0.1", date: "2026-11-24", ...)
+// Plain technical-document template (Typst) for Chinese and English documents.
+// Usage:
+//   #import "../../template/cpc-doc.typ": *
+//   #show: doc.with(lang: "en", title: "...", subtitle: "...", version: "v0.4", date: "2026-11-25", ...)
 
-#let serif = ("Times New Roman", "Noto Serif CJK SC", "Source Han Serif SC", "SimSun", "Songti SC")
-#let sans = ("Arial", "Noto Sans CJK SC", "Source Han Sans SC", "SimHei", "Microsoft YaHei", "PingFang SC")
+#let serif-zh = ("Times New Roman", "Noto Serif CJK SC", "Source Han Serif SC", "SimSun", "Songti SC")
+#let serif-en = ("Times New Roman", "Noto Serif", "DejaVu Serif", "Noto Serif CJK SC")
+#let sans = ("Arial", "Noto Sans", "Noto Sans CJK SC", "Source Han Sans SC", "SimHei", "Microsoft YaHei", "PingFang SC")
 #let mono = ("Consolas", "DejaVu Sans Mono", "Menlo", "Noto Sans Mono CJK SC", "SimHei", "Microsoft YaHei")
 
 #let ink = rgb("#0b0b0b")
@@ -13,59 +14,75 @@
 #let code-bg = rgb("#f6f6f4")
 #let accent = rgb("#2a78d6")
 
-// ---------------------------------------------------------------- 组件
-
-// 三线表：表头上下各一条线，表尾一条线
-#let tbl(columns: auto, align: left, header: (), ..cells) = {
-  let n = if type(columns) == int { columns } else { columns.len() }
-  table(
-    columns: columns,
-    align: align,
-    stroke: none,
-    inset: (x: 6pt, y: 4.5pt),
-    table.hline(stroke: 1pt),
-    table.header(..header.map(h => text(font: sans, weight: "bold", size: 9pt, h))),
-    table.hline(stroke: 0.5pt),
-    ..cells.pos().map(c => text(size: 9pt, c)),
-    table.hline(stroke: 1pt),
-  )
-}
-
-// 提示框
-#let note(title: "说明", body) = block(
-  width: 100%, inset: (x: 10pt, y: 8pt), radius: 2pt,
-  fill: rgb("#eef4fc"), stroke: (left: 2.5pt + accent),
-  { set par(justify: false, first-line-indent: 0em); [#text(font: sans, weight: "bold", size: 9.5pt, fill: accent)[#title] #h(0.5em) #text(size: 9.5pt, body)] },
+// Labels of the two languages.
+#let labels = (
+  zh: (
+    contents: "目录", revisions: "修订记录", rev-header: ("版本", "日期", "作者", "说明"),
+    cover: ("文档编号", "版本", "日期", "编写"), abstract: "摘要", table: "表", figure: "图",
+    note: "说明", warn: "注意", sep: "、",
+    chapter: n => [第 #n 章], section: n => [第 #n 节], page: (i, n) => [第 #i 页 / 共 #n 页],
+  ),
+  en: (
+    contents: "Contents", revisions: "Revision history", rev-header: ("Version", "Date", "Author", "Description"),
+    cover: ("Document", "Version", "Date", "Authors"), abstract: "Abstract", table: "Table", figure: "Figure",
+    note: "Note", warn: "Caution", sep: ", ",
+    chapter: n => [Chapter #n], section: n => [Section #n], page: (i, n) => [Page #i of #n],
+  ),
 )
-#let warn(title: "注意", body) = block(
-  width: 100%, inset: (x: 10pt, y: 8pt), radius: 2pt,
-  fill: rgb("#fdf3ec"), stroke: (left: 2.5pt + rgb("#eb6834")),
-  { set par(justify: false, first-line-indent: 0em); [#text(font: sans, weight: "bold", size: 9.5pt, fill: rgb("#b4481d"))[#title] #h(0.5em) #text(size: 9.5pt, body)] },
+#let label-of(key) = context labels.at(if text.lang == "zh" { "zh" } else { "en" }).at(key)
+
+// ---------------------------------------------------------------- components
+
+// Three-line table: rules above and below the header and at the end.
+#let tbl(columns: auto, align: left, header: (), ..cells) = table(
+  columns: columns,
+  align: align,
+  stroke: none,
+  inset: (x: 6pt, y: 4.5pt),
+  table.hline(stroke: 1pt),
+  table.header(..header.map(h => text(font: sans, weight: "bold", size: 9pt, h))),
+  table.hline(stroke: 0.5pt),
+  ..cells.pos().map(c => text(size: 9pt, c)),
+  table.hline(stroke: 1pt),
 )
 
-// 键值信息表（封面等处）
+#let _box(title, fill, stroke, title-fill, body) = block(
+  width: 100%, inset: (x: 10pt, y: 8pt), radius: 2pt, fill: fill, stroke: (left: 2.5pt + stroke),
+  {
+    set par(justify: false, first-line-indent: 0em)
+    [#text(font: sans, weight: "bold", size: 9.5pt, fill: title-fill)[#title] #h(0.5em) #text(size: 9.5pt, body)]
+  },
+)
+
+// Note and caution boxes.
+#let note(title: auto, body) = _box(if title == auto { label-of("note") } else { title }, rgb("#eef4fc"), accent, accent, body)
+#let warn(title: auto, body) = _box(
+  if title == auto { label-of("warn") } else { title }, rgb("#fdf3ec"), rgb("#eb6834"), rgb("#b4481d"), body)
+
+// Key-value grid (cover page).
 #let kv(..pairs) = grid(
-  columns: (5em, auto), row-gutter: 0.7em, column-gutter: 1em,
+  columns: (6.5em, auto), row-gutter: 0.7em, column-gutter: 1em,
   ..pairs.pos().map(((k, v)) => (text(font: sans, fill: ink2, k), v)).flatten(),
 )
 
-// ---------------------------------------------------------------- 文档
+// ---------------------------------------------------------------- document
 
 #let doc(
-  title: "", cover-title: none, subtitle: "", doc-id: "", version: "v0.1", date: "", org: "",
+  lang: "zh", title: "", cover-title: none, subtitle: "", doc-id: "", version: "v0.1", date: "", org: "",
   authors: (), revisions: (), abstract: none, body,
 ) = {
+  let L = labels.at(lang)
+  let zh = lang == "zh"
   set document(title: title)
-  set page(
-    paper: "a4",
-    margin: (top: 2.6cm, bottom: 2.4cm, left: 2.5cm, right: 2.5cm),
-  )
-  set text(font: serif, size: 10.5pt, lang: "zh", region: "cn", fill: ink)
-  set par(justify: true, leading: 0.85em, spacing: 1.05em, first-line-indent: (amount: 2em, all: true))
+  set page(paper: "a4", margin: (top: 2.6cm, bottom: 2.4cm, left: 2.5cm, right: 2.5cm))
+  set text(font: if zh { serif-zh } else { serif-en }, size: 10.5pt, lang: lang, region: if zh { "cn" } else { "gb" },
+           fill: ink)
+  set par(justify: true, leading: if zh { 0.85em } else { 0.7em }, spacing: if zh { 1.05em } else { 1.1em },
+          first-line-indent: if zh { (amount: 2em, all: true) } else { 0em })
   show strong: set text(font: sans, weight: "bold")
-  show emph: set text(font: ("Times New Roman", "KaiTi", "STKaiti", "Noto Serif CJK SC"))
+  show emph: set text(font: ("Times New Roman", "KaiTi", "STKaiti", "Noto Serif CJK SC")) if zh
 
-  // 标题
+  // headings
   set heading(numbering: "1.1.1")
   show heading: set text(font: sans, weight: "bold")
   show heading.where(level: 1): it => {
@@ -77,7 +94,7 @@
   show heading.where(level: 3): it => block(text(size: 11pt, it), above: 1.2em, below: 0.8em)
   show heading.where(level: 4): it => block(text(size: 10.5pt, it), above: 1em, below: 0.7em)
 
-  // 代码
+  // code
   show raw: set text(font: mono, size: 9pt)
   show raw.where(block: false): it => box(fill: code-bg, inset: (x: 2.5pt, y: 0pt), outset: (y: 2.5pt), radius: 1.5pt, it)
   show raw.where(block: true): it => block(
@@ -85,11 +102,11 @@
     { set par(justify: false, first-line-indent: 0em); set text(size: 7.8pt); it },
   )
 
-  // 图表与列表
+  // figures, tables and lists
   set figure(gap: 0.8em)
   show figure.where(kind: table): set figure.caption(position: top)
   show figure.caption: set text(font: sans, size: 9pt, fill: ink2)
-  set figure(supplement: it => if it.func() == table { "表" } else { "图" })
+  set figure(supplement: it => if it.func() == table { L.table } else { L.figure })
   set list(indent: 1em, body-indent: 0.5em)
   set enum(indent: 1em, body-indent: 0.5em)
   show list: set par(first-line-indent: 0em, justify: false)
@@ -97,16 +114,16 @@
   show table: set par(justify: false, first-line-indent: 0em)
   show link: it => text(fill: accent, it)
   show terms: set par(first-line-indent: 0em)
-  // 交叉引用：章 → "第 N 章"，节 → "第 N.M 节"
+  // cross references: chapters and sections
   show ref: it => {
     let el = it.element
     if el != none and el.func() == heading {
       let n = numbering("1.1", ..counter(heading).at(el.location()))
-      link(el.location(), if el.level == 1 [第 #n 章] else [第 #n 节])
+      link(el.location(), if el.level == 1 { (L.chapter)(n) } else { (L.section)(n) })
     } else { it }
   }
 
-  // ---------- 封面
+  // ---------- cover
   page(header: none, footer: none, margin: (x: 3cm, top: 5cm, bottom: 3cm), {
     set par(first-line-indent: 0em)
     text(font: sans, size: 11pt, fill: ink2, org)
@@ -119,25 +136,19 @@
     v(0.5cm)
     line(length: 100%, stroke: 0.5pt + rule-color)
     v(1.5cm)
-    kv(
-      ("文档编号", doc-id),
-      ("版本", version),
-      ("日期", date),
-      ("编写", authors.join("、")),
-    )
+    kv(..L.cover.zip((doc-id, version, date, authors.join(L.sep))))
     if abstract != none {
       v(1.5cm)
-      block(width: 100%, inset: (left: 0pt), {
-        text(font: sans, weight: "bold", size: 10pt)[摘要]
+      block(width: 100%, {
+        text(font: sans, weight: "bold", size: 10pt, L.abstract)
         v(0.3em)
         set text(size: 10pt, fill: ink2)
-        set par(first-line-indent: (amount: 2em, all: true))
         abstract
       })
     }
   })
 
-  // ---------- 页眉页脚（从修订记录页开始）
+  // ---------- header and footer (from the revision history on)
   set page(
     header: context {
       set text(font: sans, size: 8.5pt, fill: ink2)
@@ -147,20 +158,20 @@
     },
     footer: context {
       set text(font: sans, size: 8.5pt, fill: ink2)
-      align(center)[第 #counter(page).display() 页 / 共 #counter(page).final().first() 页]
+      align(center, (L.page)(counter(page).display(), counter(page).final().first()))
     },
   )
   counter(page).update(1)
 
-  // ---------- 修订记录与目录
+  // ---------- revision history and contents
   if revisions.len() > 0 {
-    block(text(font: sans, size: 14pt, weight: "bold")[修订记录], below: 1em)
-    tbl(columns: (5em, 7em, 6em, 1fr), header: ("版本", "日期", "作者", "说明"), ..revisions.flatten())
+    block(text(font: sans, size: 14pt, weight: "bold", L.revisions), below: 1em)
+    tbl(columns: (5em, 7em, 7em, 1fr), header: L.rev-header, ..revisions.flatten())
     v(1.5em)
   }
   {
     show outline.entry.where(level: 1): it => { v(0.6em, weak: true); strong(it) }
-    outline(title: text(font: sans, size: 14pt)[目录], indent: auto, depth: 3)
+    outline(title: text(font: sans, size: 14pt, L.contents), indent: auto, depth: 3)
   }
   body
 }

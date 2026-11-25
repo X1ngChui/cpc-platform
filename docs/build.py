@@ -1,15 +1,16 @@
-"""编译文档：docs/<name>/main.typ → docs/pdf/<name>.pdf。
+"""Build the documentation: docs/<lang>/<name>/main.typ -> docs/pdf/<name>-<lang>.pdf.
 
-依赖：pip install typst（Typst 编译器的 Python 封装，无需单独安装 Typst）。
-字体：Noto Serif CJK SC / Noto Sans CJK SC（Debian/Ubuntu 软件包 fonts-noto-cjk）。
-插图为 docs/figures/*.pdf，由 docs/figures/export.py 从 draw.io 源文件（docs/figures/src/）导出。
+Requires: pip install typst (Python bindings of the Typst compiler; no separate Typst installation).
+Fonts: Noto Serif CJK SC / Noto Sans CJK SC for Chinese (Debian/Ubuntu package fonts-noto-cjk).
+Figures are docs/figures/<lang>/*.pdf, exported by docs/figures/export.py from the draw.io sources in
+docs/figures/src/<lang>/.
 
-用法：python docs/build.py [design] [guide]
+Usage: python docs/build.py [design] [guide] [--lang zh|en]
 """
 
 from __future__ import annotations
 
-import sys
+import argparse
 import time
 from pathlib import Path
 
@@ -17,23 +18,27 @@ import typst
 
 DOCS = Path(__file__).resolve().parent
 OUT = DOCS / "pdf"
-NAMES = ["design", "guide"]
+NAMES = ("design", "guide")
+LANGS = ("zh", "en")
 
 
-def build(name: str) -> Path:
+def build(name: str, lang: str) -> Path:
     OUT.mkdir(exist_ok=True)
-    out = OUT / f"{name}.pdf"
+    out = OUT / f"{name}-{lang}.pdf"
     t0 = time.time()
-    typst.compile(
-        str(DOCS / name / "main.typ"),
-        output=str(out),
-        root=str(DOCS),
-        font_paths=[str(DOCS / "fonts")] if (DOCS / "fonts").exists() else [],
-    )
+    fonts = [str(DOCS / "fonts")] if (DOCS / "fonts").exists() else []
+    typst.compile(str(DOCS / lang / name / "main.typ"), output=str(out), root=str(DOCS), font_paths=fonts)
     print(f"{out}  ({out.stat().st_size / 1024:.0f} KB, {time.time() - t0:.1f}s)")
     return out
 
 
 if __name__ == "__main__":
-    for n in sys.argv[1:] or NAMES:
-        build(n)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("names", nargs="*", metavar="{design,guide}")
+    ap.add_argument("--lang", choices=LANGS, action="append", help="language (default: both)")
+    args = ap.parse_args()
+    if bad := set(args.names) - set(NAMES):
+        ap.error(f"unknown documents {sorted(bad)}; choose from {', '.join(NAMES)}")
+    for lang in args.lang or LANGS:
+        for name in args.names or NAMES:
+            build(name, lang)
