@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / "examples" / "datasets"))
 
 
 def ensure_test_workload() -> Path:
-    """测试场景的合成负载数据集（首次使用时生成，不入库）。"""
+    """Synthetic workload of the test scenario (generated on first use, not committed)."""
     if not (WORKLOAD / "datapackage.yaml").is_file():
         from synthetic_workload import generate
 

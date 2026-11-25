@@ -1,7 +1,7 @@
 [project]
 name = "cpc-platform"
 version = "0.4.0.dev0"
-description = "算电协同（能耗感知）跨数据中心 AI 计算任务调度平台"
+description = "Energy-aware scheduling of AI inference across data centres (compute-power coordination)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -17,20 +17,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# 真实 GPU 功率采集与功率封顶（NVIDIA 官方 NVML Python 绑定）
+# GPU power readings and power capping (NVIDIA NVML bindings)
 nvml = ["nvidia-ml-py>=12.535"]
-# 通过 Docker Engine API 启停推理容器（节点开关机）
+# starting and stopping inference containers through the Docker Engine API
 docker = ["docker>=7.0"]
-# 仿真结果作图
-analysis = ["matplotlib>=3.8"]
-# 文档编译（Typst 编译器的 Python 封装）
+# documentation build (Python bindings of the Typst compiler)
 docs = ["typst>=0.14"]
-dev = ["pytest>=8.0", "matplotlib>=3.8"]
+dev = ["pytest>=8.0", "pyflakes>=3.2"]
 
 [project.scripts]
 cpc = "cpc.cli:main"
 
-# 第三方策略与传感器以 entry points 注册，组名：cpc.routing、cpc.capacity、cpc.dispatch、cpc.power、cpc.sensors（见 cpc.registry）
+# Third-party policies and sensors register as entry points in the groups cpc.routing, cpc.capacity,
+# cpc.dispatch, cpc.power and cpc.sensors (see cpc.registry).
 
 [build-system]
 requires = ["hatchling>=1.21"]

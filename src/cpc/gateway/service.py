@@ -1,27 +1,31 @@
-"""全局请求路由网关（gateway）。
+"""Global routing gateway.
 
-用户（或负载生成器）把 OpenAI 兼容请求发到网关，网关根据路由策略选择站点并转发。
-请求头 x-cpc-source 指明请求来源区域；未携带时归属场景的 network.default_source，未配置该项则返回 400。
-请求头 x-cpc-attr-<字段名>（JSON 值）携带请求扩展属性，传给路由策略（RequestInfo.attrs），并随请求转发给站点代理。
+Users (or the load replay of cpc live) send OpenAI-compatible requests to the gateway, which chooses
+a site with the routing policy and forwards them. The header x-cpc-source names the source region;
+without it the request belongs to network.default_source of the scenario, or is rejected with 400.
+Headers x-cpc-attr-<field> (JSON values) carry request attributes to the routing policy
+(RequestInfo.attrs) and on to the site agent.
 
-跨数据中心的广域网时延通过"时延注入"模拟：转发前等待 RTT/2，返回（或首个流式片段）前再等待 RTT/2。
-在真实多地部署时应关闭注入（network.emulate_wan=false），由真实网络产生时延。
+Wide-area latency between regions is emulated by delay injection: RTT/2 before forwarding and RTT/2
+before the response (or its first streamed chunk). Disable it (network.emulate_wan: false) in real
+multi-region deployments, where the network produces the latency.
 
-失败处理：
-- 启动：须在期限内从电网信号服务同步信号时钟，否则启动失败；
-- 站点状态与电网信号各自维护健康状态（cpc_upstream_up{component="gateway",upstream}）；拉取失败或超过
-  scheduler.state_stale_s 未成功刷新的站点移出路由视图，信号缺失时视图中该站点的 signal 为 None；
-- 路由策略返回带原因的决策（cpc_gateway_route_decisions_total{policy,reason}）；
-- 转发失败按 scheduler.retry 处理：可重试类型（overloaded、connect_error）排除该站点后重新决策，至多 max_attempts 次；
-  请求送达后的失败不重试，返回 502。每次尝试的结果计入 cpc_gateway_attempts_total{site,outcome}。
+Failure handling:
+- startup: the signal clock must be synchronised from the grid-signal service in time;
+- site states and grid signals have their own health (cpc_upstream_up{component="gateway",upstream});
+  sites whose state failed or was not refreshed within scheduler.state_stale_s leave the routing view,
+  and missing signals make SiteView.signal None;
+- routing policies return decisions with a reason (cpc_gateway_route_decisions_total{policy,reason});
+- forwarding failures follow scheduler.retry: retryable failures (overloaded, connect_error) exclude
+  the site and decide again, at most max_attempts times; failures after the request was delivered are
+  not retried (502). Every attempt counts in cpc_gateway_attempts_total{site,outcome}.
 
-接口：
-- POST /v1/chat/completions, /v1/completions    路由并转发
+- POST /v1/chat/completions, /v1/completions   route and forward
 - GET  /v1/models
-- GET  /state                                    需求统计（DemandSnapshot）、站点视图与上游健康状态
-- GET  /healthz、/readyz                         存活检查；就绪检查（至少一个站点状态可用）
-- PUT  /admin/policy   {"policy": "...", "params": {...}}  运行时切换路由策略
-- PUT  /admin/weights  {"weights": {source: {site: w}}}    控制器下发路由权重
+- GET  /state            demand statistics (DemandSnapshot), site view and upstream health
+- GET  /healthz, /readyz liveness; readiness (at least one site state usable)
+- PUT  /admin/policy     {"policy": "...", "params": {...}}  switch the routing policy at run time
+- PUT  /admin/weights    {"weights": {source: {site: w}}}    routing weights from the controller
 - GET  /metrics
 """
 
@@ -31,6 +35,7 @@ import asyncio
 import logging
 import time
 import uuid
+from collections import Counter as Tally
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -52,6 +57,8 @@ from ..site.executors import approx_prompt_tokens, requested_output_tokens
 log = logging.getLogger("cpc.gateway")
 
 CONNECT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+LAT_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128)
+RATE_EWMA = 0.2  # weight of the last second in the arrival-rate estimates
 
 
 class PolicyBody(BaseModel):
@@ -60,12 +67,15 @@ class PolicyBody(BaseModel):
 
 
 class WeightsBody(BaseModel):
-    """路由权重：{来源: {站点: 非负有限权重}}。"""
+    """Routing weights: {source: {site: non-negative finite weight}}."""
 
     weights: dict[str, dict[str, Annotated[float, Field(ge=0, allow_inf_nan=False)]]]
 
 
-LAT_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128)
+def _ewma(rates: dict[str, float], counts: Tally) -> None:
+    for k in rates:
+        rates[k] += RATE_EWMA * (counts[k] - rates[k])
+    counts.clear()
 
 
 class GatewayState:
@@ -75,60 +85,76 @@ class GatewayState:
         self.board = board
         self.sites: dict[str, SiteSnapshot] = {}
         self.signals: dict[str, GridSignal] = {}
-        self.pending: dict[str, int] = {s.id: 0 for s in scn.sites}
+        self.pending: Tally[str] = Tally()
         self.weights: dict[str, dict[str, float]] = {}
         self.rtt = rtt_matrix(scn)
         self.clock: SimClock | None = None
-        self._src_count: dict[str, int] = {s.id: 0 for s in scn.sources}
-        self._site_count: dict[str, int] = {s.id: 0 for s in scn.sites}
-        self.src_rate: dict[str, float] = {s.id: 0.0 for s in scn.sources}
-        self.site_rate: dict[str, float] = {s.id: 0.0 for s in scn.sites}
+        self.src_count: Tally[str] = Tally()
+        self.site_count: Tally[str] = Tally()
+        self.src_rate = dict.fromkeys((s.id for s in scn.sources), 0.0)
+        self.site_rate = dict.fromkeys((s.id for s in scn.sites), 0.0)
+
+    def _fresh(self, key: str) -> bool:
+        return self.board.is_up(key) and not self.board.stale(key, self.scn.scheduler.state_stale_s)
 
     def site_usable(self, sid: str) -> bool:
-        key = f"site:{sid}"
-        return sid in self.sites and self.board.is_up(key) and not self.board.stale(key, self.scn.scheduler.state_stale_s)
+        return sid in self.sites and self._fresh(f"site:{sid}")
 
     def signals_usable(self) -> bool:
-        return self.board.is_up("grid") and not self.board.stale("grid", self.scn.scheduler.state_stale_s)
+        return self._fresh("grid")
+
+    def usable_sites(self) -> list[str]:
+        return sorted(sid for sid in self.ep.sites if self.site_usable(sid))
 
     def view(self) -> ClusterView:
         assert self.clock is not None
         sig_ok = self.signals_usable()
-        sv = {sid: SiteView(snap=s, signal=self.signals.get(sid) if sig_ok else None, pending=self.pending.get(sid, 0))
+        sv = {sid: SiteView(snap=s, signal=self.signals.get(sid) if sig_ok else None, pending=self.pending[sid])
               for sid, s in self.sites.items() if self.site_usable(sid)}
         return ClusterView(now=self.clock.now(), sites=sv, rtt_ms=self.rtt, slo=self.scn.slo, weights=self.weights)
+
+    def tick_rates(self) -> None:
+        _ewma(self.src_rate, self.src_count)
+        _ewma(self.site_rate, self.site_count)
+
+
+def _error(message: str, typ: str, **extra) -> dict:
+    return {"error": {"message": message, "type": typ, **extra}}
 
 
 def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: dict | None = None,
                log_path: str | None = None, startup_timeout_s: float = 30.0,
                transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
-    """transport 用于测试中注入故障（httpx.MockTransport）；缺省为真实网络。"""
+    """transport injects faults in tests (httpx.MockTransport); default: the real network."""
     reg = CollectorRegistry()
     board = HealthBoard("upstream", reg, {"component": "gateway"})
     board.register("grid")
     for sid in ep.sites:
         board.register(f"site:{sid}")
     st = GatewayState(scn, ep, board)
-    pol = {"policy": make_routing(policy or scn.scheduler.routing.policy, params if policy else scn.scheduler.routing.params)}
-    client = httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=5.0), limits=httpx.Limits(max_connections=4000, max_keepalive_connections=1000),
-                               trust_env=False, transport=transport)  # 内部通信不走系统代理
+    routing = scn.scheduler.routing
+    pol = {"policy": make_routing(policy or routing.policy, params if policy else routing.params)}
+    client = httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=5.0), trust_env=False, transport=transport,
+                               limits=httpx.Limits(max_connections=4000, max_keepalive_connections=1000))
     writer = JsonlWriter(log_path)
-    emulate = scn.network.emulate_wan
-    retry = scn.scheduler.retry
-    refresh_s = scn.scheduler.state_refresh_s
+    emulate, retry, slo = scn.network.emulate_wan, scn.scheduler.retry, scn.slo
+    refresh_s, idle_s = scn.scheduler.state_refresh_s, scn.scheduler.stream_idle_timeout_s
 
-    m_req = Counter("cpc_gateway_requests", "网关请求数", ["source", "site", "status"], registry=reg)
-    m_att = Counter("cpc_gateway_attempts", "转发尝试（outcome：ok / overloaded / connect_error / upstream_error）",
+    m_req = Counter("cpc_gateway_requests", "gateway requests", ["source", "site", "status"], registry=reg)
+    m_att = Counter("cpc_gateway_attempts", "forwarding attempts (outcome: ok / overloaded / connect_error / upstream_error)",
                     ["site", "outcome"], registry=reg)
-    m_dec = Counter("cpc_gateway_route_decisions", "路由决策（reason 为策略给出的原因）", ["policy", "reason"], registry=reg)
-    m_slo = Counter("cpc_gateway_slo", "SLO 达成情况", ["source", "site", "result"], registry=reg)
-    m_e2e = Histogram("cpc_gateway_e2e_seconds", "端到端时延（含注入的广域网时延）", ["source", "site"], buckets=LAT_BUCKETS, registry=reg)
-    m_ttft = Histogram("cpc_gateway_ttft_seconds", "首 token 时延（流式请求）", ["source", "site"], buckets=LAT_BUCKETS, registry=reg)
-    m_tok = Counter("cpc_gateway_tokens", "token 数", ["source", "site", "kind"], registry=reg)
-    m_rtt = Gauge("cpc_gateway_wan_rtt_ms", "来源到站点的往返时延（ms）", ["source", "site"], registry=reg)
-    m_w = Gauge("cpc_gateway_route_weight", "控制器下发的路由权重", ["source", "site"], registry=reg)
-    m_rate = Gauge("cpc_gateway_source_rate", "来源区域到达率（请求/秒）", ["source"], registry=reg)
-    m_policy = Gauge("cpc_gateway_policy_info", "当前路由策略", ["policy"], registry=reg)
+    m_dec = Counter("cpc_gateway_route_decisions", "routing decisions (reason given by the policy)", ["policy", "reason"],
+                    registry=reg)
+    m_slo = Counter("cpc_gateway_slo", "SLO attainment", ["source", "site", "result"], registry=reg)
+    m_e2e = Histogram("cpc_gateway_e2e_seconds", "end-to-end latency (with injected WAN delay)", ["source", "site"],
+                      buckets=LAT_BUCKETS, registry=reg)
+    m_ttft = Histogram("cpc_gateway_ttft_seconds", "time to first token (streaming requests)", ["source", "site"],
+                       buckets=LAT_BUCKETS, registry=reg)
+    m_tok = Counter("cpc_gateway_tokens", "tokens", ["source", "site", "kind"], registry=reg)
+    m_rtt = Gauge("cpc_gateway_wan_rtt_ms", "round-trip time from source to site (ms)", ["source", "site"], registry=reg)
+    m_w = Gauge("cpc_gateway_route_weight", "routing weight from the controller", ["source", "site"], registry=reg)
+    m_rate = Gauge("cpc_gateway_source_rate", "arrival rate per source region (requests/s)", ["source"], registry=reg)
+    m_policy = Gauge("cpc_gateway_policy_info", "current routing policy", ["policy"], registry=reg)
     for s, row in st.rtt.items():
         for d, v in row.items():
             m_rtt.labels(s, d).set(v)
@@ -140,7 +166,7 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
             st.sites[sid] = SiteSnapshot.model_validate(r.json())
             st.pending[sid] = 0
             board.ok(f"site:{sid}")
-        except (httpx.HTTPError, ValueError) as e:  # ValueError 含响应体校验失败（pydantic ValidationError）
+        except (httpx.HTTPError, ValueError) as e:  # ValueError includes invalid bodies (pydantic ValidationError)
             board.fail(f"site:{sid}", e)
 
     async def poll_signals() -> None:
@@ -152,34 +178,26 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
         except (httpx.HTTPError, ValueError, KeyError) as e:
             board.fail("grid", e)
 
-    async def poll_sites_loop() -> None:
-        while True:
-            await asyncio.sleep(refresh_s)
-            await asyncio.gather(*(poll_site(sid, url) for sid, url in ep.sites.items()))
+    async def poll_all() -> None:
+        await asyncio.gather(poll_signals(), *(poll_site(sid, url) for sid, url in ep.sites.items()))
 
-    async def poll_grid_loop() -> None:
+    async def every(period_s: float, fn) -> None:
         while True:
-            await asyncio.sleep(refresh_s)
-            await poll_signals()
+            await asyncio.sleep(period_s)
+            await fn()
 
     async def rates() -> None:
-        while True:
-            await asyncio.sleep(1.0)
-            for k in st.src_rate:
-                st.src_rate[k] = 0.8 * st.src_rate[k] + 0.2 * st._src_count[k]
-                st._src_count[k] = 0
-                m_rate.labels(k).set(st.src_rate[k])
-            for k in st.site_rate:
-                st.site_rate[k] = 0.8 * st.site_rate[k] + 0.2 * st._site_count[k]
-                st._site_count[k] = 0
+        st.tick_rates()
+        for k, v in st.src_rate.items():
+            m_rate.labels(k).set(v)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        st.clock = await sync_clock(client, ep.grid, startup_timeout_s)  # 不可达则启动失败
+        st.clock = await sync_clock(client, ep.grid, startup_timeout_s)  # startup fails if unreachable
         board.ok("grid")
-        await asyncio.gather(poll_signals(), *(poll_site(sid, url) for sid, url in ep.sites.items()))
+        await poll_all()
         writer.start()
-        tasks = [asyncio.create_task(c()) for c in (poll_sites_loop, poll_grid_loop, rates)]
+        tasks = [asyncio.create_task(every(refresh_s, poll_all)), asyncio.create_task(every(1.0, rates))]
         yield
         for t in tasks:
             t.cancel()
@@ -196,16 +214,14 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
         if status == 200:
             m_e2e.labels(src, sid).observe(e2e)
             m_tok.labels(src, sid, "prompt").inc(n_in)
-            if n_out is not None:
-                m_tok.labels(src, sid, "completion").inc(n_out)
             if ttft is not None:
                 m_ttft.labels(src, sid).observe(ttft)
             if n_out is not None:
+                m_tok.labels(src, sid, "completion").inc(n_out)
                 if ttft is not None:
-                    tpot = (e2e - ttft) / max(n_out - 1, 1)
-                    ok = ttft <= scn.slo.ttft_s and tpot <= scn.slo.tpot_s
+                    ok = ttft <= slo.ttft_s and (e2e - ttft) / max(n_out - 1, 1) <= slo.tpot_s
                 else:
-                    ok = e2e <= scn.slo.ttft_s + n_out * scn.slo.tpot_s
+                    ok = e2e <= slo.ttft_s + n_out * slo.tpot_s
                 m_slo.labels(src, sid, "met" if ok else "violated").inc()
                 rec["slo_ok"] = ok
         rec.update(status=status, e2e_s=round(e2e, 4), ttft_s=None if ttft is None else round(ttft, 4))
@@ -217,50 +233,77 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
         writer.write(rec)
         return JSONResponse(body, status_code=status)
 
+    async def relay(r: httpx.Response, rec: dict, req: RequestInfo, sid: str, rtt_s: float, t0: float):
+        """Relay a streaming response; stalls, transport errors and incomplete streams fail the request (502)."""
+        ttft = None
+        check = SSECheck()
+        chunks = aiter(r.aiter_raw())
+        try:
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(anext(chunks), idle_s)
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    rec["stream_error"] = f"stream_idle: no data in {idle_s:g} s"
+                    break
+                check.feed(chunk)
+                if ttft is None:
+                    if rtt_s:
+                        await asyncio.sleep(rtt_s / 2)
+                    ttft = time.monotonic() - t0
+                yield chunk
+        except httpx.HTTPError as e:
+            rec["stream_error"] = describe(e)
+        finally:
+            await r.aclose()
+            if "stream_error" not in rec and check.problem is not None:
+                rec["stream_error"] = check.problem
+            if err := rec.get("stream_error"):
+                log.warning("stream from site %s interrupted: %s", sid, err,
+                            extra={"event": "stream_interrupted", "site": sid, "request": req.id})
+            finish(rec, 502 if err else r.status_code, req.source, sid, t0, req.input_tokens, req.output_tokens, ttft)
+
     async def route(request: Request, path: str):
         body = await request.json()
-        src = request.headers.get("x-cpc-source") or scn.network.default_source
-        if src is None:
-            raise HTTPException(400, "请求缺少 x-cpc-source 请求头，且场景未配置 network.default_source")
+        if (src := request.headers.get("x-cpc-source") or scn.network.default_source) is None:
+            raise HTTPException(400, "the request has no x-cpc-source header and the scenario sets no network.default_source")
         if src not in st.src_rate:
-            raise HTTPException(400, f"未知的来源区域 {src}，可选：{sorted(st.src_rate)}")
-        st._src_count[src] += 1
+            raise HTTPException(400, f"unknown source region {src}; available: {sorted(st.src_rate)}")
+        st.src_count[src] += 1
         n_in, n_out = approx_prompt_tokens(body), requested_output_tokens(body)
         attrs = request_attrs(request.headers)
         req = RequestInfo(source=src, input_tokens=n_in, output_tokens=n_out, id=uuid.uuid4().hex[:12], attrs=attrs)
         fwd = {"x-cpc-source": src, "x-request-id": req.id, **attr_headers(attrs)}
-        t0 = time.monotonic()
-        tried: list[str] = []
-        attempts: list[dict] = []
+        t0, tried, attempts = time.monotonic(), [], []
         stream = bool(body.get("stream"))
-        policy_name = pol["policy"].name
-        base = {"id": req.id, "t_wall": time.time(), "source": src, "policy": policy_name, "input_tokens_approx": n_in,
+        policy = pol["policy"]
+        base = {"id": req.id, "t_wall": time.time(), "source": src, "policy": policy.name, "input_tokens_approx": n_in,
                 "output_tokens": n_out, "stream": stream}
         decision: RouteDecision | None = None
         for _ in range(retry.max_attempts):
             view = st.view()
-            decision = pol["policy"].choose(req, view, exclude=tried)
-            if not isinstance(decision, RouteDecision):
-                raise TypeError(f"路由策略 {policy_name} 的 choose() 须返回 RouteDecision，实际为 {type(decision).__name__}")
-            m_dec.labels(policy_name, decision.reason).inc()
-            if decision.site is None:
+            if not isinstance(decision := policy.choose(req, view, exclude=tried), RouteDecision):
+                raise TypeError(f"choose() of routing policy {policy.name} must return a RouteDecision, "
+                                f"got {type(decision).__name__}")
+            m_dec.labels(policy.name, decision.reason).inc()
+            if (sid := decision.site) is None:
                 break
-            sid = decision.site
-            st.pending[sid] = st.pending.get(sid, 0) + 1
-            st._site_count[sid] += 1
+            st.pending[sid] += 1
+            st.site_count[sid] += 1
             rtt_s = st.rtt[src][sid] / 1000.0 if emulate else 0.0
             sig = view.sites[sid].signal
             rec = {**base, "t_signal": view.now.isoformat(), "site": sid, "route_reason": decision.reason,
                    "rtt_ms": st.rtt[src][sid], "price": sig.price if sig else None,
-                   "carbon_intensity": sig.carbon_intensity if sig else None}
+                   "carbon_intensity": sig.carbon_intensity if sig else None, "attempts": attempts}
             if rtt_s:
                 await asyncio.sleep(rtt_s / 2)
             url = ep.sites[sid] + path
             try:
-                if not stream:
-                    r = await client.post(url, json=body, headers=fwd)
-                else:
+                if stream:
                     r = await client.send(client.build_request("POST", url, json=body, headers=fwd), stream=True)
+                else:
+                    r = await client.post(url, json=body, headers=fwd)
             except CONNECT_ERRORS as e:
                 m_att.labels(sid, "connect_error").inc()
                 board.fail(f"site:{sid}", e)
@@ -268,14 +311,12 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
                 if "connect_error" in retry.retry_on:
                     tried.append(sid)
                     continue
-                return reject({**rec, "attempts": attempts}, src, 502,
-                              {"error": {"message": f"connect to site {sid} failed", "type": "upstream_error", "attempts": attempts}})
+                return reject(rec, src, 502, _error(f"connect to site {sid} failed", "upstream_error", attempts=attempts))
             except httpx.HTTPError as e:
                 m_att.labels(sid, "upstream_error").inc()
                 attempts.append({"site": sid, "outcome": "upstream_error", "error": describe(e)})
-                return reject({**rec, "attempts": attempts}, src, 502,
-                              {"error": {"message": f"site {sid} failed after request was sent", "type": "upstream_error",
-                                         "attempts": attempts}})
+                return reject(rec, src, 502, _error(f"site {sid} failed after the request was sent", "upstream_error",
+                                                    attempts=attempts))
             if r.status_code == 503 and r.headers.get("x-cpc-site") == sid:
                 if stream:
                     await r.aclose()
@@ -284,69 +325,33 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
                 if "overloaded" in retry.retry_on:
                     tried.append(sid)
                     continue
-                return reject({**rec, "attempts": attempts}, src, 503,
-                              {"error": {"message": f"site {sid} overloaded", "type": "overloaded", "attempts": attempts}})
+                return reject(rec, src, 503, _error(f"site {sid} overloaded", "overloaded", attempts=attempts))
             m_att.labels(sid, "ok").inc()
             attempts.append({"site": sid, "outcome": "ok", "status": r.status_code})
-            rec.update(node=r.headers.get("x-cpc-node"), queue_s=r.headers.get("x-cpc-queue-s"), attempts=attempts)
-            hdr = {k: v for k, v in r.headers.items() if k.startswith("x-cpc-")}
-            hdr["x-cpc-source"] = src
-            hdr["x-cpc-route-reason"] = decision.reason
-            if stream and r.status_code != 200:  # 站点以错误状态回应流式请求（如上游拒绝）：按普通错误返回
+            rec.update(node=r.headers.get("x-cpc-node"), queue_s=r.headers.get("x-cpc-queue-s"))
+            hdr = {k: v for k, v in r.headers.items() if k.startswith("x-cpc-")} | {
+                "x-cpc-source": src, "x-cpc-route-reason": decision.reason}
+            if stream and r.status_code != 200:  # the site answered a streaming request with an error: return it as such
                 await r.aread()
                 await r.aclose()
                 stream = False
-            if not stream:
-                if rtt_s:
-                    await asyncio.sleep(rtt_s / 2)
-                finish(rec, r.status_code, src, sid, t0, n_in, n_out, None)
-                try:
-                    content = r.json()
-                except ValueError:
-                    content = {"error": {"message": r.text[:500], "type": "upstream_error"}}
-                return JSONResponse(content, status_code=r.status_code, headers=hdr)
-
-            async def gen(r=r, rec=rec, sid=sid, rtt_s=rtt_s):
-                ttft = None
-                check = SSECheck()
-                idle = scn.scheduler.stream_idle_timeout_s
-                it = r.aiter_raw().__aiter__()
-                try:
-                    while True:
-                        try:
-                            chunk = await asyncio.wait_for(it.__anext__(), idle)
-                        except StopAsyncIteration:
-                            break
-                        except asyncio.TimeoutError:
-                            rec["stream_error"] = f"stream_idle: {idle:g} s 内没有数据"
-                            log.warning("流式响应停滞（站点 %s）：%g s 内没有数据，中止", sid, idle,
-                                        extra={"event": "stream_interrupted", "site": sid, "request": req.id})
-                            break
-                        check.feed(chunk)
-                        if ttft is None:
-                            if rtt_s:
-                                await asyncio.sleep(rtt_s / 2)
-                            ttft = time.monotonic() - t0
-                        yield chunk
-                except httpx.HTTPError as e:
-                    rec["stream_error"] = describe(e)
-                    log.warning("流式响应中断（站点 %s）：%s", sid, describe(e),
-                                extra={"event": "stream_interrupted", "site": sid, "request": req.id})
-                finally:
-                    await r.aclose()
-                    if "stream_error" not in rec and check.problem is not None:
-                        rec["stream_error"] = check.problem
-                        log.warning("流式响应不完整（站点 %s）：%s", sid, check.problem,
-                                    extra={"event": "stream_interrupted", "site": sid, "request": req.id})
-                    finish(rec, r.status_code if "stream_error" not in rec else 502, src, sid, t0, n_in, n_out, ttft)
-
-            return StreamingResponse(gen(), status_code=r.status_code, media_type="text/event-stream", headers=hdr)
+            if stream:
+                return StreamingResponse(relay(r, rec, req, sid, rtt_s, t0), status_code=r.status_code,
+                                         media_type="text/event-stream", headers=hdr)
+            if rtt_s:
+                await asyncio.sleep(rtt_s / 2)
+            finish(rec, r.status_code, src, sid, t0, n_in, n_out, None)
+            try:
+                content = r.json()
+            except ValueError:
+                content = _error(r.text[:500], "upstream_error")
+            return JSONResponse(content, status_code=r.status_code, headers=hdr)
         rec = {**base, "attempts": attempts, "route_reason": decision.reason if decision else None}
         if decision is not None and decision.site is None:
-            return reject(rec, src, 503, {"error": {"message": f"route rejected: {decision.reason}", "type": "route_rejected",
-                                                    "reason": decision.reason, "attempts": attempts}})
-        return reject(rec, src, 503, {"error": {"message": f"retries exhausted after {len(attempts)} attempts",
-                                                "type": "retries_exhausted", "attempts": attempts}})
+            return reject(rec, src, 503, _error(f"route rejected: {decision.reason}", "route_rejected",
+                                                reason=decision.reason, attempts=attempts))
+        return reject(rec, src, 503, _error(f"retries exhausted after {len(attempts)} attempts", "retries_exhausted",
+                                            attempts=attempts))
 
     @app.post("/v1/chat/completions")
     async def chat(request: Request):
@@ -358,14 +363,13 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
 
     @app.get("/v1/models")
     async def models():
-        usable = sorted(sid for sid in ep.sites if st.site_usable(sid))
-        if not usable:
+        if not (usable := st.usable_sites()):
             raise HTTPException(503, "no site available")
         try:
             r = await client.get(ep.sites[usable[0]] + "/v1/models", timeout=3.0)
             return JSONResponse(r.json(), status_code=r.status_code)
         except (httpx.HTTPError, ValueError) as e:
-            raise HTTPException(502, f"site {usable[0]} error: {describe(e)}")
+            raise HTTPException(502, f"site {usable[0]} error: {describe(e)}") from e
 
     @app.get("/healthz")
     def healthz() -> dict:
@@ -373,9 +377,9 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
 
     @app.get("/readyz")
     def readyz():
-        usable = sorted(sid for sid in ep.sites if st.site_usable(sid))
-        body = {"ready": bool(usable), "usable_sites": usable, "signals": st.signals_usable(), "upstreams": board.snapshot()}
-        return JSONResponse(body, status_code=200 if usable else 503)
+        usable = st.usable_sites()
+        return JSONResponse({"ready": bool(usable), "usable_sites": usable, "signals": st.signals_usable(),
+                             "upstreams": board.snapshot()}, status_code=200 if usable else 503)
 
     @app.get("/state")
     def state() -> dict:
@@ -391,7 +395,7 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
         try:
             pol["policy"] = make_routing(body.policy, body.params)
         except (ConfigError, KeyError, TypeError, ValueError, ValidationError) as e:
-            raise HTTPException(400, str(e))
+            raise HTTPException(400, str(e)) from e
         m_policy.clear()
         m_policy.labels(pol["policy"].name).set(1)
         log.info("routing policy -> %s %s", body.policy, body.params, extra={"event": "routing_policy_changed"})
@@ -399,10 +403,9 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
 
     @app.put("/admin/weights", dependencies=[Depends(require_admin)])
     def set_weights(body: WeightsBody) -> dict:
-        known_src, known_site = set(st.src_rate), set(ep.sites)
         for s, row in body.weights.items():
-            if s not in known_src or not set(row) <= known_site:
-                raise HTTPException(400, f"unknown source/site in weights: {s} {sorted(row)}")
+            if s not in st.src_rate or not row.keys() <= ep.sites.keys():
+                raise HTTPException(400, f"unknown source or site in weights: {s} {sorted(row)}")
         st.weights = body.weights
         m_w.clear()
         for s, row in st.weights.items():

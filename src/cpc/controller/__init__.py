@@ -1,1 +1,1 @@
-"""cpc.controller"""
+"""Capacity controller."""

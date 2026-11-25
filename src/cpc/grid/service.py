@@ -1,65 +1,73 @@
-"""电网信号服务（grid）。
+"""Grid-signal service (grid).
 
-对外提供：
-- GET  /v1/clock                     信号时钟（其他服务据此同步）
-- GET  /v1/signals[?at=ISO时间]       各站点当前（或指定时刻）的电价、碳强度、功率上限；信号不可用的站点列入 missing
-- GET  /v1/events  POST /v1/events  DELETE /v1/events   需求响应事件的查询、注入与清除
-- GET  /v1/config                    场景文件的文本与各服务地址（需管理令牌），供其他机器上的站点代理启动时获取
-- GET  /healthz、/readyz              存活检查；就绪检查（数据加载与校验在启动时完成，服务运行即就绪）
-- GET  /metrics                      Prometheus 指标（cpc_grid_*）
+- GET  /v1/clock                 signal clock (other services synchronise with it)
+- GET  /v1/signals[?at=ISO]      price, carbon intensity and power limit of every site now (or at a
+                                 given time); sites without a signal are listed under missing
+- GET  /v1/events  POST /v1/events  DELETE /v1/events   list, inject and clear demand-response events
+- GET  /v1/config                scenario text and service addresses (admin token), fetched at startup
+                                 by site agents on other machines
+- GET  /healthz, /readyz         liveness; readiness (data are loaded and checked at startup, so a
+                                 running service is ready)
+- GET  /metrics                  Prometheus metrics (cpc_grid_*)
 
-启动检查：电价、碳强度与扩展信号的数据集符合规范，收录场景中全部站点的区域，覆盖场景时钟起点。任一不满足即启动失败。
+Startup checks: the price, carbon and extra-signal datasets follow the specification, cover the
+regions of all sites and the start of the scenario clock. Any failure stops the service.
 """
 
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta
 
 from fastapi import Depends, FastAPI, HTTPException
 from prometheus_client import CollectorRegistry, Gauge
+from pydantic import ValidationError
 
 from ..common import metrics_response, require_admin
 from ..config import DREvent, Scenario
 from ..models import SimClock
 from .signals import GridModel
 
+NAN = float("nan")
+
+
 def create_app(scn: Scenario, clock: SimClock | None = None, config: dict | None = None) -> FastAPI:
-    """config：{"scenario": 场景文件文本, "endpoints": 服务地址}，给出时提供 GET /v1/config。"""
+    """config: {"scenario": scenario text, "endpoints": service addresses}; enables GET /v1/config."""
     model = GridModel(scn)
     clock = clock or SimClock(start=scn.clock.start, speedup=scn.clock.speedup)
     reg = CollectorRegistry()
     cur = model.currency
-    g_price = Gauge("cpc_grid_price_per_kwh", f"电价（{cur}/kWh）", ["site", "region", "currency"], registry=reg)
-    g_carbon = Gauge("cpc_grid_carbon_intensity_kg_per_kwh", "电力碳强度（kgCO2/kWh）", ["site", "region"], registry=reg)
-    g_extra = Gauge("cpc_grid_extra_signal", "扩展信号（单位见数据集描述）", ["site", "signal"], registry=reg)
-    g_cap = Gauge("cpc_grid_power_cap_kw", "站点设施功率上限（kW，无上限时为 -1）", ["site"], registry=reg)
-    g_dr = Gauge("cpc_grid_dr_event_active", "需求响应事件是否生效", ["site"], registry=reg)
-    g_eff = Gauge("cpc_grid_effective_price_per_kwh", f"计入碳价后的等效电价（{cur}/kWh）", ["site", "currency"], registry=reg)
-    g_avail = Gauge("cpc_grid_signal_available", "站点当前信号是否可用（1 可用，0 数据缺失）", ["site"], registry=reg)
-    g_time = Gauge("cpc_grid_signal_time_seconds", "信号时钟（Unix 时间）", registry=reg)
-    nan = float("nan")
+    g_price = Gauge("cpc_grid_price_per_kwh", f"electricity price ({cur}/kWh)", ["site", "region", "currency"], registry=reg)
+    g_carbon = Gauge("cpc_grid_carbon_intensity_kg_per_kwh", "carbon intensity (kgCO2/kWh)", ["site", "region"], registry=reg)
+    g_extra = Gauge("cpc_grid_extra_signal", "extra signal (unit in the dataset descriptor)", ["site", "signal"], registry=reg)
+    g_cap = Gauge("cpc_grid_power_cap_kw", "facility power limit (kW, -1 without a limit)", ["site"], registry=reg)
+    g_dr = Gauge("cpc_grid_dr_event_active", "whether a demand-response event is active", ["site"], registry=reg)
+    g_eff = Gauge("cpc_grid_effective_price_per_kwh", f"price including carbon cost ({cur}/kWh)", ["site", "currency"],
+                  registry=reg)
+    g_avail = Gauge("cpc_grid_signal_available", "whether the site has a signal now (1) or data are missing (0)",
+                    ["site"], registry=reg)
+    g_time = Gauge("cpc_grid_signal_time_seconds", "signal clock (Unix time)", registry=reg)
 
     def refresh() -> None:
         now = clock.now()
         g_time.set(now.timestamp())
         signals, missing = model.snapshot(now)
-        for sid in missing:
-            g_avail.labels(sid).set(0)
-            g_price.labels(sid, scn.site(sid).region, cur).set(nan)
-            g_carbon.labels(sid, scn.site(sid).region).set(nan)
-            g_eff.labels(sid, cur).set(nan)
-        for sid, s in signals.items():
-            region = scn.site(sid).region
+        for site in scn.sites:
+            sid, region = site.id, site.region
+            if (s := signals.get(sid)) is None:
+                g_avail.labels(sid).set(0)
+                for g in (g_price.labels(sid, region, cur), g_carbon.labels(sid, region), g_eff.labels(sid, cur)):
+                    g.set(NAN)
+                continue
             g_avail.labels(sid).set(1)
             g_price.labels(sid, region, cur).set(s.price)
             g_carbon.labels(sid, region).set(s.carbon_intensity)
-            for k, v in s.extra.items():
-                g_extra.labels(sid, k).set(nan if v is None else v)
-            g_cap.labels(sid).set(-1 if s.power_cap_kw is None else s.power_cap_kw)
-            g_dr.labels(sid).set(1 if s.dr_event else 0)
             g_eff.labels(sid, cur).set(s.effective_price)
+            g_cap.labels(sid).set(-1 if s.power_cap_kw is None else s.power_cap_kw)
+            g_dr.labels(sid).set(bool(s.dr_event))
+            for k, v in s.extra.items():
+                g_extra.labels(sid, k).set(NAN if v is None else v)
 
     async def ticker() -> None:
         while True:
@@ -71,6 +79,8 @@ def create_app(scn: Scenario, clock: SimClock | None = None, config: dict | None
         task = asyncio.create_task(ticker())
         yield
         task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
     app = FastAPI(title="cpc grid-signal service", lifespan=lifespan)
     app.state.model = model
@@ -97,7 +107,7 @@ def create_app(scn: Scenario, clock: SimClock | None = None, config: dict | None
     def signals(at: datetime | None = None) -> dict:
         t = at or clock.now()
         if t.tzinfo is None:
-            raise HTTPException(400, "参数 at 须带时区（RFC 3339）")
+            raise HTTPException(400, "at needs a UTC offset (RFC 3339)")
         signals, missing = model.snapshot(t)
         return {"time": t.isoformat(), "signals": {k: v.model_dump(mode="json") for k, v in signals.items()},
                 "missing": missing, "sources": model.sources()}
@@ -108,17 +118,16 @@ def create_app(scn: Scenario, clock: SimClock | None = None, config: dict | None
 
     @app.post("/v1/events", dependencies=[Depends(require_admin)])
     def add_event(body: dict) -> dict:
-        """注入需求响应事件。可给出 start/end（ISO），或给出 duration_min（从当前信号时间开始）。"""
-        now = clock.now()
-        if "start" not in body:
-            body["start"] = now.isoformat()
-        if "end" not in body:
-            body["end"] = (datetime.fromisoformat(body["start"]) + timedelta(minutes=float(body.pop("duration_min", 60)))).isoformat()
+        """Inject a demand-response event with start/end (ISO) or duration_min from start (default: now)."""
         try:
+            body.setdefault("start", clock.now().isoformat())
+            if "end" not in body:
+                minutes = float(body.pop("duration_min", 60))
+                body["end"] = (datetime.fromisoformat(str(body["start"])) + timedelta(minutes=minutes)).isoformat()
             ev = DREvent.model_validate(body)
             model.add_event(ev)
-        except (KeyError, ValueError) as e:
-            raise HTTPException(400, str(e))
+        except (KeyError, ValueError, ValidationError) as e:
+            raise HTTPException(400, str(e)) from e
         refresh()
         return ev.model_dump(mode="json")
 

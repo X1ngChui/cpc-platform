@@ -1,12 +1,15 @@
-"""站内调度策略（数据中心内部）：派发与电源管理。
+"""Local policies (inside a data centre): dispatch and power management.
 
-- 派发策略（DispatchPolicy）：对到达站点的请求选择服务器。结构参照 Kubernetes 调度框架：
-  先过滤（filter）可接收该请求的服务器，再打分（score），取分数最小者；没有可选服务器时请求排队。
-  priority() 给出排队顺序（数值大者先出队，相同时先到先出）。
-- 电源管理策略（PowerPolicy）：把跨站点策略下发的目标在线服务器数落实到具体服务器，给出每台服务器的目标状态（on / off）；
-  站点运行时据此执行状态转移（off→booting→on，on→draining→off）。
+- DispatchPolicy chooses a server for a request that reaches the site. Like the Kubernetes
+  scheduling framework it filters the servers that can take the request and scores them; the lowest
+  score wins, and without a candidate the request queues. priority() orders the queue (higher first,
+  first come first served on ties).
+- PowerPolicy turns the number of online servers set by the capacity policy into a target state
+  (on / off) per server; the site runtime performs the transitions (off -> booting -> on,
+  on -> draining -> off).
 
-策略只读取 ServerView（服务器状态）与 RequestInfo（含扩展属性 attrs），不修改它们；仿真与实验共用同一实现。
+Policies read ServerView (server state) and RequestInfo (with the extension attributes attrs) and
+never modify them; simulation and live experiments share the implementations.
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ from .routing import RequestInfo
 
 
 class ServerView(Protocol):
-    """站内策略可见的服务器状态。"""
+    """Server state visible to local policies."""
 
     id: str
     pool: str
@@ -32,10 +35,19 @@ class ServerView(Protocol):
     def accepting(self) -> bool: ...
 
     @property
-    def peak_w(self) -> float: ...  # 服务器满载 IT 功率（模型参数）
+    def peak_w(self) -> float: ...  # full-load IT power (profile parameter)
 
     @property
-    def idle_w(self) -> float: ...  # 服务器在线空载 IT 功率（模型参数）
+    def idle_w(self) -> float: ...  # online idle IT power (profile parameter)
+
+
+def occupancy(s: ServerView) -> float:
+    return s.busy / s.slots
+
+
+def efficiency(s: ServerView) -> float:
+    """Full-load power per concurrency slot (lower is more efficient)."""
+    return s.peak_w / s.slots
 
 
 class DispatchPolicy:
@@ -43,7 +55,7 @@ class DispatchPolicy:
 
     def __init__(self, **params):
         if params:
-            raise unknown_params("派发策略", self, params)
+            raise unknown_params("dispatch policy", self, params)
 
     def filter(self, req: RequestInfo, s: ServerView) -> bool:
         return s.accepting
@@ -52,14 +64,7 @@ class DispatchPolicy:
         raise NotImplementedError
 
     def select(self, req: RequestInfo, servers: Iterable[ServerView]) -> ServerView | None:
-        best, best_score = None, None
-        for s in servers:
-            if not self.filter(req, s):
-                continue
-            sc = self.score(req, s)
-            if best_score is None or sc < best_score:
-                best, best_score = s, sc
-        return best
+        return min((s for s in servers if self.filter(req, s)), key=lambda s: self.score(req, s), default=None)
 
     def priority(self, req: RequestInfo) -> float:
         return 0.0
@@ -70,10 +75,10 @@ class PowerPolicy:
 
     def __init__(self, **params):
         if params:
-            raise unknown_params("电源管理策略", self, params)
+            raise unknown_params("power policy", self, params)
 
     def plan(self, want: int, servers: list[ServerView]) -> dict[str, str]:
-        """返回需要改变状态的服务器及其目标状态（"on" / "off"）；want 为目标在线（含启动中）服务器数。"""
+        """Servers whose state should change, with the target state ("on" / "off"); want counts online and booting servers."""
         raise NotImplementedError
 
 
@@ -91,33 +96,27 @@ def make_power(name: str, params: dict | None = None) -> PowerPolicy:
 
 @DISPATCH.register("least_loaded")
 class LeastLoaded(DispatchPolicy):
-    """占用率（在服务请求数 / 并发槽数）最低的服务器（负载均衡）。"""
+    """Lowest occupancy (requests in service / slots): load balancing."""
 
     def score(self, req, s):
-        return s.busy / s.slots
-
-
-@DISPATCH.register("packing")
-class Packing(DispatchPolicy):
-    """占用率最高的可接收服务器（集中负载，便于空闲服务器关机）。"""
-
-    def score(self, req, s):
-        return -s.busy / s.slots
+        return occupancy(s)
 
 
 @DISPATCH.register("efficient_first")
 class EfficientFirst(DispatchPolicy):
-    """单位并发槽满载功率最低的服务器优先，同类服务器间按占用率均衡（异构服务器池）。"""
+    """Lowest full-load power per slot first, balanced by occupancy among equal servers (heterogeneous pools)."""
 
     def score(self, req, s):
-        return s.peak_w / s.slots + 1e-6 * s.busy / s.slots
+        return efficiency(s) + 1e-6 * occupancy(s)
 
 
 @DISPATCH.register("affinity")
 class Affinity(DispatchPolicy):
-    """按请求属性 key（如 session_id）的哈希选择首选服务器，首选服务器不可接收时选占用率最低者。
+    """Preferred server by the hash of the request attribute key (e.g. session_id); the least-occupied
+    server when the preferred one cannot accept or the attribute is missing.
 
-    用于利用请求的扩展字段：同一会话的请求落在同一服务器上，便于复用 KV 缓存。属性缺失的请求按占用率选择。
+    Shows the use of workload extension fields: requests of one session land on one server, which can
+    reuse its KV cache.
     """
 
     def __init__(self, key: str = "session_id", **params):
@@ -125,67 +124,40 @@ class Affinity(DispatchPolicy):
         self.key = key
 
     def select(self, req, servers):
-        cands = [s for s in servers if self.filter(req, s)]
-        if not cands:
+        if not (cands := sorted((s for s in servers if self.filter(req, s)), key=lambda s: s.id)):
             return None
-        v = req.attrs.get(self.key)
-        if v is not None:
-            ordered = sorted(cands, key=lambda s: s.id)
-            h = int(hashlib.blake2b(str(v).encode(), digest_size=8).hexdigest(), 16)
-            return ordered[h % len(ordered)]
-        return min(cands, key=lambda s: s.busy / s.slots)
+        if (v := req.attrs.get(self.key)) is None:
+            return min(cands, key=occupancy)
+        return cands[int.from_bytes(hashlib.blake2b(str(v).encode(), digest_size=8).digest(), "big") % len(cands)]
 
 
-@DISPATCH.register("priority")
-class PriorityQueue(LeastLoaded):
-    """排队时按请求属性 key（缺省 priority，数值大者优先）出队；服务器选择同 least_loaded。"""
-
-    def __init__(self, key: str = "priority", **params):
-        super().__init__(**params)
-        self.key = key
-
-    def priority(self, req):
-        v = req.attrs.get(self.key)
-        return float(v) if v is not None else 0.0
+def _live(servers: list[ServerView]) -> list[ServerView]:
+    return [s for s in servers if s.state in ("on", "booting")]
 
 
 @POWER.register("ordered")
 class Ordered(PowerPolicy):
-    """扩容时先恢复排空中的服务器，再按配置顺序启动关机服务器；缩容时先取消启动中的服务器，再停止在服务请求最少的服务器。"""
+    """Scale-up resumes draining servers first, then starts servers that are off in configuration order;
+    scale-down cancels booting servers first, then stops the online servers with the fewest requests."""
 
     def plan(self, want, servers):
-        live = [s for s in servers if s.state in ("on", "booting")]
-        out: dict[str, str] = {}
+        live = _live(servers)
         if want > len(live):
-            need = want - len(live)
-            for s in [s for s in servers if s.state == "draining"][:need]:
-                out[s.id] = "on"
-                need -= 1
-            for s in [s for s in servers if s.state == "off"][:need]:
-                out[s.id] = "on"
-        elif want < len(live):
-            drop = len(live) - want
-            booting = [s for s in live if s.state == "booting"][:drop]
-            for s in booting:
-                out[s.id] = "off"
-            for s in sorted([s for s in live if s.state == "on"], key=lambda s: s.busy)[:drop - len(booting)]:
-                out[s.id] = "off"
-        return out
+            order = [s for s in servers if s.state == "draining"] + [s for s in servers if s.state == "off"]
+            return dict.fromkeys((s.id for s in order[:want - len(live)]), "on")
+        order = [s for s in live if s.state == "booting"] + sorted((s for s in live if s.state == "on"), key=lambda s: s.busy)
+        return dict.fromkeys((s.id for s in order[:max(0, len(live) - want)]), "off")
 
 
 @POWER.register("efficient")
 class Efficient(PowerPolicy):
-    """优先保留单位并发槽满载功率低的服务器：扩容时先开启高效服务器，缩容时先停止低效服务器（异构服务器池）。"""
+    """Keeps the servers with the lowest full-load power per slot: scale-up starts efficient servers
+    first, scale-down stops inefficient ones first (heterogeneous pools)."""
 
     def plan(self, want, servers):
-        eff = lambda s: s.peak_w / s.slots  # noqa: E731
-        live = [s for s in servers if s.state in ("on", "booting")]
-        out: dict[str, str] = {}
+        live = _live(servers)
         if want > len(live):
-            need = want - len(live)
-            for s in sorted([s for s in servers if s.state in ("draining", "off")], key=lambda s: (s.state != "draining", eff(s)))[:need]:
-                out[s.id] = "on"
-        elif want < len(live):
-            for s in sorted(live, key=lambda s: (s.state != "booting", -eff(s), s.busy))[:len(live) - want]:
-                out[s.id] = "off"
-        return out
+            idle = sorted((s for s in servers if s.state in ("draining", "off")), key=lambda s: (s.state != "draining", efficiency(s)))
+            return dict.fromkeys((s.id for s in idle[:want - len(live)]), "on")
+        order = sorted(live, key=lambda s: (s.state != "booting", -efficiency(s), s.busy))
+        return dict.fromkeys((s.id for s in order[:max(0, len(live) - want)]), "off")

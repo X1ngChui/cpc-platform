@@ -1,4 +1,5 @@
-"""站点代理：以真实时间驱动数据中心运行时（异步派发、撤销、执行器失败）与服务接口。"""
+"""Site agent: the data-centre runtime on real time (asynchronous dispatch, cancellation, executor
+failures) and the service interface."""
 
 import asyncio
 import time
@@ -17,7 +18,7 @@ def info(**attrs):
 
 
 def test_agent_acquire_release_and_cancel(scn):
-    scn.scheduler.queue_limit_per_slot = 0.25  # 4 台 × 16 槽；队列上限 = 64 × 0.25 = 16
+    scn.scheduler.queue_limit_per_slot = 0.25  # 4 servers x 16 slots; queue limit 64 x 0.25 = 16
 
     async def run():
         agent = SiteAgent(scn, "sh")
@@ -29,7 +30,7 @@ def test_agent_acquire_release_and_cancel(scn):
             await agent.acquire(info())
         waiters[0].cancel()
         await asyncio.sleep(0)
-        assert agent.snapshot().queue_len == 15  # 撤销的请求离开队列
+        assert agent.snapshot().queue_len == 15  # the cancelled request leaves the queue
         agent.release(servers[0], 1.0)
         await asyncio.sleep(0)
         assert waiters[1].done() and agent.snapshot().queue_len == 14
@@ -69,11 +70,11 @@ def test_actuation_failure_is_recorded(scn):
     async def run():
         agent = SiteAgent(scn, "sh", hooks=FailingHooks())
         s = agent.servers[0]
-        assert s.state == "booting"  # 真实服务器先经就绪检查
+        assert s.state == "booting"  # a real server passes its health check first
         agent.apply(CapacityTarget(active_nodes=0))
         agent.apply(CapacityTarget(active_nodes=1))
         await asyncio.sleep(0.01)
-        # 开机失败：服务器回到 off，错误记入状态与失败计数，不假装成功
+        # failed power-on: the server returns to off, the error goes to state and counters, nothing pretends success
         assert s.state == "off" and "container not found" in s.last_error
         assert agent.dc.actuation_errors[("u0", "power_on")] == 1
         assert agent.snapshot().nodes[0].last_error.startswith("power_on")
@@ -82,7 +83,7 @@ def test_actuation_failure_is_recorded(scn):
 
 
 class SlowOffHooks:
-    """关机需要一段时间（如 docker stop）；记录操作顺序与容器是否在运行。"""
+    """Power-off takes a while (like docker stop); records the order of actions and whether the container runs."""
 
     def __init__(self):
         self.running, self.log = True, []
@@ -114,7 +115,8 @@ def _one_real_server(scn):
 
 
 def test_power_actions_are_serialized_per_server(scn):
-    """关机未完成时到达的开机指令在关机完成后执行，服务器最终可服务（此前开机可能先于关机完成，容器停在已退出状态）。"""
+    """A power-on issued while a power-off is running waits until it has finished, so the server ends up
+    serving (otherwise the start could precede the stop and leave the container exited)."""
     _one_real_server(scn)
 
     async def run():
@@ -134,7 +136,8 @@ def test_power_actions_are_serialized_per_server(scn):
 
 
 def test_boot_timeout_marks_power_on_failed(scn, monkeypatch):
-    """真实服务器在启动期限内未就绪：开机失败，回到 off 并记录原因，而不是一直停留在 booting。"""
+    """A real server not ready within the boot deadline fails to boot: back to off with the reason, instead of
+    staying in booting."""
     import cpc.site.core as core
 
     _one_real_server(scn)
@@ -149,7 +152,7 @@ def test_boot_timeout_marks_power_on_failed(scn, monkeypatch):
         assert s.state == "booting"
         await asyncio.sleep(0.1)
         await agent.tick()
-        assert s.state == "off" and "启动超时" in s.last_error
+        assert s.state == "off" and "boot timeout" in s.last_error
         assert agent.dc.actuation_errors[("u0", "power_on")] == 1
 
     asyncio.run(run())
@@ -167,11 +170,11 @@ def test_site_service_api_and_readiness(scn):
         body = {"model": "x", "messages": [{"role": "user", "content": "hi " * 50}], "max_tokens": 8}
         hdr = {"x-cpc-source": "east", "x-cpc-attr-session_id": '"u7"'}
         nodes = {c.post("/v1/chat/completions", json=body, headers=hdr).headers["x-cpc-node"] for _ in range(3)}
-        assert len(nodes) == 1  # 请求属性经请求头传给站内派发策略：同一会话落在同一服务器
+        assert len(nodes) == 1  # request attributes reach the dispatch policy via headers: one session, one server
         r = c.post("/v1/chat/completions", json=body)
         assert r.status_code == 200 and r.json()["usage"]["completion_tokens"] == 8
         assert r.headers["x-cpc-site"] == "gz" and r.headers["x-cpc-node"].startswith("gz-main-")
-        # 仿真服务器要求请求给出输出上限：缺失时返回 400，而不是按缺省长度计时
+        # emulated servers require an output limit: 400 without one, rather than timing a default length
         r = c.post("/v1/chat/completions", json={"model": "x", "messages": [{"role": "user", "content": "hi"}]})
         assert r.status_code == 400 and r.json()["error"]["type"] == "invalid_request_error"
         with c.stream("POST", "/v1/completions", json={"prompt": "a b c", "max_tokens": 20, "stream": True}) as s:
@@ -180,16 +183,17 @@ def test_site_service_api_and_readiness(scn):
         assert c.post("/admin/capacity", json={"active_nodes": 2}).json()["nodes_on"] == 2
         m = c.get("/metrics").text
         assert "cpc_node_it_power_watts{" in m and "cpc_site_facility_power_watts" in m and 'pool="main"' in m
-        assert "DCGM_FI_DEV_POWER_USAGE{" not in m  # 加速卡指标只对实测服务器导出
+        assert "DCGM_FI_DEV_POWER_USAGE{" not in m  # accelerator metrics only for measured servers
         st = c.get("/state").json()
         assert st["power_scope"] == "node" and st["energy_coverage"] == pytest.approx(1.0) and st["pools"][0]["total"] == 6
 
 
-def test_loadgen_prompt_length_matches_trace():
-    """负载生成器的输入文本：站点代理估计的输入长度恰为 trace 的输入 token 数（与仿真器一致）。"""
+def test_replay_prompt_length_matches_trace():
+    """Replayed prompts: the input length estimated by the site agent equals the input tokens of the trace
+    (as in the simulator)."""
     import random
 
-    from cpc.loadgen.client import Arrival, make_body
+    from cpc.live import Arrival, make_body
     from cpc.site.executors import approx_prompt_tokens
 
     rng = random.Random(0)
@@ -199,7 +203,8 @@ def test_loadgen_prompt_length_matches_trace():
 
 
 def test_failed_upstream_is_taken_out_and_restarted(scn, monkeypatch):
-    """在线的真实服务器就绪检查连续失败：退出服务（不再派发）、发出开机以重启推理实例，恢复后重新在线。"""
+    """An online real server failing consecutive health checks leaves service (no more dispatch), is powered
+    on again to restart its inference instance, and is online again once healthy."""
     import cpc.site.core as core
 
     _one_real_server(scn)
@@ -211,16 +216,16 @@ def test_failed_upstream_is_taken_out_and_restarted(scn, monkeypatch):
         s = agent.servers[0]
         await agent.tick()
         assert s.state == "on"
-        hooks.running = False                 # 推理实例崩溃
+        hooks.running = False  # the inference instance crashed
         hooks.log.clear()
         await agent.tick()
-        assert s.state == "on"                # 一次失败不判定
+        assert s.state == "on"  # one failure is not enough
         await agent.tick()
-        assert s.state == "booting" and "就绪检查" in s.last_error
+        assert s.state == "booting" and "failed health checks" in s.last_error
         assert agent.dc.actuation_errors[("u0", "health")] == 1
-        assert agent.snapshot().slots_on == 0  # 失效的实例不再接收请求（新请求排队，待其恢复）
+        assert agent.snapshot().slots_on == 0  # the failed instance takes no requests (new ones queue until it recovers)
         await asyncio.sleep(0.01)
-        assert hooks.log == ["on"] and hooks.running   # 执行器重启了推理实例
+        assert hooks.log == ["on"] and hooks.running  # the executor restarted the inference instance
         await agent.tick()
         assert s.state == "on"
 

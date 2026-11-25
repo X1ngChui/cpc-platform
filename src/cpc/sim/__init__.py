@@ -1,1 +1,1 @@
-"""cpc.sim"""
+"""Discrete-event simulator."""

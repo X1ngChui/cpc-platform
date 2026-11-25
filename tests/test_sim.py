@@ -1,4 +1,5 @@
-"""离散事件仿真器：请求守恒、能耗、策略差异方向、异构服务器池、结果数据包与实验描述。"""
+"""Discrete-event simulator: request conservation, energy, direction of policy differences,
+heterogeneous pools, result packages and experiment descriptions."""
 
 import json
 
@@ -14,7 +15,7 @@ from cpc.sim.des import Simulator
 
 
 def run(scn, routing, capacity, hours=2.0, rate_scale=0.25):
-    scn.workload.rate_scale = rate_scale  # 合成负载 12 请求/秒 × 0.25
+    scn.workload.rate_scale = rate_scale  # synthetic workload 12 requests/s x 0.25
     return Simulator(scn, make_routing(routing), make_capacity(capacity), hours=hours).run()
 
 
@@ -28,7 +29,7 @@ def test_conservation_and_energy(scn):
 def test_static_uses_more_energy_than_reactive(scn):
     a = run(scn, "least_loaded", "static").summary
     b = run(scn, "least_loaded", "reactive").summary
-    assert a["it_kwh"] > b["it_kwh"]  # 低负载时关闭空闲服务器应节能
+    assert a["it_kwh"] > b["it_kwh"]  # switching idle servers off at low load saves energy
 
 
 def test_route_reasons_and_provenance(scn):
@@ -48,12 +49,12 @@ def test_heterogeneous_pools_with_local_policies(scn):
     res = run(scn, "least_loaded", "reactive", hours=1.0)
     served = res.requests["status"] == "served"
     servers = set(res.requests["server"][served])
-    assert servers and all("-new-" in x for x in servers)  # 低负载时只使用高效服务器
+    assert servers and all("-new-" in x for x in servers)  # only efficient servers at low load
 
 
 def test_horizon_longer_than_workload_is_rejected(scn):
     scn.workload.duration_s = 1800
-    with pytest.raises(ConfigError, match="短于仿真时长"):
+    with pytest.raises(ConfigError, match="less than the simulated"):
         run(scn, "nearest", "static", hours=1.0)
 
 
@@ -76,4 +77,4 @@ def test_experiment_run_writes_result_packages(tmp_path, capsys):
     assert meta["routing"]["policy"] == "cost_aware" and meta["scenario"]["workload"]["rate_scale"] == 0.1
     assert (tmp_path / "out" / "comparison.csv").read_text(encoding="utf-8").count("\n") == 3
     with pytest.raises(Exception):
-        load_descriptor(run_dir)  # 结果数据包不是平台输入数据集（cpc.kind = run_result）
+        load_descriptor(run_dir)  # a result package is not an input dataset (cpc.kind = run_result)

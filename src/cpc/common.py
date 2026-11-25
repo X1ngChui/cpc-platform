@@ -1,4 +1,4 @@
-"""服务公共工具：日志、Prometheus 指标输出、JSONL 记录、HTTP 客户端。"""
+"""Shared service utilities: logging, admin authentication, Prometheus output, JSONL records, SSE checks."""
 
 from __future__ import annotations
 
@@ -16,10 +16,11 @@ from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, generate_l
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _STD_ATTRS = set(vars(logging.LogRecord("", 0, "", 0, "", None, None))) | {"message", "asctime", "taskName"}
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
 class JsonFormatter(logging.Formatter):
-    """结构化日志：每条记录一行 JSON，含时间、级别、来源与调用方通过 extra 传入的字段（event、site、error 等）。"""
+    """Structured logs: one JSON object per record with time, level, logger and the fields passed in extra."""
 
     def format(self, record: logging.LogRecord) -> str:
         d: dict[str, Any] = {
@@ -27,18 +28,18 @@ class JsonFormatter(logging.Formatter):
             "level": record.levelname,
             "logger": record.name,
             "msg": record.getMessage(),
+            **{k: v for k, v in vars(record).items() if k not in _STD_ATTRS},
         }
-        d.update({k: v for k, v in vars(record).items() if k not in _STD_ATTRS})
         if record.exc_info:
             d["exc"] = self.formatException(record.exc_info)
         return json.dumps(d, ensure_ascii=False, default=str)
 
 
 def setup_logging(level: str | None = None, fmt: str | None = None) -> None:
-    """日志级别取 CPC_LOG_LEVEL（默认 INFO），格式取 CPC_LOG_FORMAT：text（默认）或 json。"""
+    """Level from CPC_LOG_LEVEL (default INFO); format from CPC_LOG_FORMAT: text (default) or json."""
     fmt = (fmt or os.environ.get("CPC_LOG_FORMAT", "text")).lower()
     if fmt not in ("text", "json"):
-        raise ValueError(f"CPC_LOG_FORMAT 只能为 text 或 json，当前为 {fmt}")
+        raise ValueError(f"CPC_LOG_FORMAT must be text or json, got {fmt}")
     handler = logging.StreamHandler()
     handler.setFormatter(JsonFormatter() if fmt == "json" else logging.Formatter(LOG_FORMAT))
     logging.basicConfig(level=(level or os.environ.get("CPC_LOG_LEVEL", "INFO")).upper(), handlers=[handler], force=True)
@@ -46,40 +47,50 @@ def setup_logging(level: str | None = None, fmt: str | None = None) -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
+# ---------------------------------------------------------------- admin interface
+
+
 def admin_token() -> str | None:
-    """管理接口的共享令牌（环境变量 CPC_ADMIN_TOKEN）。未设置时管理接口不鉴权，仅适合本机/内网开发。"""
+    """Shared token of the admin interfaces (CPC_ADMIN_TOKEN). Without it they are open (local development only)."""
     return os.environ.get("CPC_ADMIN_TOKEN") or None
 
 
 def admin_headers() -> dict[str, str]:
-    """调用其他服务管理接口时携带的请求头。"""
-    tok = admin_token()
-    return {"Authorization": f"Bearer {tok}"} if tok else {}
+    """Headers for calling the admin interface of another service."""
+    return {"Authorization": f"Bearer {tok}"} if (tok := admin_token()) else {}
 
 
 def require_admin(request: Request) -> None:
-    """FastAPI 依赖：校验 Authorization: Bearer <CPC_ADMIN_TOKEN>。"""
-    tok = admin_token()
-    if tok is None:
+    """FastAPI dependency checking Authorization: Bearer <CPC_ADMIN_TOKEN>."""
+    if (tok := admin_token()) is None:
         return
     got = request.headers.get("authorization", "")
     if not hmac.compare_digest(got.encode(), f"Bearer {tok}".encode()):
         raise HTTPException(status_code=401, detail="admin token required")
 
 
+def warn_if_open(service: str, host: str) -> None:
+    if admin_token() is None and host not in LOCAL_HOSTS:
+        logging.getLogger("cpc").warning(
+            "%s listens on %s without CPC_ADMIN_TOKEN: the /admin/* interface is not authenticated; "
+            "set the variable for any deployment reachable from other hosts", service, host)
+
+
+# ---------------------------------------------------------------- startup
+
+
 class StartupError(Exception):
-    """服务启动检查失败（依赖服务在期限内不可达等）：进程以非零状态退出。"""
+    """A startup check failed (e.g. a dependency stayed unreachable); the process exits with an error."""
 
 
 async def sync_clock(client, grid_url: str, timeout_s: float):
-    """从电网信号服务同步信号时钟；在 timeout_s 内不可达则抛出 StartupError。"""
+    """Fetch the signal clock from the grid-signal service; StartupError if unreachable for timeout_s."""
     import httpx
 
     from .health import describe
     from .models import SimClock
 
     deadline = time.monotonic() + timeout_s
-    last: BaseException | None = None
     while True:
         try:
             r = await client.get(grid_url.rstrip("/") + "/v1/clock", timeout=2.0)
@@ -88,93 +99,93 @@ async def sync_clock(client, grid_url: str, timeout_s: float):
         except (httpx.HTTPError, ValueError, KeyError) as e:
             last = e
         if time.monotonic() >= deadline:
-            raise StartupError(f"电网信号服务 {grid_url} 在 {timeout_s:.0f} s 内不可达，无法同步信号时钟：{describe(last)}")
+            raise StartupError(f"grid-signal service {grid_url} unreachable for {timeout_s:.0f} s; "
+                               f"cannot synchronise the signal clock: {describe(last)}")
         await asyncio.sleep(0.5)
 
 
-def warn_if_open(service: str, host: str) -> None:
-    if admin_token() is None and host not in ("127.0.0.1", "localhost", "::1"):
-        logging.getLogger("cpc").warning(
-            "%s 监听 %s 且未设置 CPC_ADMIN_TOKEN：/admin/* 管理接口无鉴权。公网/云服务器部署请务必设置该环境变量。", service, host)
-
-
 def metrics_response(registry: CollectorRegistry) -> Response:
-    """每个服务使用独立的 registry，便于在同一进程中运行多个服务（本机开发模式）。"""
+    """Each service has its own registry so that several services can share one process (cpc up)."""
     return Response(generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
 
 
+# ---------------------------------------------------------------- JSONL records
+
+
 class JsonlWriter:
-    """异步追加写 JSONL（请求日志、决策日志），避免阻塞事件循环。"""
+    """Appends records to a JSONL file from a background task, without blocking the event loop."""
+
+    _END = object()
 
     def __init__(self, path: str | Path | None):
         self.path = Path(path) if path else None
-        self._q: asyncio.Queue[dict[str, Any]] | None = None
+        self._q: asyncio.Queue | None = None
         self._task: asyncio.Task | None = None
 
     def start(self) -> None:
-        if self.path is None:
-            return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._q = asyncio.Queue()
-        self._task = asyncio.create_task(self._run())
+        if self.path is not None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._q = asyncio.Queue()
+            self._task = asyncio.create_task(self._run())
 
     def write(self, rec: dict[str, Any]) -> None:
         if self._q is not None:
             self._q.put_nowait(rec)
 
     async def _run(self) -> None:
-        assert self._q is not None and self.path is not None
+        assert self._q is not None
         done = False
         while not done:
             batch = [await self._q.get()]
             while not self._q.empty() and len(batch) < 1000:
                 batch.append(self._q.get_nowait())
-            if None in batch:  # 结束标记
-                done = True
-                batch = [r for r in batch if r is not None]
-            if batch:
-                lines = "".join(json.dumps(r, ensure_ascii=False, default=str) + "\n" for r in batch)
+            done = self._END in batch
+            if lines := "".join(json.dumps(r, ensure_ascii=False, default=str) + "\n" for r in batch if r is not self._END):
                 await asyncio.to_thread(self._append, lines)
 
     def _append(self, text: str) -> None:
         assert self.path is not None
-        with open(self.path, "a", encoding="utf-8") as f:
+        with self.path.open("a", encoding="utf-8") as f:
             f.write(text)
 
     async def stop(self) -> None:
-        """写完队列中剩余记录后退出。"""
-        if self._task is None or self._q is None:
-            return
-        self._q.put_nowait(None)  # type: ignore[arg-type]
-        await self._task
+        """Write the queued records, then stop."""
+        if self._task is not None and self._q is not None:
+            self._q.put_nowait(self._END)
+            await self._task
 
+
+# ---------------------------------------------------------------- request attributes
 
 ATTR_PREFIX = "x-cpc-attr-"
 
 
 def attr_headers(attrs: dict) -> dict[str, str]:
-    """把请求扩展属性编码为请求头：x-cpc-attr-<字段名>: <JSON 值>（字段名按 HTTP 惯例不区分大小写）。"""
-    return {ATTR_PREFIX + k.lower(): json.dumps(v, ensure_ascii=True, separators=(",", ":")) for k, v in attrs.items() if v is not None}
+    """Encode request attributes as headers x-cpc-attr-<field>: <JSON value> (field names are case-insensitive)."""
+    return {ATTR_PREFIX + k.lower(): json.dumps(v, ensure_ascii=True, separators=(",", ":"))
+            for k, v in attrs.items() if v is not None}
 
 
 def request_attrs(headers) -> dict:
-    """从请求头解析扩展属性；值不是合法 JSON 时按字符串处理。"""
+    """Decode request attributes from headers; values that are not valid JSON are kept as strings."""
     out = {}
     for k, v in headers.items():
-        k = k.lower()
-        if k.startswith(ATTR_PREFIX):
+        if (k := k.lower()).startswith(ATTR_PREFIX):
             try:
-                out[k[len(ATTR_PREFIX):]] = json.loads(v)
+                out[k.removeprefix(ATTR_PREFIX)] = json.loads(v)
             except ValueError:
-                out[k[len(ATTR_PREFIX):]] = v
+                out[k.removeprefix(ATTR_PREFIX)] = v
     return out
 
 
-class SSECheck:
-    """检查 OpenAI 兼容的流式响应（SSE）：是否以 data: [DONE] 结束、是否含错误事件。
+# ---------------------------------------------------------------- streaming responses
 
-    依次 feed() 收到的字节片段；problem 在流完整且没有错误事件时为 None，否则为失败原因
-    （stream_error: <消息> 或 stream_incomplete）。
+
+class SSECheck:
+    """Checks an OpenAI-compatible streaming response (SSE): ends with data: [DONE], carries no error event.
+
+    feed() the received byte chunks in order; problem is None for a complete stream without errors,
+    otherwise the reason: "stream_error: <message>" or "stream_incomplete".
     """
 
     def __init__(self) -> None:
@@ -183,18 +194,16 @@ class SSECheck:
         self.error: str | None = None
 
     def feed(self, chunk: bytes) -> None:
-        self._buf += chunk
-        *lines, self._buf = self._buf.split(b"\n")
-        for line in lines:
-            line = line.strip()
+        *lines, self._buf = (self._buf + chunk).split(b"\n")
+        for line in map(bytes.strip, lines):
             if line == b"data: [DONE]":
                 self.done = True
-            elif line.startswith(b"data: {") and b'"error"' in line:
+            elif self.error is None and line.startswith(b"data: {") and b'"error"' in line:
                 try:
                     err = json.loads(line[6:]).get("error")
                 except ValueError:
                     continue
-                if err and self.error is None:
+                if err:
                     self.error = str(err.get("message", err) if isinstance(err, dict) else err)[:200]
 
     @property

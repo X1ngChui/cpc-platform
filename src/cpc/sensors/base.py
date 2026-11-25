@@ -1,40 +1,45 @@
-"""能耗感知的设备层：统一的功率读数结构、传感器接口、注册表与能耗积分。
+"""Device layer: common power reading, sensor interface, registry and energy integration.
 
-每种硬件一个传感器类，全部输出同一种 Reading：
-    sensor   传感器实例名（默认为类型名 nvml、rapl、ipmi……；同类型多个实例时由配置的 name 区分）
-    device   设备标识（gpu0、package-0、npu0-0、server……），在同一传感器内唯一
-    kind     设备类别：gpu / npu / cpu / dram / soc / server / platform / other
-    vendor   厂商：nvidia / amd / intel / huawei / generic
-    power_w  瞬时（或驱动给出的短时平均）功率，W；读取失败或尚无数据时为 None
-    energy_j 累计能耗计数（若硬件提供；否则由 EnergyIntegrator 按功率积分），J
-    util_pct 利用率（若可得）
-    errors   本次读取中失败的字段及原因，例如 {"power_w": "NVMLError_GpuIsLost"}
+One sensor class per kind of hardware; all of them return the same Reading:
+    sensor   sensor instance (the type name nvml, rapl, ipmi, ... by default; name tells instances of
+             one type apart)
+    device   device identifier (gpu0, package-0, server, ...), unique within the sensor
+    kind     device class: gpu / npu / cpu / dram / soc / server / platform / other
+    vendor   nvidia / amd / intel / huawei / generic
+    power_w  instantaneous (or driver-averaged) power in W; None when unavailable
+    energy_j accumulated energy counter if the hardware has one (otherwise integrated from power), J
+    util_pct utilisation if available
+    errors   fields that failed in this reading and why, e.g. {"power_w": "NVMLError_GpuIsLost"}
 
-错误处理约定：
-- 构造阶段确定设备集合以及各字段所用的接口（能力探测）；必需能力不可用时抛出 SensorError，使启动失败；
-- read() 整体失败（命令执行失败、接口不可达、输出无法解析）时抛出异常；
-- 单个设备或单个字段读取失败时，对应值为 None，原因记入 Reading.errors；不以 0 或其他数据源替代。
+Error handling:
+- the constructor determines the devices and the interface of each field (capability probing);
+  a missing required capability raises SensorError and stops the startup;
+- read() raises when the whole reading fails (command failed, interface unreachable, unparsable output);
+- a failing device or field is None with the reason in Reading.errors, never 0 or another source.
 
-站点代理、通用导出器（cpc exporter）都只依赖这一层，新增硬件只需新增一个传感器类并注册。
+The site agent and cpc sensors depend only on this layer: new hardware needs one new sensor class,
+registered as an entry point in the group cpc.sensors.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
-from ..health import describe
-from ..registry import Registry
+from ..health import HealthBoard, describe
+from ..registry import Registry, accepted_params, did_you_mean
 
 log = logging.getLogger("cpc.sensors")
 
 KINDS = ("gpu", "npu", "cpu", "dram", "soc", "server", "platform", "other")
+Key = tuple[str, str]  # (sensor, device)
 
 
 class SensorError(Exception):
-    """传感器不可用（初始化或能力探测失败），或输出无法解析。"""
+    """Sensor unavailable (initialisation or capability probing failed) or output unparsable."""
 
 
 @dataclass
@@ -51,70 +56,68 @@ class Reading:
     errors: dict[str, str] = field(default_factory=dict)
 
     @property
-    def key(self) -> tuple[str, str]:
-        return (self.sensor, self.device)
+    def key(self) -> Key:
+        return self.sensor, self.device
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
 class Sensor:
-    """传感器基类。子类实现 read()；可选实现 detect()、capabilities() 与 set_power_limit()。
+    """Sensor base class. Subclasses implement read(); detect(), capabilities() and set_power_limit() are optional.
 
-    通用参数 max_w：功率读数的合理上限（W）。超过上限的读数记为缺失（power_w 为 None，原因记入 errors），
-    用于排除 BMC 等偶发的异常读数；未给出时不检查。
+    Generic parameter max_w: plausible upper bound of power readings (W). Larger readings count as
+    missing (power_w None, reason in errors), which removes sporadic glitches of BMCs and the like.
     """
 
-    name = "base"  # 类型名（注册名）
-    requires = ""  # 文档用途：依赖的驱动、库或接口
+    name = "base"  # type name (registered name)
+    requires = ""  # documentation: driver, library or interface needed
     supports_power_limit = False
 
     def __init__(self, max_w: float | None = None, **params: Any):
         if max_w is not None and not max_w > 0:
-            raise SensorError(f"max_w 须大于 0，实际为 {max_w}")
+            raise SensorError(f"max_w must be greater than 0, got {max_w}")
         if params:
-            from ..registry import accepted_params, did_you_mean
-
             bad, ok = sorted(params), accepted_params(type(self))
             hint = did_you_mean(bad[0], ok) if len(bad) == 1 else ""
-            raise SensorError(f"不接受参数 {'、'.join(bad)}{hint}。可用参数：{'、'.join(ok)}")
+            raise SensorError(f"does not accept {', '.join(bad)}{hint}; accepted: {', '.join(ok)}")
         self.max_w = max_w
-        self.id = self.name  # 实例名；make_sensor 按配置的 name 覆盖
+        self.id = self.name  # instance name; make_sensor sets the configured name
 
     def check_bounds(self, readings: list[Reading]) -> list[Reading]:
-        """超过 max_w 的功率读数记为缺失。"""
+        """Power readings above max_w count as missing."""
         if self.max_w is not None:
             for r in readings:
                 if r.power_w is not None and r.power_w > self.max_w:
-                    r.errors["power_w"] = f"读数 {r.power_w:g} W 超出上限 max_w = {self.max_w:g} W"
+                    r.errors["power_w"] = f"reading {r.power_w:g} W exceeds max_w = {self.max_w:g} W"
                     r.power_w = None
         return readings
 
     @classmethod
     def detect(cls) -> bool:
-        """本机是否具备该传感器的前提条件。仅用于 cpc sensors --list 的信息展示，平台不据此自动选择传感器。"""
+        """Whether this host meets the prerequisites (shown by cpc sensors --list; never used to choose sensors)."""
         return False
 
     def read(self) -> list[Reading]:
         raise NotImplementedError
 
     def capabilities(self) -> dict[str, Any]:
-        """启动时探测到的能力（各设备可读的字段、所用接口等），写入状态快照。"""
+        """Capabilities probed at startup (readable fields per device, interfaces), shown in the state snapshot."""
         return {}
 
     def close(self) -> None:
         return None
 
-    # 可选能力：功率封顶。ratio 为相对最大上限的比例
     def set_power_limit(self, device: str, ratio: float) -> None:
-        raise NotImplementedError(f"{self.name} 不支持功率封顶")
+        """Optional: set the power limit of a device to ratio x its maximum limit."""
+        raise NotImplementedError(f"{self.name} does not support power capping")
 
     @staticmethod
     def field(r: Reading, attr: str, fn: Callable[[], Any], errors: type[BaseException] | tuple = Exception) -> None:
-        """读取一个字段：成功则写入 r.<attr>，失败则记入 r.errors[attr]（值保持 None）。"""
+        """Read one field: on success set r.<attr>, on failure record r.errors[attr] (the value stays None)."""
         try:
             setattr(r, attr, fn())
-        except errors as e:  # noqa: BLE001 —— 调用方给出具体的异常类型
+        except errors as e:  # noqa: BLE001 - the caller names the exception types
             r.errors[attr] = describe(e)
 
 
@@ -123,77 +126,92 @@ register_sensor = SENSORS.register
 
 
 def make_sensor(spec: dict | str) -> Sensor:
-    """spec 形如 {"type": "nvml"} 或 {"type": "ipmi", "name": "bmc", "host": "10.0.0.5", ...}，也可以直接给类型名。
+    """spec is {"type": "nvml"}, {"type": "ipmi", "name": "bmc", ...} or just a type name.
 
-    构造失败（依赖库缺失、驱动不可用、能力探测失败）统一抛出 SensorError。
+    Any failure of the constructor (library missing, driver unavailable, probing failed) raises SensorError.
     """
-    if isinstance(spec, str):
-        spec = {"type": spec}
-    spec = dict(spec)
+    spec = {"type": spec} if isinstance(spec, str) else dict(spec)
     typ = spec.pop("type")
     inst = spec.pop("name", None) or typ
     cls = SENSORS.get(typ)
     try:
         s = cls(**spec)
-    except Exception as e:  # noqa: BLE001 —— 构造阶段的任何失败都使启动失败，并带上传感器名
-        msg = str(e) if isinstance(e, SensorError) else describe(e)
-        raise SensorError(f"传感器 {inst}（{typ}）初始化失败：{msg}") from e
+    except Exception as e:  # noqa: BLE001 - any constructor failure stops the startup, naming the sensor
+        raise SensorError(f"sensor {inst} ({typ}) failed to initialise: "
+                          f"{e if isinstance(e, SensorError) else describe(e)}") from e
     s.id = inst
     return s
 
 
+def read_all(sensors: list[Sensor], board: HealthBoard) -> list[Reading]:
+    """Read every sensor; a failure affects only the readings of that sensor and is recorded in its health."""
+    out: list[Reading] = []
+    for s in sensors:
+        try:
+            rs = s.check_bounds(s.read())
+        except Exception as e:  # noqa: BLE001 - isolate the fault of one sensor; the reason goes to its health
+            board.fail(s.id, e)
+            continue
+        if errs := {f"{r.device}.{k}": v for r in rs for k, v in r.errors.items()}:
+            board.fail(s.id, f"field reads failed: {errs}")
+        else:
+            board.ok(s.id)
+        out += rs
+    return out
+
+
 class EnergyIntegrator:
-    """累计能耗与功率采样完整率。
+    """Accumulated energy and completeness of power sampling.
 
-    - 有硬件计数器的读数直接使用计数器；计数器下降（驱动重载等）时，把此前的累计量作为偏移继续累加，并计为一次复位；
-    - 无计数器的读数按功率分段恒定（左端点）积分；
-    - 区间 [t_k, t_{k+1}) 的功率取 t_k 时刻的采样；该采样缺失（功率为 None 或应有的读数缺席）时，
-      该区间不积分，计入缺失时长 missing_s；否则计入 measured_s。
+    - readings with a hardware counter use it; when the counter drops (driver reload, ...) the
+      previous total becomes an offset and a reset is counted;
+    - readings without a counter integrate power as piecewise constant (left end point);
+    - the interval [t_k, t_{k+1}) takes the power sampled at t_k; when that sample is missing (power
+      None or the reading absent) the interval is not integrated and counts as missing_s, otherwise
+      as measured_s.
 
-    expected 为应当出现的读数键 (sensor, device) 集合；某次采样中缺席的键按功率缺失处理。
-    计数器回绕（如 RAPL 的 energy_uj 达到 max_energy_range_uj 后归零）由各传感器自行处理。
+    expected is the set of reading keys (sensor, device) that should appear; absent keys count as
+    missing power. Counter wrap-around (e.g. RAPL energy_uj reaching max_energy_range_uj) is handled
+    by each sensor.
     """
 
     def __init__(self) -> None:
-        self._last: dict[tuple[str, str], tuple[float, float | None, float]] = {}  # key -> (t, power, energy)
-        self._offset: dict[tuple[str, str], float] = {}
-        self._counter: set[tuple[str, str]] = set()
-        self.resets: dict[tuple[str, str], int] = {}
-        self.measured_s: dict[tuple[str, str], float] = {}
-        self.missing_s: dict[tuple[str, str], float] = {}
+        self._last: dict[Key, tuple[float, float | None, float]] = {}  # key -> (t, power, energy)
+        self._offset: defaultdict[Key, float] = defaultdict(float)
+        self._counter: set[Key] = set()
+        self.resets: Counter[Key] = Counter()
+        self.measured_s: defaultdict[Key, float] = defaultdict(float)
+        self.missing_s: defaultdict[Key, float] = defaultdict(float)
 
-    def update(self, readings: list[Reading], now: float | None = None,
-               expected: set[tuple[str, str]] | None = None) -> list[Reading]:
+    def _integrated(self, key: Key, dt: float) -> float:
+        t, p, e = self._last[key]
+        return e if key in self._counter or p is None else e + p * dt
+
+    def update(self, readings: list[Reading], now: float | None = None, expected: set[Key] | None = None) -> list[Reading]:
         now = time.monotonic() if now is None else now
         present = {r.key: r for r in readings}
-        for key in set(present) | set(expected or ()):
-            r = present.get(key)
-            last = self._last.get(key)
-            dt = 0.0
+        for key in present.keys() | (expected or set()):
+            r, last, dt = present.get(key), self._last.get(key), 0.0
             if last is not None:
                 dt = max(0.0, now - last[0])
-                bucket = self.measured_s if last[1] is not None else self.missing_s
-                bucket[key] = bucket.get(key, 0.0) + dt
+                (self.measured_s if last[1] is not None else self.missing_s)[key] += dt
             if r is None:
                 if last is not None:
-                    e = last[2] if key in self._counter else last[2] + (last[1] * dt if last[1] is not None else 0.0)
-                    self._last[key] = (now, None, e)
+                    self._last[key] = (now, None, self._integrated(key, dt))
                 continue
             if r.energy_j is not None:
                 self._counter.add(key)
-                off = self._offset.get(key, 0.0)
-                if last is not None and r.energy_j + off < last[2] - 1e-6:
-                    off = self._offset[key] = last[2]
-                    self.resets[key] = self.resets.get(key, 0) + 1
-                    log.warning("设备 %s/%s 的能耗计数器下降，按复位处理", *key,
+                if last is not None and r.energy_j + self._offset[key] < last[2] - 1e-6:
+                    self._offset[key] = last[2]
+                    self.resets[key] += 1
+                    log.warning("energy counter of %s/%s dropped; treated as a reset", *key,
                                 extra={"event": "energy_counter_reset", "sensor": key[0], "device": key[1]})
-                e = r.energy_j + off
+                r.energy_j += self._offset[key]
             else:
-                e = 0.0 if last is None else last[2] + (last[1] * dt if last[1] is not None else 0.0)
-            r.energy_j = e
-            self._last[key] = (now, r.power_w, e)
+                r.energy_j = 0.0 if last is None else self._integrated(key, dt)
+            self._last[key] = (now, r.power_w, r.energy_j)
         return readings
 
-    def coverage(self, key: tuple[str, str]) -> float | None:
+    def coverage(self, key: Key) -> float | None:
         m, x = self.measured_s.get(key, 0.0), self.missing_s.get(key, 0.0)
         return None if m + x == 0 else m / (m + x)

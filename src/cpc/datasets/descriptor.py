@@ -1,15 +1,16 @@
-"""数据集描述文件：Frictionless Data Package v2 的子集与平台扩展属性 `cpc`。
+"""Dataset descriptors: a subset of Frictionless Data Package v2 plus the platform property `cpc`.
 
-描述文件为数据集目录中的 `datapackage.yaml` 或 `datapackage.json`。平台读取的属性：
+The descriptor is `datapackage.yaml` or `datapackage.json` in the dataset directory. The platform reads:
 
-    name, version, title, description, licenses, sources, contributors   数据包级元数据（Data Package v2）
-    resources[]: name, path, format, hash, bytes, schema                 资源（Data Resource v2）；path 为相对路径或 URL
-    resources[].schema: fields[], missingValues                           表结构（Table Schema v2）
-    fields[]: name, type, format, constraints, unit, description          字段；unit 为平台使用的自定义属性
-    cpc: {kind, profile, ...}                                             平台扩展：数据集类别与规范版本，以及类别相关的属性
+    name, version, title, description, licenses, sources, contributors   package metadata (Data Package v2)
+    resources[]: name, path, format, hash, bytes, schema                 resources (Data Resource v2); path is relative
+    resources[].schema: fields[], missingValues                           table schema (Table Schema v2)
+    fields[]: name, type, format, constraints, unit, description          fields; unit is a custom property
+    cpc: {kind, profile, ...}                                             dataset kind, profile version, kind properties
 
-hash 为可选的出处信息，采用 Data Package v2 的"算法前缀"写法（如 `sha256:<64 位十六进制>`），平台当前不据此校验文件。
-描述文件、资源与字段中的其他属性保留在 extra 中，平台不解释。
+hash is optional provenance in the "algorithm prefix" form of Data Package v2 (e.g. `sha256:<hex>`);
+the platform does not verify files against it. Other properties of the descriptor, resources and
+fields are kept in extra and not interpreted.
 """
 
 from __future__ import annotations
@@ -24,14 +25,19 @@ from typing import Any
 import yaml
 
 DESCRIPTOR_NAMES = ("datapackage.yaml", "datapackage.yml", "datapackage.json")
-FIELD_TYPES = {"string", "number", "integer", "boolean", "datetime", "date", "list", "object", "array", "any"}
-CONSTRAINTS = {"required", "unique", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "enum", "pattern",
-               "minLength", "maxLength"}
+FIELD_TYPES = frozenset({"string", "number", "integer", "boolean", "datetime", "date", "list", "object", "array", "any"})
+CONSTRAINTS = frozenset({"required", "unique", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "enum",
+                         "pattern", "minLength", "maxLength"})
 HASH_RE = re.compile(r"^[a-z0-9]+:[0-9a-f]+$")
+ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 class DatasetError(Exception):
-    """数据集不可用：描述文件无效、文件缺失、校验失败或不符合类别规范。"""
+    """Unusable dataset: invalid descriptor, missing file, failed validation or kind specification violated."""
+
+
+def _extra(d: dict, known: set[str]) -> dict[str, Any]:
+    return {k: v for k, v in d.items() if k not in known}
 
 
 @dataclass(frozen=True)
@@ -42,8 +48,8 @@ class Field:
     constraints: dict[str, Any] = field(default_factory=dict)
     unit: str | None = None
     description: str = ""
-    item_type: str | None = None  # list 类型的元素类型（Table Schema 的 itemType）
-    delimiter: str = ","  # list 类型在 CSV 中的分隔符
+    item_type: str | None = None  # element type of list fields (Table Schema itemType)
+    delimiter: str = ","  # separator of list fields in CSV
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -54,7 +60,7 @@ class Field:
 @dataclass(frozen=True)
 class Resource:
     name: str
-    path: str  # 相对于描述文件目录的路径
+    path: str  # relative to the descriptor directory
     format: str
     hash: str | None
     bytes: int | None
@@ -68,7 +74,7 @@ class Resource:
 
 @dataclass(frozen=True)
 class Descriptor:
-    root: Path  # 描述文件所在目录
+    root: Path  # directory of the descriptor
     file: Path
     name: str
     version: str
@@ -79,7 +85,7 @@ class Descriptor:
     description: str = ""
     licenses: tuple[dict, ...] = ()
     sources: tuple[dict, ...] = ()
-    cpc: dict[str, Any] = field(default_factory=dict)  # cpc 扩展属性（含 kind、profile 及类别相关属性）
+    cpc: dict[str, Any] = field(default_factory=dict)  # the cpc property (kind, profile and kind properties)
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -87,16 +93,15 @@ class Descriptor:
         return f"{self.name}@{self.version}"
 
     def resource(self, name: str) -> Resource:
-        r = next((r for r in self.resources if r.name == name), None)
-        if r is None:
-            raise DatasetError(f"数据集 {self.ref} 没有资源 {name}（已有 {[x.name for x in self.resources]}）")
+        if (r := next((r for r in self.resources if r.name == name), None)) is None:
+            raise DatasetError(f"dataset {self.ref} has no resource {name} (it has {[x.name for x in self.resources]})")
         return r
 
     def local_path(self, r: Resource) -> Path:
-        """资源的本地路径（相对于描述文件目录）。"""
-        p = Path(r.path)
-        if p.is_absolute() or ".." in p.parts:
-            raise DatasetError(f"数据集 {self.ref} 的资源 {r.name} 路径须为描述文件目录内的相对路径：{r.path}")
+        """Local path of a resource (inside the descriptor directory)."""
+        if (p := Path(r.path)).is_absolute() or ".." in p.parts:
+            raise DatasetError(f"dataset {self.ref}: the path of resource {r.name} must be relative and inside "
+                               f"the dataset directory: {r.path}")
         return self.root / p
 
     def summary(self) -> dict:
@@ -108,104 +113,90 @@ class Descriptor:
 
 
 def data_dir() -> Path:
-    """数据集目录：环境变量 CPC_DATA_DIR，未设置时为 ~/.cache/cpc/datasets。"""
+    """Dataset directory: CPC_DATA_DIR, default ~/.cache/cpc/datasets."""
     return Path(os.environ.get("CPC_DATA_DIR") or Path.home() / ".cache" / "cpc" / "datasets")
 
 
 def expand(path: str | os.PathLike, base: Path | None = None) -> Path:
-    """展开 ~ 与 ${VAR} 形式的环境变量；${CPC_DATA_DIR} 未设置时取 data_dir()，其他未定义的变量报错。
-    相对路径相对于 base 解析。"""
+    """Expand ~ and ${VAR}; ${CPC_DATA_DIR} defaults to data_dir(), other undefined variables are errors.
+    Relative paths resolve against base."""
     s = str(path).replace("${CPC_DATA_DIR}", str(data_dir()))
-    for var in re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", s):
-        if var not in os.environ:
-            raise DatasetError(f"路径 {s} 引用了未定义的环境变量 {var}")
-    p = Path(os.path.expanduser(os.path.expandvars(s)))
-    if not p.is_absolute() and base is not None:
-        p = base / p
-    return p
+    if undefined := [v for v in ENV_RE.findall(s) if v not in os.environ]:
+        raise DatasetError(f"path {s} refers to the undefined environment variable {undefined[0]}")
+    p = Path(os.path.expandvars(s)).expanduser()
+    return base / p if base is not None and not p.is_absolute() else p
 
 
 def find_descriptor(path: str | os.PathLike, base: Path | None = None) -> Path:
     p = expand(path, base)
     if p.is_dir():
-        found = [p / n for n in DESCRIPTOR_NAMES if (p / n).is_file()]
-        if not found:
-            raise DatasetError(f"目录 {p} 中没有数据集描述文件（{' / '.join(DESCRIPTOR_NAMES)}）")
+        if not (found := [p / n for n in DESCRIPTOR_NAMES if (p / n).is_file()]):
+            raise DatasetError(f"directory {p} has no dataset descriptor ({' / '.join(DESCRIPTOR_NAMES)})")
         return found[0]
     if p.is_file():
         return p
-    hint = f"；路径中的 ${{CPC_DATA_DIR}} 为 {data_dir()}" if "${CPC_DATA_DIR}" in str(path) else ""
-    raise DatasetError(f"数据集 {p} 不存在：请先准备该数据集（见《使用手册》\"数据\"一章）{hint}")
+    hint = f"; ${{CPC_DATA_DIR}} is {data_dir()}" if "${CPC_DATA_DIR}" in str(path) else ""
+    raise DatasetError(f"dataset {p} does not exist: prepare it first (see the guide, chapter \"Data\"){hint}")
 
 
 def _field(d: dict, where: str) -> Field:
     if "name" not in d:
-        raise DatasetError(f"{where}：字段缺少 name")
-    t = d.get("type", "any")
-    if t not in FIELD_TYPES:
-        raise DatasetError(f"{where}：字段 {d['name']} 的类型 {t} 不受支持（可用 {sorted(FIELD_TYPES)}）")
+        raise DatasetError(f"{where}: a field has no name")
+    if (t := d.get("type", "any")) not in FIELD_TYPES:
+        raise DatasetError(f"{where}: field {d['name']} has the unsupported type {t} (supported: {sorted(FIELD_TYPES)})")
     cons = dict(d.get("constraints") or {})
-    unknown = set(cons) - CONSTRAINTS
-    if unknown:
-        raise DatasetError(f"{where}：字段 {d['name']} 含不支持的约束 {sorted(unknown)}")
-    known = {"name", "type", "format", "constraints", "unit", "description", "itemType", "delimiter"}
+    if unknown := set(cons) - CONSTRAINTS:
+        raise DatasetError(f"{where}: field {d['name']} has unsupported constraints {sorted(unknown)}")
     return Field(name=d["name"], type=t, format=d.get("format", "default"), constraints=cons, unit=d.get("unit"),
                  description=d.get("description", ""), item_type=d.get("itemType"), delimiter=d.get("delimiter", ","),
-                 extra={k: v for k, v in d.items() if k not in known})
+                 extra=_extra(d, {"name", "type", "format", "constraints", "unit", "description", "itemType", "delimiter"}))
 
 
 def _resource(d: dict, where: str) -> Resource:
-    for k in ("name", "path"):
-        if k not in d:
-            raise DatasetError(f"{where}：资源缺少 {k}（平台要求资源以 path 给出文件，不支持内联 data）")
+    if missing := [k for k in ("name", "path") if k not in d]:
+        raise DatasetError(f"{where}: a resource has no {missing[0]} (resources must be files given by path; "
+                           "inline data are not supported)")
+    name = d["name"]
     if not isinstance(d["path"], str):
-        raise DatasetError(f"{where}：资源 {d['name']} 的 path 须为单个文件")
-    fmt = d.get("format") or d["path"].rsplit(".", 1)[-1].lower()
-    if fmt not in ("csv", "parquet"):
-        raise DatasetError(f"{where}：资源 {d['name']} 的格式 {fmt} 不受支持（csv、parquet）")
-    h = d.get("hash")
-    if h is not None and not HASH_RE.match(h):
-        raise DatasetError(f"{where}：资源 {d['name']} 的 hash 须为 <算法>:<十六进制摘要>，当前为 {h}")
-    schema = d.get("schema")
-    if not isinstance(schema, dict) or not schema.get("fields"):
-        raise DatasetError(f"{where}：资源 {d['name']} 须内联给出 schema.fields")
-    fields = tuple(_field(f, f"{where} 资源 {d['name']}") for f in schema["fields"])
-    names = [f.name for f in fields]
-    if len(set(names)) != len(names):
-        raise DatasetError(f"{where}：资源 {d['name']} 的字段名重复")
-    mv = schema.get("missingValues", [""])
-    mv = tuple(x["value"] if isinstance(x, dict) else x for x in mv)
-    known = {"name", "path", "format", "hash", "bytes", "schema", "type", "mediatype", "encoding"}
-    return Resource(name=d["name"], path=d["path"], format=fmt, hash=h, bytes=d.get("bytes"), fields=fields,
-                    missing_values=mv, extra={k: v for k, v in d.items() if k not in known})
+        raise DatasetError(f"{where}: the path of resource {name} must be a single file")
+    if (fmt := d.get("format") or d["path"].rsplit(".", 1)[-1].lower()) not in ("csv", "parquet"):
+        raise DatasetError(f"{where}: resource {name} has the unsupported format {fmt} (csv, parquet)")
+    if (h := d.get("hash")) is not None and not HASH_RE.match(h):
+        raise DatasetError(f"{where}: the hash of resource {name} must be <algorithm>:<hex digest>, got {h}")
+    if not isinstance(schema := d.get("schema"), dict) or not schema.get("fields"):
+        raise DatasetError(f"{where}: resource {name} needs an inline schema.fields")
+    fields = tuple(_field(f, f"{where}, resource {name}") for f in schema["fields"])
+    if len({f.name for f in fields}) != len(fields):
+        raise DatasetError(f"{where}: resource {name} has duplicate field names")
+    missing_values = tuple(x["value"] if isinstance(x, dict) else x for x in schema.get("missingValues", [""]))
+    return Resource(name=name, path=d["path"], format=fmt, hash=h, bytes=d.get("bytes"), fields=fields,
+                    missing_values=missing_values,
+                    extra=_extra(d, {"name", "path", "format", "hash", "bytes", "schema", "type", "mediatype", "encoding"}))
 
 
 def load_descriptor(path: str | os.PathLike, base: Path | None = None) -> Descriptor:
-    """读取并检查描述文件的结构（不读取数据文件）。path 为描述文件或其所在目录。"""
+    """Read a descriptor and check its structure and kind (without reading the data files).
+    path is the descriptor or its directory."""
     f = find_descriptor(path, base)
     try:
         text = f.read_text(encoding="utf-8")
         raw = json.loads(text) if f.suffix == ".json" else yaml.safe_load(text)
     except (OSError, ValueError, yaml.YAMLError) as e:
-        raise DatasetError(f"无法读取数据集描述文件 {f}：{e}") from e
+        raise DatasetError(f"cannot read the dataset descriptor {f}: {e}") from e
     if not isinstance(raw, dict):
-        raise DatasetError(f"数据集描述文件 {f} 的顶层须为对象")
-    where = str(f)
-    for k in ("name", "version", "resources", "cpc"):
-        if k not in raw:
-            raise DatasetError(f"{where}：缺少 {k}")
-    cpc = raw["cpc"]
-    if not isinstance(cpc, dict) or "kind" not in cpc or "profile" not in cpc:
-        raise DatasetError(f"{where}：cpc 须给出 kind 与 profile")
-    res = raw["resources"]
-    if not isinstance(res, list) or not res:
-        raise DatasetError(f"{where}：resources 须为非空数组")
-    resources = tuple(_resource(r, where) for r in res)
-    known = {"name", "version", "title", "description", "licenses", "sources", "resources", "cpc", "$schema"}
+        raise DatasetError(f"the top level of the dataset descriptor {f} must be an object")
+    if missing := [k for k in ("name", "version", "resources", "cpc") if k not in raw]:
+        raise DatasetError(f"{f}: {missing[0]} is missing")
+    if not isinstance(cpc := raw["cpc"], dict) or "kind" not in cpc or "profile" not in cpc:
+        raise DatasetError(f"{f}: cpc needs kind and profile")
+    if not isinstance(res := raw["resources"], list) or not res:
+        raise DatasetError(f"{f}: resources must be a non-empty array")
     d = Descriptor(root=f.parent, file=f, name=str(raw["name"]), version=str(raw["version"]), kind=str(cpc["kind"]),
-                   profile=int(cpc["profile"]), resources=resources, title=raw.get("title", ""),
-                   description=raw.get("description", ""), licenses=tuple(raw.get("licenses") or ()),
-                   sources=tuple(raw.get("sources") or ()), cpc=dict(cpc), extra={k: v for k, v in raw.items() if k not in known})
+                   profile=int(cpc["profile"]), resources=tuple(_resource(r, str(f)) for r in res),
+                   title=raw.get("title", ""), description=raw.get("description", ""),
+                   licenses=tuple(raw.get("licenses") or ()), sources=tuple(raw.get("sources") or ()), cpc=dict(cpc),
+                   extra=_extra(raw, {"name", "version", "title", "description", "licenses", "sources", "resources",
+                                      "cpc", "$schema"}))
     from .profiles import check_descriptor
 
     check_descriptor(d)
@@ -213,7 +204,7 @@ def load_descriptor(path: str | os.PathLike, base: Path | None = None) -> Descri
 
 
 def write_descriptor(d: dict, directory: str | os.PathLike) -> Path:
-    """写出 datapackage.yaml（供数据转换脚本使用）。"""
+    """Write datapackage.yaml (used by conversion scripts)."""
     p = Path(directory) / "datapackage.yaml"
     p.write_text(yaml.safe_dump(d, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return p

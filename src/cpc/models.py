@@ -1,63 +1,70 @@
-"""基础模型：服务器模型（功率与时延，按表插值）、广域网时延模型、信号时钟。
+"""Base models: server model (power and latency, interpolated from tables), wide-area latency model,
+signal clock.
 
-服务器模型由数据中心运行时调用，仿真器与站点代理（仿真服务器）共用，保证两种运行方式下的物理假设一致。
+The server model is evaluated by the data-centre runtime, which both the simulator and the site
+agent (for emulated servers) drive, so both modes share the same physical assumptions.
 """
 
 from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass
+from bisect import bisect_left
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from .config import NetworkConfig, NodeProfile, Scenario, SiteConfig, SourceRegion
 
-# ---------------------------------------------------------------- 功率模型
+# ---------------------------------------------------------------- power model
 
 
 def interp(table: list[tuple[float, float]], x: float) -> float:
-    """分段线性插值；超出表的范围时取端点值。"""
-    if x <= table[0][0]:
+    """Piecewise-linear interpolation; values outside the table take the end points."""
+    i = bisect_left(table, x, key=lambda p: p[0])
+    if i == 0:
         return table[0][1]
-    for (x0, y0), (x1, y1) in zip(table, table[1:]):
-        if x <= x1:
-            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
-    return table[-1][1]
+    if i == len(table):
+        return table[-1][1]
+    (x0, y0), (x1, y1) = table[i - 1], table[i]
+    return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+
+
+def _clamp(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    return min(max(v, lo), hi)
 
 
 def idle_w(p: NodeProfile) -> float:
-    """在线空载功率（表中 u = 0 的取值）。"""
+    """Online idle power (the table value at u = 0)."""
     return p.power_w[0][1]
 
 
 def peak_w(p: NodeProfile) -> float:
-    """满载功率（表中的最大值）。"""
+    """Full-load power (the largest table value)."""
     return max(y for _, y in p.power_w)
 
 
 def cap_limit_w(p: NodeProfile, cap_ratio: float) -> float:
-    """封顶比例 c 下的功率上限：空载 + c × (满载 − 空载)。"""
-    c = min(max(cap_ratio, p.cap_min_ratio), 1.0)
-    return idle_w(p) + c * (peak_w(p) - idle_w(p))
+    """Power limit at cap ratio c: idle + c x (peak - idle)."""
+    return idle_w(p) + _clamp(cap_ratio, p.cap_min_ratio) * (peak_w(p) - idle_w(p))
 
 
 def power_w(p: NodeProfile, state: str, occupancy: float, cap_ratio: float = 1.0) -> float:
-    """服务器 IT 功率。state ∈ {off, booting, on, draining}；启动中按在线空载计；功率不超过封顶上限。"""
-    if state == "off":
-        return p.off_w
-    if state == "booting":
-        return idle_w(p)
-    v = interp(p.power_w, min(max(occupancy, 0.0), 1.0))
+    """Server IT power in state off / booting / on / draining; booting counts as online idle; capped."""
+    match state:
+        case "off":
+            return p.off_w
+        case "booting":
+            return idle_w(p)
+    v = interp(p.power_w, _clamp(occupancy))
     return v if cap_ratio >= 1.0 else min(v, cap_limit_w(p, cap_ratio))
 
 
-# ---------------------------------------------------------------- 性能模型
+# ---------------------------------------------------------------- performance model
 
 
 def speed_factor(p: NodeProfile, cap_ratio: float) -> float:
-    """功率封顶后的相对速度：c ^ cap_perf_exponent（c 截断到 [cap_min_ratio, 1]）。"""
-    c = min(max(cap_ratio, p.cap_min_ratio), 1.0)
-    return c**p.cap_perf_exponent
+    """Relative speed under a power cap: c ** cap_perf_exponent, c clamped to [cap_min_ratio, 1]."""
+    return _clamp(cap_ratio, p.cap_min_ratio) ** p.cap_perf_exponent
 
 
 def prefill_s(p: NodeProfile, input_tokens: int, cap_ratio: float = 1.0) -> float:
@@ -65,28 +72,26 @@ def prefill_s(p: NodeProfile, input_tokens: int, cap_ratio: float = 1.0) -> floa
 
 
 def tpot_s(p: NodeProfile, occupancy: float, cap_ratio: float = 1.0) -> float:
-    return interp(p.tpot_s, min(max(occupancy, 0.0), 1.0)) / speed_factor(p, cap_ratio)
+    return interp(p.tpot_s, _clamp(occupancy)) / speed_factor(p, cap_ratio)
 
 
 def service_s(p: NodeProfile, input_tokens: int, output_tokens: int, occupancy: float, cap_ratio: float = 1.0) -> float:
     return prefill_s(p, input_tokens, cap_ratio) + output_tokens * tpot_s(p, occupancy, cap_ratio)
 
 
-# ---------------------------------------------------------------- 广域网时延
+# ---------------------------------------------------------------- wide-area latency
+
+EARTH_RADIUS_KM = 6371.0
 
 
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    r = 6371.0
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dp, dl = p2 - p1, math.radians(lon2 - lon1)
     a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 2 * r * math.asin(math.sqrt(a))
+    return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(a))
 
 
 def rtt_ms(src: SourceRegion, site: SiteConfig, net: NetworkConfig) -> float:
-    ov = net.overrides.get(src.id, {})
-    if site.id in ov:
-        return float(ov[site.id])
     d = haversine_km(src.lat, src.lon, site.lat, site.lon)
     return net.base_ms + 2.0 * d * net.route_factor / net.km_per_ms
 
@@ -95,39 +100,29 @@ def rtt_matrix(scn: Scenario) -> dict[str, dict[str, float]]:
     return {s.id: {d.id: round(rtt_ms(s, d, scn.network), 2) for d in scn.sites} for s in scn.sources}
 
 
-# ---------------------------------------------------------------- 信号时钟
+# ---------------------------------------------------------------- signal clock
 
 
 @dataclass
 class SimClock:
-    """信号时钟。真实部署时 speedup=1；演示时可加速（如 60：真实 1 分钟 = 信号 1 小时）。
-
-    多个服务之间以电网信号服务的 /v1/clock 为准同步 epoch。
-    """
+    """Signal clock. speedup is 1 in real deployments; demonstrations may accelerate it
+    (60: one real minute is one signal hour). Services synchronise the epoch from /v1/clock of the
+    grid-signal service."""
 
     start: datetime
     speedup: float = 1.0
-    epoch_wall: float | None = None
-
-    def __post_init__(self) -> None:
-        if self.epoch_wall is None:
-            self.epoch_wall = time.time()
+    epoch_wall: float = field(default_factory=time.time)
 
     def now(self) -> datetime:
         return self.at_wall(time.time())
 
     def at_wall(self, wall: float) -> datetime:
-        assert self.epoch_wall is not None
         return self.start + timedelta(seconds=(wall - self.epoch_wall) * self.speedup)
 
     def to_dict(self) -> dict:
-        return {
-            "start": self.start.isoformat(),
-            "speedup": self.speedup,
-            "epoch_wall": self.epoch_wall,
-            "now": self.now().isoformat(),
-        }
+        return {"start": self.start.isoformat(), "speedup": self.speedup, "epoch_wall": self.epoch_wall,
+                "now": self.now().isoformat()}
 
     @classmethod
-    def from_dict(cls, d: dict) -> "SimClock":
+    def from_dict(cls, d: dict) -> SimClock:
         return cls(start=datetime.fromisoformat(d["start"]), speedup=float(d["speedup"]), epoch_wall=float(d["epoch_wall"]))

@@ -1,1 +1,1 @@
-"""cpc.site"""
+"""Site agent."""

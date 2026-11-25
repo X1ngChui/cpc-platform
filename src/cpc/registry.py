@@ -1,59 +1,53 @@
-"""插件注册：内置实现以装饰器注册；第三方实现以 Python 包的 entry points 提供。
+"""Plugin registry: built-in implementations register with a decorator; third-party ones as entry points.
 
-entry point 组与类别：
-    cpc.routing    跨站点路由策略（RoutingPolicy）
-    cpc.capacity   跨站点容量策略（CapacityPolicy）
-    cpc.dispatch   站内派发策略（DispatchPolicy）
-    cpc.power      站内电源管理策略（PowerPolicy）
-    cpc.sensors    功率传感器（Sensor）
+Entry-point groups and the interface each provides:
+    cpc.routing    global routing policy          (cpc.sched.RoutingPolicy)
+    cpc.capacity   global capacity policy         (cpc.sched.CapacityPolicy)
+    cpc.dispatch   local dispatch policy          (cpc.sched.DispatchPolicy)
+    cpc.power      local power-management policy  (cpc.sched.PowerPolicy)
+    cpc.sensors    power sensor                   (cpc.sensors.Sensor)
 
-第三方包在 pyproject.toml 中声明，例如：
+A package declares its implementations in pyproject.toml, for example:
     [project.entry-points."cpc.routing"]
     my_policy = "my_package.policies:MyPolicy"
-名称冲突（与内置实现或其他包重名）时报错。
+A name that clashes with a built-in or another package is an error.
 """
 
 from __future__ import annotations
 
-import difflib
 import inspect
 from importlib.metadata import entry_points
-from typing import Callable, Generic, Iterable, TypeVar
+from typing import Callable, Generic, TypeVar
 
-from .config import ConfigError
+from .config import ConfigError, did_you_mean
 
 T = TypeVar("T")
 
-LABELS = {"routing": "路由策略", "capacity": "容量策略", "dispatch": "派发策略", "power": "电源管理策略",
-          "sensors": "功率传感器类型"}
+LABELS = {"routing": "routing policy", "capacity": "capacity policy", "dispatch": "dispatch policy",
+          "power": "power policy", "sensors": "sensor type"}
 
-
-def did_you_mean(word: str, choices: Iterable[str]) -> str:
-    """与 word 最接近的候选名，形如"（是否要写 nearest？）"；没有接近的候选时为空串。"""
-    m = difflib.get_close_matches(word, list(choices), n=1, cutoff=0.6)
-    return f"（是否要写 {m[0]}？）" if m else ""
+__all__ = ["LABELS", "Registry", "accepted_params", "did_you_mean", "unknown_params"]
 
 
 def accepted_params(cls: type) -> list[str]:
-    """类及其基类的构造参数名（不含 self、*args、**kwargs）。"""
-    out: list[str] = []
+    """Keyword parameters accepted by the constructors of cls and its bases (without self, *args, **kwargs)."""
+    names: dict[str, None] = {}
     for klass in cls.__mro__:
-        init = vars(klass).get("__init__")
-        if init is None or klass is object:
+        if klass is object or (init := vars(klass).get("__init__")) is None:
             continue
-        for p in inspect.signature(init).parameters.values():
-            if p.name != "self" and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY) and p.name not in out:
-                out.append(p.name)
-    return out
+        names |= {p.name: None for p in inspect.signature(init).parameters.values()
+                  if p.name != "self" and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)}
+    return list(names)
 
 
 def unknown_params(label: str, obj: object, params: dict) -> ConfigError:
-    """策略收到不接受的参数时的错误：列出不接受的参数、相近的参数名与可用参数。"""
+    """Error for parameters a plugin does not accept: lists them, a close match and the accepted ones."""
     bad = sorted(params)
     ok = accepted_params(type(obj))
     hint = did_you_mean(bad[0], ok) if len(bad) == 1 else ""
-    avail = f"可用参数：{'、'.join(ok)}" if ok else "该策略没有参数"
-    return ConfigError(f"{label} {getattr(obj, 'name', type(obj).__name__)} 不接受参数 {'、'.join(bad)}{hint}。{avail}")
+    avail = f"accepted: {', '.join(ok)}" if ok else "it takes no parameters"
+    name = getattr(obj, "name", type(obj).__name__)
+    return ConfigError(f"{label} {name} does not accept {', '.join(bad)}{hint}; {avail}")
 
 
 class Registry(Generic[T]):
@@ -64,32 +58,30 @@ class Registry(Generic[T]):
         self._items: dict[str, type[T]] = {}
         self._loaded = False
 
+    def _add(self, name: str, cls: type[T], origin: str) -> None:
+        if self._items.get(name, cls) is not cls:
+            raise ValueError(f"{origin}: {self.label} name {name} is already registered")
+        cls.name = name  # type: ignore[attr-defined]
+        self._items[name] = cls
+
     def register(self, name: str) -> Callable[[type[T]], type[T]]:
         def deco(cls: type[T]) -> type[T]:
-            if name in self._items and self._items[name] is not cls:
-                raise ValueError(f"{self.kind} 名称重复：{name}")
-            cls.name = name  # type: ignore[attr-defined]
-            self._items[name] = cls
+            self._add(name, cls, cls.__qualname__)
             return cls
 
         return deco
 
     def _load_entry_points(self) -> None:
-        if self._loaded:
-            return
-        self._loaded = True
-        for ep in entry_points(group=self.group):
-            cls = ep.load()
-            if ep.name in self._items and self._items[ep.name] is not cls:
-                raise ValueError(f"{self.group} 的 entry point {ep.name} 与已有实现重名")
-            cls.name = ep.name
-            self._items[ep.name] = cls
+        if not self._loaded:
+            self._loaded = True
+            for ep in entry_points(group=self.group):
+                self._add(ep.name, ep.load(), f"entry point {ep.value}")
 
     def get(self, name: str) -> type[T]:
         self._load_entry_points()
         if name not in self._items:
-            raise ConfigError(f"未知的{self.label} {name}{did_you_mean(name, self._items)}。"
-                              f"可选：{'、'.join(sorted(self._items))}")
+            raise ConfigError(f"unknown {self.label} {name}{did_you_mean(name, self._items)}; "
+                              f"available: {', '.join(sorted(self._items))}")
         return self._items[name]
 
     def names(self) -> list[str]:
@@ -97,6 +89,6 @@ class Registry(Generic[T]):
         return sorted(self._items)
 
     def all(self) -> dict[str, type[T]]:
-        """全部已注册的实现（名称 → 类），含 entry points 提供的实现。"""
+        """All registered implementations (name -> class), entry points included."""
         self._load_entry_points()
         return dict(self._items)

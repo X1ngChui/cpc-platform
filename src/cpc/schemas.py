@@ -1,6 +1,8 @@
-"""服务之间交换的数据结构（JSON）。在线服务与仿真器共用，策略代码只依赖这些结构。
+"""Data exchanged between services (JSON). Shared by the live services and the simulator; policies
+depend only on these structures.
 
-功率与能耗字段可能为 None：表示对应读数缺失（传感器故障、设备无读数等），缺失原因见 power_missing 与 components。
+Power and energy fields may be None: the reading is missing (sensor failure, device without a
+reading, ...); power_missing and components say why.
 """
 
 from __future__ import annotations
@@ -9,7 +11,7 @@ from pydantic import BaseModel, Field
 
 
 class NodeSnapshot(BaseModel):
-    """服务器状态。"""
+    """State of one server."""
 
     id: str
     pool: str = ""
@@ -17,15 +19,15 @@ class NodeSnapshot(BaseModel):
     slots: int
     busy: int
     cap_ratio: float = 1.0
-    it_power_w: float | None = None  # 缺失时为 None
+    it_power_w: float | None = None  # None when missing
     gpu_power_w: float | None = None
-    power_source: str = "model"  # model（功率模型）/ sensors（传感器实测）
-    power_missing: list[str] = Field(default_factory=list)  # 缺失的功率组成部分，如 device:gpu0、host
-    last_error: str | None = None  # 最近一次开关机或功率封顶操作的错误
+    power_source: str = "model"  # model (power model) / sensors (measured)
+    power_missing: list[str] = Field(default_factory=list)  # missing power components, e.g. device:gpu0, host
+    last_error: str | None = None  # last error of a power or power-cap action
 
 
 class PoolSnapshot(BaseModel):
-    """服务器池摘要。"""
+    """Summary of a server pool."""
 
     id: str
     profile: str
@@ -40,38 +42,39 @@ class PoolSnapshot(BaseModel):
 
 
 class SiteSnapshot(BaseModel):
-    """数据中心状态摘要（站点代理 GET /state 的返回；仿真器中由同一运行时给出）。
+    """Summary of a data centre (GET /state of a site agent; produced by the same runtime in simulation).
 
-    服务器池可以异构：slots_per_node、node_idle_w、node_peak_w 为全部服务器的平均值，各池的取值见 pools。
+    Pools may be heterogeneous: slots_per_node, node_idle_w and node_peak_w average over all servers;
+    pools gives the per-pool values.
     """
 
     site: str
-    ts: float = 0.0  # 采样时刻（真实 Unix 时间；仿真中为仿真秒）
+    ts: float = 0.0  # sampling time (Unix time; simulated seconds in simulation)
     backend: str = "emulated"  # emulated / openai / mixed
     nodes_total: int
     nodes_on: int
     nodes_booting: int = 0
     nodes_draining: int = 0
     slots_per_node: float
-    slots_on: int  # 在线（可接新请求）的并发槽数
-    busy: int  # 正在服务的请求数
-    queue_len: int  # 排队等待的请求数
+    slots_on: int  # slots of online servers (accepting new requests)
+    busy: int  # requests in service
+    queue_len: int  # requests waiting
     queue_limit: int
     cap_ratio: float = 1.0
-    cap_min_ratio: float = 0.5  # 节点允许的最低功率封顶比例（节点配置参数）
-    it_power_w: float | None  # 任一节点功率缺失时为 None
+    cap_min_ratio: float = 0.5  # lowest power-cap ratio of the servers (profile parameter)
+    it_power_w: float | None  # None when the power of any server is missing
     facility_power_w: float | None
     pue: float
-    power_scope: str = "node"  # node：加速卡 + 主机部分；accelerators：只含加速卡（主机部分不计入）
-    energy_it_j: float = 0.0  # 功率有效区间内的累计 IT 能耗
-    energy_coverage: float | None = None  # 功率有效时长占比（节点·秒加权）；尚无数据时为 None
-    est_service_s: float = 5.0  # 平均服务时间的滑动估计
-    arrival_rate: float = 0.0  # 到达率（请求/秒，滑动估计）
-    node_idle_w: float = 0.0  # 服务器在线空载功率（模型参数，平均值）
-    node_peak_w: float = 0.0  # 服务器满载功率（模型参数，平均值）
+    power_scope: str = "node"  # node: accelerators + host; accelerators: host part not counted
+    energy_it_j: float = 0.0  # IT energy accumulated over intervals with valid power
+    energy_coverage: float | None = None  # share of server-seconds with valid power; None before any data
+    est_service_s: float = 5.0  # moving estimate of the mean service time
+    arrival_rate: float = 0.0  # requests per second (moving estimate)
+    node_idle_w: float = 0.0  # online idle power of a server (profile parameter, mean)
+    node_peak_w: float = 0.0  # full-load power of a server (profile parameter, mean)
     pools: list[PoolSnapshot] = Field(default_factory=list)
     nodes: list[NodeSnapshot] = Field(default_factory=list)
-    components: dict[str, dict] = Field(default_factory=dict)  # 子模块（功率传感器等）的健康状态
+    components: dict[str, dict] = Field(default_factory=dict)  # health of sub-components (power sensors, ...)
 
     @property
     def utilization(self) -> float:
@@ -83,16 +86,16 @@ class SiteSnapshot(BaseModel):
 
 
 class CapacityTarget(BaseModel):
-    """数据中心指令（全局 → 本地）：目标在线服务器数与功率封顶比例（None 表示不改变）。"""
+    """Instruction to a data centre (global -> local): servers to keep online and power-cap ratio (None: unchanged)."""
 
     active_nodes: int | None = None
     cap_ratio: float | None = None
 
 
 class DemandSnapshot(BaseModel):
-    """网关 GET /state 中的需求统计。"""
+    """Demand statistics of the gateway (GET /state)."""
 
-    rates: dict[str, float] = Field(default_factory=dict)  # 各来源区域的到达率（请求/秒）
-    site_rates: dict[str, float] = Field(default_factory=dict)  # 各站点被分配的请求率
+    rates: dict[str, float] = Field(default_factory=dict)  # arrival rate per source region (requests/s)
+    site_rates: dict[str, float] = Field(default_factory=dict)  # rate routed to each site
     policy: str = ""
     weights: dict[str, dict[str, float]] = Field(default_factory=dict)

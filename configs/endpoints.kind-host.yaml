@@ -1,9 +1,0 @@
-# 从宿主机访问 kind 集群中的服务（NodePort）；由 deploy/k8s/generate.py 生成
-grid: http://127.0.0.1:30900
-gateway: http://127.0.0.1:30080
-controller: http://127.0.0.1:30930
-sites:
-  sh: http://127.0.0.1:30101
-  gd: http://127.0.0.1:30102
-  gz: http://127.0.0.1:30103
-  nm: http://127.0.0.1:30104

@@ -1,4 +1,5 @@
-"""数据集：描述文件与类别规范的校验、列式读取、负载变换、电网信号查询、功率特性标定。"""
+"""Datasets: descriptor and kind checks, columnar reading, workload transformation, grid-signal lookup,
+power-profile calibration."""
 
 from __future__ import annotations
 
@@ -30,7 +31,7 @@ def workload(tmp_path, t, extra=None, fields=None, **kw):
                          fields=fields or CORE + [{"name": k, "type": "string"} for k in (extra or {})], **kw)
 
 
-# ------------------------------------------------------------------ 描述文件与规范
+# ------------------------------------------------------------------ descriptors and kinds
 
 
 def test_descriptor_and_profile_checks(tmp_path):
@@ -46,30 +47,30 @@ def test_descriptor_and_profile_checks(tmp_path):
             load_descriptor(d.root)
 
     fields = lambda r: r["resources"][0]["schema"]["fields"]  # noqa: E731
-    broken(lambda r: fields(r).pop(2), "output_tokens")  # 缺核心字段
-    broken(lambda r: fields(r)[0].update(unit="ms"), "unit")  # 单位不符
-    broken(lambda r: fields(r)[1].update(type="string"), "类型")  # 类型不符
-    broken(lambda r: r["cpc"].update(kind="trace"), "未定义")
-    broken(lambda r: r["cpc"].update(origin="2024-05-10T00:00:00"), "时区")
+    broken(lambda r: fields(r).pop(2), "output_tokens")  # core field missing
+    broken(lambda r: fields(r)[0].update(unit="ms"), "unit")  # wrong unit
+    broken(lambda r: fields(r)[1].update(type="string"), "type")  # wrong type
+    broken(lambda r: r["cpc"].update(kind="trace"), "undefined kind")
+    broken(lambda r: r["cpc"].update(origin="2024-05-10T00:00:00"), "UTC offset")
     broken(lambda r: r["resources"][0].update(format="xlsx"), "xlsx")
 
 
 def test_table_constraints_and_order(tmp_path):
     d = workload(tmp_path, [0.0, 2.0, 1.0])
-    with pytest.raises(DatasetError, match="非降序"):
+    with pytest.raises(DatasetError, match="ordered by arrival_s"):
         load_trace(d)
-    with pytest.raises(DatasetError, match="不满足"):
+    with pytest.raises(DatasetError, match="violates"):
         write_dataset(tmp_path / "neg", name="n", version="1", kind="workload", fields=CORE,
                       table=pa.table({"arrival_s": [-1.0], "input_tokens": [1], "output_tokens": [1]}))
-    with pytest.raises(DatasetError, match="空值"):
+    with pytest.raises(DatasetError, match="empty values"):
         write_dataset(tmp_path / "null", name="n", version="1", kind="workload", fields=CORE,
                       table=pa.table({"arrival_s": [0.0], "input_tokens": pa.array([None], pa.int64()), "output_tokens": [1]}))
-    with pytest.raises(DatasetError, match="不满足"):  # output_tokens 规范要求 ≥ 1
+    with pytest.raises(DatasetError, match="violates"):  # the specification requires output_tokens >= 1
         write_dataset(tmp_path / "zero", name="n", version="1", kind="workload", fields=CORE,
                       table=pa.table({"arrival_s": [0.0], "input_tokens": [1], "output_tokens": [0]}))
     d = workload(tmp_path, [0.0])
     (d.root / "requests.parquet").unlink()
-    with pytest.raises(DatasetError, match="缺少文件"):
+    with pytest.raises(DatasetError, match="is missing"):
         validate(d)
 
 
@@ -87,9 +88,9 @@ def test_csv_list_field_and_missing_values(tmp_path):
     tr = load_trace(load_descriptor(p), ["prefix_hashes", "model"])
     assert tr.attrs["prefix_hashes"] == [[1, 2, 3], None] and tr.attrs["model"] == ["a", None]
     assert tr.attrs_of(0) == {"prefix_hashes": [1, 2, 3], "model": "a"}
-    with pytest.raises(DatasetError, match="核心字段"):
+    with pytest.raises(DatasetError, match="core fields"):
         load_trace(load_descriptor(p), ["arrival_s"])
-    with pytest.raises(DatasetError, match="未声明"):
+    with pytest.raises(DatasetError, match="does not declare"):
         load_trace(load_descriptor(p), ["tenant"])
 
 
@@ -102,7 +103,7 @@ def test_expand_paths(monkeypatch, tmp_path):
         expand("${NO_SUCH_VAR}/x")
 
 
-# ------------------------------------------------------------------ 负载
+# ------------------------------------------------------------------ workload
 
 
 def test_trace_transform(tmp_path):
@@ -112,14 +113,14 @@ def test_trace_transform(tmp_path):
     assert len(w) == 20 and w.t[0] == 0.0 and w.t[-1] == pytest.approx(9.5)
     assert w.origin == datetime(2024, 5, 10, 0, 0, 10, tzinfo=UTC)
     up = TraceTransform(rate_scale=2.0, seed=3).apply(tr)
-    assert len(up) == 200 and np.all(np.diff(up.t) >= 0)  # 整数倍：每个请求复制一份
+    assert len(up) == 200 and np.all(np.diff(up.t) >= 0)  # integer factor: every request repeated
     down = TraceTransform(rate_scale=0.5, seed=3).apply(tr)
     assert 30 < len(down) < 70
-    with pytest.raises(DatasetError, match="超出"):
+    with pytest.raises(DatasetError, match="is outside"):
         TraceTransform(start_s=50, duration_s=100).apply(tr)
 
 
-# ------------------------------------------------------------------ 电网信号
+# ------------------------------------------------------------------ grid signals
 
 
 def signals(tmp_path, rows, meta=None):
@@ -140,15 +141,15 @@ def test_signal_lookup_gaps_and_overlaps(tmp_path):
                                       ("A", h(0), h(3), "carbon_intensity", 0.5)]))
     assert ss.value("price", "A", h(0.5)).value == 0.1 and ss.value("price", "A", h(2)).value == 0.3
     assert ss.coverage("price", "A") == (h(0), h(3)) and ss.unit("price") == "EUR/kWh"
-    with pytest.raises(SignalUnavailable, match="没有数据"):
-        ss.value("price", "A", h(1.5))  # 时段空隙
+    with pytest.raises(SignalUnavailable, match="no price data"):
+        ss.value("price", "A", h(1.5))  # gap between periods
     with pytest.raises(SignalUnavailable):
         ss.value("price", "B", h(0))
-    with pytest.raises(DatasetError, match="重叠"):
+    with pytest.raises(DatasetError, match="overlap"):
         SignalSet(signals(tmp_path, [("A", h(0), h(2), "price", 0.1), ("A", h(1), h(3), "price", 0.2)]))
-    with pytest.raises(DatasetError, match="未在 cpc.signals"):
+    with pytest.raises(DatasetError, match="not declared in cpc.signals"):
         SignalSet(signals(tmp_path, [("A", h(0), h(1), "renewable_share", 0.4)]))
-    with pytest.raises(DatasetError, match="单位"):
+    with pytest.raises(DatasetError, match="unit"):
         signals(tmp_path, [("A", h(0), h(1), "price", 0.1)], meta={"price": {"unit": "EUR"}})
 
 
@@ -160,10 +161,10 @@ def test_converted_cn_grid_dataset():
     assert ss.value("price", "guangdong", datetime(2026, 7, 15, 3, tzinfo=cst)).value == pytest.approx(0.65 * 0.38)
     assert ss.value("carbon_intensity", "guizhou", datetime(2026, 7, 20, tzinfo=cst)).value == pytest.approx(0.5683)
     with pytest.raises(SignalUnavailable):
-        ss.value("price", "guangdong", datetime(2026, 8, 1, 0, 30, tzinfo=cst))  # 转换范围之外
+        ss.value("price", "guangdong", datetime(2026, 8, 1, 0, 30, tzinfo=cst))  # outside the converted range
 
 
-# ------------------------------------------------------------------ 功率特性
+# ------------------------------------------------------------------ power profiles
 
 
 def test_power_profile_calibration():
@@ -175,23 +176,23 @@ def test_power_profile_calibration():
     assert p["tpot_s"][0] == [0.125, 0.021] and p["slots"] == 64 and p["boot_s"] == 30
     from cpc.config import NodeProfile
 
-    NodeProfile.model_validate(p)  # 生成的表可直接写入场景
-    with pytest.raises(DatasetError, match="同一组"):
+    NodeProfile.model_validate(p)  # the tables can go into a scenario as they are
+    with pytest.raises(DatasetError, match=r"one \(device"):
         profile_from_points(load_points(d), slots=64, idle_w=500)
 
 
-# ------------------------------------------------------------------ 命令行
+# ------------------------------------------------------------------ command line
 
 
 def test_cli_data_commands(capsys):
     cli_main(["data", "check", str(DATA / "power-test"), str(DATA / "cn-grid-2026-07")])
     out = capsys.readouterr().out
-    assert "power-test@1（power_profile）符合规范" in out and "signals 1029 行" in out and "inner_mongolia" in out
+    assert "power-test@1 (power_profile) is valid" in out and "signals 1029 rows" in out and "inner_mongolia" in out
     cli_main(["data", "show", str(DATA / "power-test")])
     assert '"licenses"' in capsys.readouterr().out
     cli_main(["profile", str(DATA / "power-test"), "--where", "device=X1", "device_count=4", "--slots", "64",
               "--idle-w", "500", "--name", "x1"])
     out = capsys.readouterr().out
-    assert out.startswith("x1:") and "- [0.0, 500.0]" in out and "须补充" in out
+    assert out.startswith("x1:") and "- [0.0, 500.0]" in out and "to add:" in out
     cli_main(["data", "kinds"])
     assert "prefix_hashes" in capsys.readouterr().out

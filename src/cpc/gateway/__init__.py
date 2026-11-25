@@ -1,1 +1,1 @@
-"""cpc.gateway"""
+"""Routing gateway."""

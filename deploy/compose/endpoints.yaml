@@ -1,9 +1,0 @@
-# Docker Compose 网络内的服务地址（容器名即主机名）
-grid: http://grid:9000
-gateway: http://gateway:8080
-controller: http://controller:9300
-sites:
-  sh: http://site-sh:9100
-  gd: http://site-gd:9100
-  gz: http://site-gz:9100
-  nm: http://site-nm:9100

@@ -1,1 +1,1 @@
-"""cpc.grid"""
+"""Grid-signal service."""

@@ -1,6 +1,8 @@
-"""失败显式化与故障隔离：配置错误在加载时报错；网关、控制器在依赖故障时的隔离行为、状态与指标。
+"""Explicit failures and fault isolation: configuration errors at load time; isolation, state and metrics
+of the gateway and the controller when dependencies fail.
 
-网关与控制器通过 httpx.MockTransport 访问伪造的电网信号服务、站点与网关，按测试需要注入连接失败、503 与超时。
+Gateway and controller reach a fake grid-signal service, sites and gateway through httpx.MockTransport,
+which injects connection failures, 503s and timeouts as each test needs.
 """
 
 from __future__ import annotations
@@ -28,11 +30,11 @@ from cpc.sched import make_dispatch, make_power
 ROOT = Path(__file__).resolve().parents[1]
 
 
-# ------------------------------------------------------------------ 配置：启动期校验
+# ------------------------------------------------------------------ configuration: startup checks
 
 
 def write_scenario(tmp_path: Path, mutate) -> Path:
-    """复制测试场景（数据集路径改为绝对路径）并按 mutate 修改。"""
+    """Copy the test scenario (dataset paths made absolute) and modify it with mutate."""
     raw = yaml.safe_load((ROOT / "tests/data/scenario.yaml").read_text(encoding="utf-8"))
     for src in (raw["grid"]["price"], raw["grid"]["carbon"], raw["workload"]):
         src["dataset"] = str(ROOT / "tests/data" / src["dataset"])
@@ -60,7 +62,7 @@ def test_config_pools_and_measurement(tmp_path):
         load_scenario(write_scenario(tmp_path, lambda r: r["sites"][0].update(measurement={"sensors": [], "host": "excluded"})))
     with pytest.raises(ConfigError, match="count"):
         load_scenario(write_scenario(tmp_path, lambda r: r["sites"][0]["pools"][0].update(count=0)))
-    with pytest.raises(ConfigError, match="node profile"):
+    with pytest.raises(ConfigError, match="unknown node profiles"):
         load_scenario(write_scenario(tmp_path, lambda r: r["sites"][0]["pools"][0].update(profile="h200")))
 
 
@@ -79,7 +81,7 @@ def test_endpoints_must_be_explicit(scn, monkeypatch):
         load_endpoints(None, scn)
     assert load_endpoints(None, scn, local=True) == default_local_endpoints(scn)
     with pytest.raises(ConfigError):
-        load_endpoints("configs/endpoints.compose-host.yaml", scn, local=True)
+        load_endpoints("endpoints.yaml", scn, local=True)
 
 
 def test_grid_data_must_cover_sites(scn):
@@ -88,18 +90,18 @@ def test_grid_data_must_cover_sites(scn):
         GridModel(scn)
 
 
-# ------------------------------------------------------------------ 伪造的上游服务
+# ------------------------------------------------------------------ fake upstream services
 
 
 class Upstreams:
-    """按 URL 主机名分派：grid、gateway、site-<id>。faults 指定注入的故障。"""
+    """Dispatch by URL host: grid, gateway, site-<id>. faults names the injected faults."""
 
     def __init__(self, scn):
         self.scn = scn
         self.grid = GridModel(scn)
         self.snaps = {s.id: Datacenter(s, scn.node_profiles, dispatch=make_dispatch("least_loaded"), power=make_power("ordered"))
                       .summary(0.0).model_dump() for s in scn.sites}
-        self.faults: dict[str, str] = {}  # 目标 → connect / http500 / overloaded / read_timeout
+        self.faults: dict[str, str] = {}  # target -> connect / http500 / overloaded / read_timeout / ...
         self.calls: list[str] = []
         self.capacity: dict[str, dict] = {}
 
@@ -129,7 +131,7 @@ class Upstreams:
             self.capacity[sid] = json.loads(request.content)
             return httpx.Response(200, json=self.snaps[sid])
         if path.startswith("/v1/"):
-            if fault == "stream_stall":  # 站点返回 200 的流，发出一个片段后停滞
+            if fault == "stream_stall":  # the site returns a 200 stream that stalls after one chunk
                 async def stall():
                     yield b'data: {"choices": [{"delta": {"content": "a"}}]}\n\n'
                     await asyncio.sleep(5)
@@ -137,7 +139,7 @@ class Upstreams:
                 return httpx.Response(200, content=stall(), headers={"content-type": "text/event-stream", "x-cpc-site": sid})
             if fault == "http400":
                 return httpx.Response(400, json={"error": {"message": "context length exceeded"}}, headers={"x-cpc-site": sid})
-            if fault == "stream_error":  # 站点返回 200 的流，但流中是错误事件且没有 [DONE]
+            if fault == "stream_error":  # the site returns a 200 stream with an error event and no [DONE]
                 async def body():
                     yield b'data: {"error": {"message": "upstream gone"}}\n\n'
 
@@ -178,7 +180,7 @@ def gw(scn):
     return scn, up, make
 
 
-# ------------------------------------------------------------------ 网关
+# ------------------------------------------------------------------ gateway
 
 
 def test_gateway_isolates_unreachable_site(gw):
@@ -186,7 +188,7 @@ def test_gateway_isolates_unreachable_site(gw):
     up.faults["sh"] = "connect"
     with make() as c:
         r = c.post("/v1/chat/completions", json=CHAT, headers={"x-cpc-source": "east"})
-        # 上海站点不可达：移出路由视图，east 的请求由次近站点服务
+        # sh is unreachable: it leaves the routing view and the next nearest site serves east
         assert r.status_code == 200 and r.headers["x-cpc-site"] != "sh"
         assert metric(c, "cpc_upstream_up", component="gateway", upstream="site:sh") == 0
         assert metric(c, "cpc_upstream_up", component="gateway", upstream="site:gd") == 1
@@ -202,25 +204,26 @@ def test_gateway_retries_configured_causes_only(gw):
         r = c.post("/v1/chat/completions", json=CHAT, headers={"x-cpc-source": "east"})
         assert r.status_code == 200 and r.headers["x-cpc-site"] != "sh"
         assert metric(c, "cpc_gateway_attempts_total", site="sh", outcome="overloaded") == 1
-    scn.scheduler.retry.retry_on = []  # 不重试：站点 503 原样以 overloaded 返回
+    scn.scheduler.retry.retry_on = []  # no retries: the site's 503 comes back as overloaded
     with make() as c:
         r = c.post("/v1/chat/completions", json=CHAT, headers={"x-cpc-source": "east"})
         assert r.status_code == 503 and r.json()["error"]["type"] == "overloaded"
 
 
 def test_gateway_records_failed_stream_as_error(gw):
-    """流中出现错误事件或没有正常结束：网关记为失败（502），不计入完成请求。"""
+    """A stream with an error event or without a proper end counts as failed (502), not as served."""
     scn, up, make = gw
     up.faults["sh/v1/chat/completions"] = "stream_error"
     with make() as c:
         r = c.post("/v1/chat/completions", json={**CHAT, "stream": True}, headers={"x-cpc-source": "east"})
-        assert r.status_code == 200 and b"upstream gone" in r.content     # 响应头已发出，错误事件原样转发
+        assert r.status_code == 200 and b"upstream gone" in r.content  # headers were sent; the error event is relayed
         assert metric(c, "cpc_gateway_requests_total", source="east", site="sh", status="502") == 1
         assert metric(c, "cpc_gateway_requests_total", source="east", site="sh", status="200") is None
 
 
 def test_gateway_aborts_stalled_stream_and_passes_errors(gw):
-    """流式响应停滞超过 stream_idle_timeout_s：中止并记为失败；站点对流式请求返回 400：原样返回并记为 400。"""
+    """A stream stalling longer than stream_idle_timeout_s is aborted as failed; a 400 from the site to a
+    streaming request is returned and counted as 400."""
     scn, up, make = gw
     scn.scheduler.stream_idle_timeout_s = 0.3
     up.faults["sh/v1/chat/completions"] = "stream_stall"
@@ -256,11 +259,11 @@ def test_sse_check_and_site_error_body():
 
 
 def test_admin_policy_rejects_unknown_name_with_400(gw):
-    """运行时切换策略：拼错的策略名或参数返回 400 与说明，而不是 500。"""
+    """Switching policies at run time: misspelt names or parameters return 400 with an explanation, not 500."""
     scn, up, make = gw
     with make() as c:
         r = c.put("/admin/policy", json={"policy": "neareast"})
-        assert r.status_code == 400 and "是否要写 nearest" in r.json()["detail"]
+        assert r.status_code == 400 and "did you mean 'nearest'" in r.json()["detail"]
         r = c.put("/admin/policy", json={"policy": "nearest", "params": {"max_wait": 1}})
         assert r.status_code == 400 and "max_wait_s" in r.json()["detail"]
         assert c.put("/admin/policy", json={"policy": "cost_aware"}).json()["policy"] == "cost_aware"
@@ -296,12 +299,12 @@ def test_gateway_source_must_be_known(gw):
 def test_gateway_fails_to_start_without_grid(gw):
     scn, up, make = gw
     up.faults["grid"] = "connect"
-    with pytest.raises(StartupError, match="不可达"):
+    with pytest.raises(StartupError, match="unreachable"):
         with make(startup_timeout_s=0.3):
             pass
 
 
-# ------------------------------------------------------------------ 控制器
+# ------------------------------------------------------------------ controller
 
 
 def ctl(scn, up, policy):
@@ -333,7 +336,7 @@ def test_controller_skips_cycle_on_missing_input(scn, policy, fault, reason):
             up.faults[fault] = "http500"
         rec = c.post("/admin/step").json()
         assert rec["result"] == "skipped" and rec["reason"] == reason
-        assert not up.capacity  # 输入不完整时不下发任何指令
+        assert not up.capacity  # no instruction with incomplete inputs
         assert metric(c, "cpc_controller_cycles_total", result="skipped", reason=reason) == 1
         assert c.get("/state").json()["last"]["reason"] == reason
 
@@ -347,7 +350,7 @@ def test_controller_static_needs_no_signals(scn):
         assert rec["result"] == "applied" and set(up.capacity) == {s.id for s in scn.sites}
 
 
-# ------------------------------------------------------------------ 电网信号服务
+# ------------------------------------------------------------------ grid-signal service
 
 
 def test_grid_service_health_endpoints(scn):
@@ -356,7 +359,7 @@ def test_grid_service_health_endpoints(scn):
         assert c.get("/readyz").json()["ready"] is True
 
 
-# ------------------------------------------------------------------ 真实后端站点：传感器运行期故障
+# ------------------------------------------------------------------ real sites: sensor faults at run time
 
 
 from cpc.sensors import Reading, Sensor, register_sensor  # noqa: E402
@@ -365,7 +368,7 @@ from cpc.site.service import create_app as site_app  # noqa: E402
 
 @register_sensor("test-meter")
 class FakeMeter(Sensor):
-    """测试用传感器：类属性 broken 为 True 时读取失败。"""
+    """Test sensor: reading fails while the class attribute broken is True."""
 
     broken = False
 
@@ -389,7 +392,8 @@ def test_real_site_reports_sensor_failure(tmp_path):
         FakeMeter.broken = True
         time.sleep(0.3)
         st = c.get("/state").json()
-        # 传感器故障：功率标记为缺失（None），不以模型值或 0 替代；站点仍可响应，故障在状态与指标中可见
+        # sensor failure: power is missing (None), never a model value or 0; the site still responds and the
+        # fault shows in state and metrics
         assert st["it_power_w"] is None and st["nodes"][0]["power_missing"] == ["device:gpu0"]
         assert st["components"]["sensors"]["test-meter"]["up"] is False
         assert metric(c, "cpc_sensor_up", site="sh", sensor="test-meter") == 0

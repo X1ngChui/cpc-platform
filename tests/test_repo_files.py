@@ -1,4 +1,4 @@
-"""仓库中的配置文件：全部 YAML 文件可解析（部署文件、场景、数据集描述与 CI 配置）。"""
+"""Repository files: every YAML file parses (deployment files, scenarios, dataset descriptors, CI)."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ def _yaml_files() -> list[str]:
     try:
         out = subprocess.run(["git", "ls-files", "*.yml", "*.yaml"], cwd=ROOT, capture_output=True, text=True, check=True)
     except (OSError, subprocess.CalledProcessError):
-        pytest.skip("不在 git 工作区中")
+        pytest.skip("not in a git work tree")
     return out.stdout.split()
 
 

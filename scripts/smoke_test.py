@@ -1,21 +1,27 @@
-"""端到端冒烟测试：启动全部服务 → 压测 → 注入需求响应事件 → 检查指标 → 故障隔离 → 退出。
+"""End-to-end smoke test: start all services -> load -> demand-response event -> metrics -> fault isolation -> exit.
 
-用法：
-    python scripts/smoke_test.py            # 本机：各服务以独立进程启动（含故障注入阶段），场景为 configs/scenario.yaml（数据集须已准备）
-    python scripts/smoke_test.py --offline  # 同上，场景为 tests/data/scenario.yaml（合成负载 + 随测试提交的电网数据，CI 使用）
-    python scripts/smoke_test.py --external -e configs/endpoints.compose-host.yaml   # 服务已由 Compose / Kubernetes 启动，只做 1–5
+Usage:
+    python scripts/smoke_test.py             # local: one process per service (with fault injection);
+                                             # scenario configs/scenario.yaml (its datasets must be prepared)
+    python scripts/smoke_test.py --offline   # as above with tests/data/scenario.yaml (synthetic workload and
+                                             # grid data committed with the tests; used by CI)
+    python scripts/smoke_test.py --external -e endpoints.yaml -s scenario.yaml
+                                             # services already running elsewhere; checks 1-5 only
 
-本机模式的场景由基础场景派生，另加一个只有真实服务器的站点 lab：其推理实例与功率计由本脚本内置的桩服务提供
-（功率计以 command 传感器读取），用于注入传感器故障。
+Local mode derives the scenario from the base scenario and adds a site lab with one real server whose
+inference instance and power meter are stubs served by this script (the meter is read by a command
+sensor), so that sensor faults can be injected.
 
-检查项：
-1. 各服务就绪（/readyz）；
-2. 压测请求全部成功；
-3. 控制器完成决策并下发指令；
-4. 站点导出服务器功率与设施功率指标（真实服务器另有 DCGM 兼容的加速卡指标），电网信号服务导出电价与碳强度；
-5. 需求响应事件生效后站点在线服务器与设施功率不超过上限；
-6. 传感器故障：lab 的功率标记为缺失并在状态与指标中报告，lab 仍正常服务；
-7. 站点故障：停止站点 sh 的进程后，网关与控制器将其标记为不可用并排除，其余站点正常服务。
+Checks:
+1. every service is ready (/readyz);
+2. a short live experiment (cpc live) serves every request;
+3. the controller decides and applies instructions;
+4. sites export server and facility power (real servers also DCGM-compatible accelerator metrics);
+   the grid-signal service exports price and carbon intensity;
+5. after a demand-response event the online servers and facility power of the site respect the limit;
+6. sensor fault: the power of lab is reported missing in state and metrics while lab keeps serving;
+7. site fault: after the process of site sh stops, gateway and controller mark it unavailable and
+   exclude it, and the other sites keep serving.
 """
 
 from __future__ import annotations
@@ -32,35 +38,34 @@ from pathlib import Path
 import httpx
 import yaml
 
-http = httpx.Client(trust_env=False, timeout=10)  # 平台内部通信不走系统代理
+http = httpx.Client(trust_env=False, timeout=10)  # no system proxy between platform services
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from cpc import read_run  # noqa: E402
 from cpc.common import admin_headers  # noqa: E402
 from cpc.config import load_endpoints, load_scenario  # noqa: E402
 
 OUT = ROOT / "logs" / "smoke"
 STUB_PORT = 9199
-# 读取桩功率计：桩服务返回 500 时命令以非零状态退出，传感器记为故障
+# reads the stub meter; a 500 from the stub makes the command exit non-zero and the sensor fail
 METER_CMD = f"import urllib.request as u; print(u.urlopen('http://127.0.0.1:{STUB_PORT}/meter', timeout=2).read().decode())"
+CHAT = {"model": "cpc", "messages": [{"role": "user", "content": "hello"}], "max_tokens": 4}
+failed = False
 
 
 def check(cond: bool, msg: str) -> None:
-    print(("  [通过] " if cond else "  [失败] ") + msg)
-    if not cond:
-        check.failed = True  # type: ignore[attr-defined]
-
-
-check.failed = False  # type: ignore[attr-defined]
+    global failed
+    print(("  [ok]   " if cond else "  [FAIL] ") + msg)
+    failed |= not cond
 
 
 def wait_until(fn, timeout: float, interval: float = 0.5):
-    t0 = time.time()
-    while time.time() - t0 < timeout:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
         try:
-            v = fn()
-            if v:
+            if v := fn():
                 return v
         except httpx.HTTPError:
             pass
@@ -70,8 +75,8 @@ def wait_until(fn, timeout: float, interval: float = 0.5):
 
 def wait_ready(name: str, url: str, timeout: float = 60) -> None:
     if not wait_until(lambda: http.get(url + "/readyz", timeout=1).status_code == 200, timeout):
-        raise SystemExit(f"服务未就绪：{name} {url}")
-    print(f"  [通过] {name} {url}")
+        raise SystemExit(f"service not ready: {name} {url}")
+    print(f"  [ok]   {name} {url}")
 
 
 def metric(url: str, name: str, **labels) -> float | None:
@@ -84,7 +89,7 @@ def metric(url: str, name: str, **labels) -> float | None:
     return None
 
 
-# ------------------------------------------------------------------ 桩服务：OpenAI 兼容上游 + 功率计
+# ------------------------------------------------------------------ stubs: OpenAI-compatible upstream + power meter
 
 
 class Stub(BaseHTTPRequestHandler):
@@ -103,25 +108,23 @@ class Stub(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self) -> None:
-        if self.path == "/health":
-            self._json(200, {"status": "ok"})
-        elif self.path == "/meter":
-            if Stub.meter_fail:
-                self._json(500, {"error": "meter offline"})
-            else:
-                self._json(200, {"power_w": 120.0})
-        elif self.path == "/v1/models":
-            self._json(200, {"object": "list", "data": [{"id": "cpc", "object": "model"}]})
-        else:
-            self._json(404, {})
+        match self.path:
+            case "/health":
+                self._json(200, {"status": "ok"})
+            case "/meter":
+                self._json(500, {"error": "meter offline"}) if Stub.meter_fail else self._json(200, {"power_w": 120.0})
+            case "/v1/models":
+                self._json(200, {"object": "list", "data": [{"id": "cpc", "object": "model"}]})
+            case _:
+                self._json(404, {})
 
     def do_POST(self) -> None:
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         n = int(body.get("max_tokens") or 16)
         usage = {"prompt_tokens": 8, "completion_tokens": n, "total_tokens": 8 + n}
         if not body.get("stream"):
-            self._json(200, {"id": "stub", "object": "chat.completion", "choices": [{"index": 0, "message": {"role": "assistant",
-                             "content": "ok"}, "finish_reason": "length"}], "usage": usage})
+            self._json(200, {"id": "stub", "object": "chat.completion", "usage": usage, "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "length"}]})
             return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -136,22 +139,23 @@ class Stub(BaseHTTPRequestHandler):
 
 def smoke_scenario(base: Path, offline: bool) -> Path:
     raw = yaml.safe_load(base.read_text(encoding="utf-8"))
-    if offline:  # 合成负载 12 请求/秒 × 0.5
+    if offline:  # synthetic workload 12 requests/s x 0.5
         sys.path.insert(0, str(ROOT / "tests"))
         from conftest import ensure_test_workload
 
         ensure_test_workload()
         raw["workload"]["rate_scale"] = 0.5
     raw["sites"].append({
-        "id": "lab", "name": "真实服务器（桩服务）", "region": "guizhou", "lat": 26.6, "lon": 106.6, "pue": 1.2, "min_active": 1,
+        "id": "lab", "name": "real server (stub)", "region": "guizhou", "lat": 26.6, "lon": 106.6, "pue": 1.2, "min_active": 1,
         "pools": [{"id": "gpu", "profile": next(iter(raw["node_profiles"])), "backend": "openai",
                    "upstreams": [{"id": "lab-0", "url": f"http://127.0.0.1:{STUB_PORT}", "devices": ["gpu0"], "max_inflight": 32}]}],
         "measurement": {"sensors": [{"type": "command", "name": "meter", "kind": "gpu", "device": "gpu0", "vendor": "test",
                                      "cmd": [sys.executable, "-c", METER_CMD], "regex": r'"power_w":\s*([0-9.]+)'}],
                         "host": "excluded"},
     })
-    p = base.parent / ".scenario.smoke.yaml"  # 与基础场景同目录，场景中的相对路径保持有效
-    p.write_text("# 由 scripts/smoke_test.py 生成\n" + yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    p = base.parent / ".scenario.smoke.yaml"  # next to the base scenario, so its relative paths stay valid
+    p.write_text("# generated by scripts/smoke_test.py\n" + yaml.safe_dump(raw, allow_unicode=True, sort_keys=False),
+                 encoding="utf-8")
     return p
 
 
@@ -161,7 +165,7 @@ class Services:
         self.procs: dict[str, subprocess.Popen] = {}
 
     def start(self, name: str, *args: str) -> None:
-        log = open(OUT / f"{name}.log", "w", encoding="utf-8")
+        log = (OUT / f"{name}.log").open("w", encoding="utf-8")
         cmd = [sys.executable, "-m", "cpc", *args, "-s", self.scenario, "--local"]
         self.procs[name] = subprocess.Popen(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
 
@@ -178,94 +182,103 @@ class Services:
             self.stop(name)
 
 
-# ------------------------------------------------------------------ 检查
+# ------------------------------------------------------------------ checks
 
 
-def basic_checks(scn, ep, args, dr_site: str, real_site: str | None) -> None:
-    print("2. 压测")
-    out = subprocess.run([sys.executable, "-m", "cpc", "loadgen", "-s", args.scenario_used, "--gateway", ep.gateway, "--grid", ep.grid,
-                          "--duration", str(args.duration), *(["--rate-scale", str(args.rate_scale)] if args.rate_scale else []),
-                          "--out", str(OUT / "loadgen.jsonl")],
-                         cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
-    if out.returncode != 0:
-        print(out.stderr[-2000:])
-    summary = json.loads(out.stdout[out.stdout.index("{"):])
-    print("  ", json.dumps(summary, ensure_ascii=False))
-    check(summary["sent"] > 0 and summary["failed"] == 0, f"请求全部成功（{summary['ok']}/{summary['sent']}）")
+def basic_checks(scn, ep, endpoints_file: Path, args, dr_site: str, real_site: str | None) -> None:
+    print("2. Live experiment (cpc live)")
+    out = OUT / "live"
+    cmd = [sys.executable, "-m", "cpc", "live", "-s", args.scenario_used, "-e", str(endpoints_file),
+           "--duration", str(args.duration), "--sample-s", "5", "--out", str(out),
+           *(["--rate-scale", str(args.rate_scale)] if args.rate_scale else [])]
+    p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
+    if p.returncode != 0:
+        print(p.stdout[-2000:], p.stderr[-2000:])
+        check(False, "cpc live finished")
+        return
+    s = read_run(out)["summary"]
+    print(f"     arrived {s['arrived']}, served {s['served']}, failed {s['failed']}, "
+          f"TTFT P50 {s['ttft_p50_s'] or 0:.3f} s, facility energy {s['facility_kwh']:.4f} kWh")
+    check(s["arrived"] > 0 and s["served"] == s["arrived"], f"every request served ({s['served']}/{s['arrived']})")
 
-    print("3. 控制器")
+    print("3. Controller")
     rec = http.post(ep.controller + "/admin/step", headers=admin_headers()).json()
-    check(rec.get("result") == "applied", f"控制周期完成决策（result={rec.get('result')}，reason={rec.get('reason')}）")
+    check(rec.get("result") == "applied", f"control period applied (result={rec.get('result')}, reason={rec.get('reason')})")
     applied = rec.get("applied", {})
-    check(bool(applied) and all(v["ok"] for v in applied.values()), f"容量指令下发成功：{ {k: v['ok'] for k, v in applied.items()} }")
+    check(bool(applied) and all(v["ok"] for v in applied.values()),
+          f"capacity instructions applied: { {k: v['ok'] for k, v in applied.items()} }")
 
-    print("4. 能耗感知指标")
+    print("4. Energy metrics")
     m = http.get(ep.sites[dr_site] + "/metrics").text
-    check("cpc_node_it_power_watts{" in m, "站点导出服务器功率指标")
-    check("cpc_site_facility_power_watts{" in m, "站点导出设施功率指标")
+    check("cpc_node_it_power_watts{" in m, "sites export server power")
+    check("cpc_site_facility_power_watts{" in m, "sites export facility power")
     g = http.get(ep.grid + "/metrics").text
-    check("cpc_grid_price_per_kwh{" in g and "cpc_grid_carbon_intensity_kg_per_kwh{" in g, "电网信号服务导出电价与碳强度")
+    check("cpc_grid_price_per_kwh{" in g and "cpc_grid_carbon_intensity_kg_per_kwh{" in g,
+          "the grid-signal service exports price and carbon intensity")
     if real_site:
-        check(metric(ep.sites[real_site], "cpc_sensor_up", site=real_site, sensor="meter") == 1, f"真实站点 {real_site} 的功率计正常")
+        check(metric(ep.sites[real_site], "cpc_sensor_up", site=real_site, sensor="meter") == 1,
+              f"the power meter of real site {real_site} is healthy")
         check("DCGM_FI_DEV_POWER_USAGE{" in http.get(ep.sites[real_site] + "/metrics").text,
-              f"真实站点 {real_site} 导出 DCGM 兼容的加速卡功率指标")
+              f"real site {real_site} exports DCGM-compatible accelerator power")
 
-    print("5. 需求响应事件")
+    print("5. Demand-response event")
     snap = http.get(ep.sites[dr_site] + "/state").json()
-    cap_kw = round(snap["node_peak_w"] * 1.05 * snap["pue"] / 1000, 2)  # 只够 1 台服务器满载
+    cap_kw = round(snap["node_peak_w"] * 1.05 * snap["pue"] / 1000, 2)  # room for one server at full load
     r = http.post(ep.grid + "/v1/events", json={"site": dr_site, "cap_kw": cap_kw, "duration_min": 600}, headers=admin_headers())
-    check(r.status_code == 200, f"注入事件：站点 {dr_site} 设施功率上限 {cap_kw} kW")
-    time.sleep(2.5)  # 网关与控制器刷新电网信号
+    check(r.status_code == 200, f"event injected: facility limit of site {dr_site} {cap_kw} kW")
+    time.sleep(2.5)  # gateway and controller refresh the grid signals
     http.post(ep.controller + "/admin/step", timeout=10, headers=admin_headers())
     time.sleep(2)
     snap = http.get(ep.sites[dr_site] + "/state").json()
     live = snap["nodes_on"] + snap["nodes_booting"] + snap["nodes_draining"]
-    check(live <= 1 or snap["nodes_draining"] > 0, f"站点 {dr_site} 在线服务器降至 {snap['nodes_on']}（排空中 {snap['nodes_draining']}）")
+    check(live <= 1 or snap["nodes_draining"] > 0,
+          f"site {dr_site} reduced to {snap['nodes_on']} online servers ({snap['nodes_draining']} draining)")
     check(snap["facility_power_w"] / 1000 <= cap_kw + 1e-6 or snap["nodes_draining"] > 0,
-          f"设施功率 {snap['facility_power_w'] / 1000:.2f} kW ≤ 上限 {cap_kw} kW")
+          f"facility power {snap['facility_power_w'] / 1000:.2f} kW <= limit {cap_kw} kW")
     http.delete(ep.grid + "/v1/events", headers=admin_headers())
 
 
 def fault_checks(scn, ep, svc: Services) -> None:
-    print("6. 传感器故障（lab 的功率计不可用）")
+    lab = ep.sites["lab"]
+    print("6. Sensor fault (the power meter of lab is unavailable)")
     Stub.meter_fail = True
-    st = wait_until(lambda: (s := http.get(ep.sites["lab"] + "/state").json())["it_power_w"] is None and s, 10)
-    check(bool(st) and st["nodes"][0]["power_missing"] == ["device:gpu0"], "lab 服务器功率标记为缺失（device:gpu0），未以其他值替代")
-    check(bool(st) and st["components"]["sensors"]["meter"]["up"] is False, "lab 的 /state 报告功率计故障及原因")
-    check(metric(ep.sites["lab"], "cpc_sensor_up", site="lab", sensor="meter") == 0, "指标 cpc_sensor_up{sensor=meter} = 0")
-    check((metric(ep.sites["lab"], "cpc_sensor_errors_total", site="lab", sensor="meter") or 0) >= 1, "指标 cpc_sensor_errors_total 递增")
-    r = http.post(ep.sites["lab"] + "/v1/chat/completions", json={"model": "cpc", "messages": [{"role": "user", "content": "x"}],
-                                                                   "max_tokens": 4})
-    check(r.status_code == 200, "lab 在功率计故障期间仍正常服务请求")
+    st = wait_until(lambda: (s := http.get(lab + "/state").json())["it_power_w"] is None and s, 10)
+    check(bool(st) and st["nodes"][0]["power_missing"] == ["device:gpu0"],
+          "the power of lab is missing (device:gpu0), not replaced by another value")
+    check(bool(st) and st["components"]["sensors"]["meter"]["up"] is False, "/state of lab reports the meter fault and its reason")
+    check(metric(lab, "cpc_sensor_up", site="lab", sensor="meter") == 0, "metric cpc_sensor_up{sensor=meter} = 0")
+    check((metric(lab, "cpc_sensor_errors_total", site="lab", sensor="meter") or 0) >= 1, "metric cpc_sensor_errors_total increases")
+    check(http.post(lab + "/v1/chat/completions", json=CHAT).status_code == 200, "lab keeps serving during the meter fault")
     Stub.meter_fail = False
-    check(bool(wait_until(lambda: http.get(ep.sites["lab"] + "/state").json()["it_power_w"] is not None, 10)), "功率计恢复后读数恢复")
+    check(bool(wait_until(lambda: http.get(lab + "/state").json()["it_power_w"] is not None, 10)), "readings return with the meter")
 
-    print("7. 站点故障（停止站点 sh）")
+    print("7. Site fault (site sh stopped)")
     svc.stop("site-sh")
-    down = wait_until(lambda: http.get(ep.gateway + "/state").json()["upstreams"]["site:sh"]["up"] is False, 15)
-    check(bool(down), "网关将 sh 标记为不可用")
-    check(metric(ep.gateway, "cpc_upstream_up", component="gateway", upstream="site:sh") == 0, "指标 cpc_upstream_up{upstream=site:sh} = 0")
+    check(bool(wait_until(lambda: http.get(ep.gateway + "/state").json()["upstreams"]["site:sh"]["up"] is False, 15)),
+          "the gateway marks sh unavailable")
+    check(metric(ep.gateway, "cpc_upstream_up", component="gateway", upstream="site:sh") == 0,
+          "metric cpc_upstream_up{upstream=site:sh} = 0")
     time.sleep(scn.scheduler.state_stale_s)
-    codes, sites = [], set()
-    for src in [s.id for s in scn.sources] * 5:
-        r = http.post(ep.gateway + "/v1/chat/completions", headers={"x-cpc-source": src},
-                      json={"model": "cpc", "messages": [{"role": "user", "content": "hello"}], "max_tokens": 4})
-        codes.append(r.status_code)
-        sites.add(r.headers.get("x-cpc-site"))
-    check(all(c == 200 for c in codes) and "sh" not in sites, f"其余站点正常服务（{codes.count(200)}/{len(codes)}，站点 {sorted(s for s in sites if s)}）")
+    rs = [http.post(ep.gateway + "/v1/chat/completions", headers={"x-cpc-source": src}, json=CHAT)
+          for src in [s.id for s in scn.sources] * 5]
+    sites = {r.headers.get("x-cpc-site") for r in rs} - {None}
+    check(all(r.status_code == 200 for r in rs) and "sh" not in sites,
+          f"the other sites keep serving ({sum(r.status_code == 200 for r in rs)}/{len(rs)}, sites {sorted(sites)})")
     rec = http.post(ep.controller + "/admin/step", headers=admin_headers()).json()
-    check("sh" in rec.get("excluded", {}), f"控制器排除 sh 并记录原因（result={rec.get('result')}）")
-    check((metric(ep.controller, "cpc_controller_collect_errors_total", target="site:sh") or 0) >= 1, "指标 cpc_controller_collect_errors_total{target=site:sh} 递增")
+    check("sh" in rec.get("excluded", {}), f"the controller excludes sh with the reason (result={rec.get('result')})")
+    check((metric(ep.controller, "cpc_controller_collect_errors_total", target="site:sh") or 0) >= 1,
+          "metric cpc_controller_collect_errors_total{target=site:sh} increases")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("-s", "--scenario", default=str(ROOT / "configs/scenario.yaml"))
     ap.add_argument("-e", "--endpoints", default=None)
-    ap.add_argument("--external", action="store_true", help="不启动服务，只检查已运行的服务（检查项 1–5）")
+    ap.add_argument("--external", action="store_true", help="do not start services; check running ones (checks 1-5)")
     ap.add_argument("--duration", type=float, default=30)
-    ap.add_argument("--rate-scale", type=float, default=None, help="覆盖场景负载的到达率缩放")
-    ap.add_argument("--offline", action="store_true", help="以测试场景为基础（合成负载与随测试提交的电网数据，不需要下载）")
+    ap.add_argument("--rate-scale", type=float, default=None, help="arrival-rate factor instead of the scenario's")
+    ap.add_argument("--offline", action="store_true", help="base on the test scenario (synthetic workload and committed grid "
+                                                           "data; no download)")
     args = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
 
@@ -273,22 +286,22 @@ def main() -> None:
         args.scenario_used = args.scenario
         scn = load_scenario(args.scenario)
         ep = load_endpoints(args.endpoints, scn)
-        print("1. 就绪检查")
+        print("1. Readiness")
         for name, url in [("grid", ep.grid), ("gateway", ep.gateway), ("controller", ep.controller), *ep.sites.items()]:
             wait_ready(name, url)
-        emulated = [s.id for s in scn.sites if not s.real]
-        basic_checks(scn, ep, args, emulated[-1], None)
+        basic_checks(scn, ep, Path(args.endpoints), args, [s.id for s in scn.sites if not s.real][-1], None)
     else:
         stub = ThreadingHTTPServer(("127.0.0.1", STUB_PORT), Stub)
         threading.Thread(target=stub.serve_forever, daemon=True).start()
-        base = ROOT / "tests/data/scenario.yaml" if args.offline else Path(args.scenario)
-        path = smoke_scenario(base, args.offline)
+        path = smoke_scenario(ROOT / "tests/data/scenario.yaml" if args.offline else Path(args.scenario), args.offline)
         args.scenario_used = str(path)
         scn = load_scenario(path)
         ep = load_endpoints(None, scn, local=True)
+        endpoints_file = OUT / "endpoints.yaml"
+        endpoints_file.write_text(yaml.safe_dump(ep.model_dump()), encoding="utf-8")
         svc = Services(path)
         try:
-            print("1. 启动与就绪检查（各服务独立进程）")
+            print("1. Startup and readiness (one process per service)")
             svc.start("grid", "grid", "--speedup", "60")
             wait_ready("grid", ep.grid)
             for s in scn.sites:
@@ -299,13 +312,13 @@ def main() -> None:
             svc.start("controller", "controller", "--policy", "grid_aware", "--interval", "5", "--log", str(OUT / "controller.jsonl"))
             wait_ready("gateway", ep.gateway)
             wait_ready("controller", ep.controller)
-            basic_checks(scn, ep, args, "nm", "lab")
+            basic_checks(scn, ep, endpoints_file, args, "nm", "lab")
             fault_checks(scn, ep, svc)
         finally:
             svc.stop_all()
             stub.shutdown()
-    print("冒烟测试" + ("失败" if check.failed else "通过"))  # type: ignore[attr-defined]
-    sys.exit(1 if check.failed else 0)
+    print("Smoke test " + ("FAILED" if failed else "passed"))
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":
