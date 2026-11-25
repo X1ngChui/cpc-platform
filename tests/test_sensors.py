@@ -281,3 +281,31 @@ def test_max_w_marks_implausible_reading_missing():
         make_sensor({"type": "rapl", "max_w": 0})
     with pytest.raises(SensorError, match="是否要写 max_w"):
         make_sensor({"type": "ipmi", "max_W": 2000})  # 拼写错误的参数在构造时报错，而不是被忽略
+
+
+def test_power_cap_checked_after_sensor_start():
+    """开启功率封顶的站点能够启动（此前在传感器启动前查询设备映射而失败），封顶比例下发到管理该加速卡的传感器。"""
+    import asyncio
+
+    from cpc.site.executors import RealNodeHooks
+
+    class CapSensor(FakeSensor):
+        supports_power_limit = True
+
+        def __init__(self, readings):
+            super().__init__(readings)
+            self.limits = []
+
+        def set_power_limit(self, device, ratio):
+            self.limits.append((device, ratio))
+
+    up = UpstreamConfig(id="n0", url="http://127.0.0.1:9", gpu_indices=[0])
+    prof = NodeProfile(slots=8, power_w=[(0, 100), (1, 400)], tpot_s=[(1, 0.02)], prefill_tokens_per_s=1e4, boot_s=0)
+    node = Server(id="n0", pool="p", profile=prof, slots=8, model_power=False, state="on", upstream=up)
+    sensor = CapSensor([Reading("fake", "gpu0", "gpu", "nvidia", power_w=150.0)])
+    p = make_power("excluded", [sensor])
+    hooks = RealNodeHooks([up], power=p, enable_power_cap=True)   # 构造时不查询设备映射
+    p.start([node])
+    hooks.check_power_cap([up])
+    asyncio.run(hooks.set_cap(node, 0.7))
+    assert sensor.limits == [("gpu0", 0.7)]

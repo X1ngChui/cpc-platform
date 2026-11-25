@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import glob
+import logging
 import os
 import re
 import shutil
@@ -21,6 +22,8 @@ import time
 from pathlib import Path
 
 from .base import Reading, Sensor, SensorError, register_sensor
+
+log = logging.getLogger("cpc.sensors")
 
 
 def _run(cmd: list[str], timeout: float = 5.0) -> str:
@@ -132,9 +135,13 @@ class NvmlSensor(Sensor):
         return out
 
     def set_power_limit(self, device: str, ratio: float) -> None:
+        """设置功率上限 = ratio × 最大上限（mW），截断到设备允许的范围。容器内需要 SYS_ADMIN 权限。"""
         h = self.h[int(device.removeprefix("gpu"))]
         lo, hi = self.nv.nvmlDeviceGetPowerManagementLimitConstraints(h)
-        self.nv.nvmlDeviceSetPowerManagementLimit(h, int(max(lo, min(hi, ratio * hi))))  # 需要 root
+        if ratio * hi < lo:
+            log.warning("%s：请求的功率上限 %.0f W 低于设备的最小上限 %.0f W，按最小上限设置（服务器类型的 cap_min_ratio 宜取 %.2f）",
+                        device, ratio * hi / 1000, lo / 1000, lo / hi)
+        self.nv.nvmlDeviceSetPowerManagementLimit(h, int(max(lo, min(hi, ratio * hi))))
 
 
 @register_sensor("rapl")

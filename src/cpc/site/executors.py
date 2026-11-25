@@ -262,9 +262,14 @@ class RealNodeHooks:
             bare = [u.id for u in upstreams if not u.device_names]
             if bare:
                 raise ConfigError(f"服务器 {bare} 没有声明加速卡，无法进行硬件功率封顶")
-            bad = [d for u in upstreams for d in u.device_names if not power.sensor_for(d).supports_power_limit]
-            if bad:
-                raise ConfigError(f"加速卡 {bad} 的传感器不支持功率封顶")
+
+    def check_power_cap(self, upstreams: list[UpstreamConfig]) -> None:
+        """开启功率封顶时，检查各加速卡的传感器支持封顶。须在传感器启动（确定设备与传感器的对应）之后调用。"""
+        if not self.enable_power_cap:
+            return
+        bad = [d for u in upstreams for d in u.device_names if not self.power.sensor_for(d).supports_power_limit]
+        if bad:
+            raise ConfigError(f"加速卡 {bad} 的传感器不支持功率封顶")
 
     async def power_on(self, node: Server) -> None:
         if self.docker and node.upstream and node.upstream.container:

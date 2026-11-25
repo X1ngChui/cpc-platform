@@ -11,6 +11,8 @@
 - RAPL 传感器在容器内不可用：Docker 默认屏蔽容器内的 `/sys/devices/virtual/powercap`。传感器的 `root` 现在也接受
   该目录的层级布局，可把宿主机目录挂载到其他路径（如 `/host/powercap`）后读取。
 - 镜像加入 `ipmitool`，`ipmi` 传感器可在容器内经 `/dev/ipmi0` 读取本机 BMC。
+- 站点代理开启 `--enable-power-cap` 时必然启动失败：加速卡传感器的封顶能力检查在传感器启动之前执行。改为启动之后检查；
+  在 NVIDIA A30 上验证了经 NVML 设置功率上限。
 - 站点代理对同一服务器的执行器操作改为串行执行。此前关机尚未完成时到达的开机指令可能先执行，随后关机完成，
   服务器停留在 booting 而推理容器已退出。
 - 流式请求的失败被记为成功：站点代理在连通上游之前就发出了 200 的响应头，上游连接失败只以流中的错误事件表示，
@@ -44,6 +46,8 @@
 - 站点代理从控制节点取得配置：电网信号服务提供 `GET /v1/config`（场景文本与服务地址，需管理令牌），
   `cpc site --control <地址> --site <id>` 代替 `-s` 与 `-e`。云部署的站点栈只需 `SITE_ID`、`CONTROL_URL` 与令牌，
   场景与地址文件只在控制节点上维护。
+- GPU 站点栈的功率封顶补充文件 `docker-compose.powercap.yml`（`--enable-power-cap` 与容器的 `SYS_ADMIN` 权限，
+  NVML 设置功率上限需要该权限）；NVML 请求的上限低于设备最小上限时在日志中警告。
 - 云部署新增 CPU 推理的站点栈 `deploy/cloud/site-stack/docker-compose.cpu.yml`（llama.cpp，RAPL 与本机 BMC 测量功率）。
 - `cpc compare`：并列比较两个或多个结果目录（仿真或实验）的总体与各站点指标（请求、时延、能耗、电费），两个目录时给出比值；
   Python 接口 `cpc.results.compare_runs()`。

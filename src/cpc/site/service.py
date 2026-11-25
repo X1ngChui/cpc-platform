@@ -76,6 +76,7 @@ def build_agent(scn: Scenario, site_id: str, registry: CollectorRegistry | None 
         agent = SiteAgent(scn, site_id, hooks, initial_active)
         real = [s for s in agent.servers if not s.model_power]
         meter.start(real)
+        hooks.check_power_cap(upstreams)
         meter.sample(real)
         agent.meter = meter
         agent.dc.power_scope = meter.scope

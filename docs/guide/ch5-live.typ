@@ -472,6 +472,17 @@ docker compose logs -f site-agent    # 等待"功率传感器：['nvml']"与 vLL
 站点栈包含：`vllm-0`（每个推理实例占一张 GPU；双卡服务器可启用 `--profile gpu2` 的 `vllm-1`）、`site-agent`
 （排队与派发、功率采集、通过挂载的 Docker 套接字启停 vLLM 容器）与可选的 `node-exporter`（`--profile host`，监听 9101）。
 
+*功率封顶。* 容量策略下发的功率封顶比例缺省只记录、不作用于硬件。需要经 NVML 设置 GPU 功率上限时，叠加补充文件启动：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.powercap.yml up -d
+```
+
+站点代理以 `--enable-power-cap` 启动（容器具有 `SYS_ADMIN` 权限），把封顶比例换算为功率上限（比例 × 最大功率上限）设置到 GPU；
+设置失败时原因记入该服务器的 `last_error`。GPU 的功率上限有下限（如 A30 为 100–165 W），服务器类型的 `cap_min_ratio`
+宜取最小上限与最大上限之比（A30 约 0.61），低于下限的比例按下限设置并在日志中警告。封顶对吞吐的影响与模型和负载有关，
+宜实测：例如在 A30 上以 0.7 封顶运行 Qwen2.5-1.5B-Instruct 时，并发 32 的功率由 162 W 降至 116 W，吞吐没有下降。
+
 `.env` 中的 `MODEL` 应选择能放进显存的模型；国内服务器下载模型可设置 `HF_ENDPOINT=https://hf-mirror.com`，或设置
 `VLLM_USE_MODELSCOPE=True` 从 ModelScope 下载。也可以先在宿主机下载好模型（`huggingface-cli download <模型名>`），
 容器挂载缓存目录后离线加载。
