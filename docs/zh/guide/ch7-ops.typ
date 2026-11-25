@@ -2,7 +2,7 @@
 
 = 观测与运维 <g-ops>
 
-各服务以 Prometheus 格式在 `/metrics` 提供指标；Compose 与 Kubernetes 部署包含预置的 Prometheus 与 Grafana 仪表盘。
+各服务以 Prometheus 格式在 `/metrics` 提供指标；云服务器部署的控制栈包含预置的 Prometheus 与 Grafana 仪表盘（@g-cloud）。
 指标与记录规则的完整定义见《平台设计说明书》"能耗测量与核算"一章。
 
 == 常用指标
@@ -44,7 +44,7 @@ cpc sensors --types nvml,rapl --count 5 --interval 2
 cpc sensors --types nvml --json                     # JSON 输出，便于脚本处理
 ```
 
-平台不自动选择传感器：读取、导出与站点代理使用的传感器都须显式指定。传感器构造失败（驱动或库不可用、
+平台不自动选择传感器：读取与站点代理使用的传感器都须显式指定。传感器构造失败（驱动或库不可用、
 必需能力缺失）时命令以状态码 2 退出并给出原因；读取中某个字段失败时，该值显示为 `-` 并列出错误。
 
 平台内置四种传感器，每种测量一类对象，互不重叠：
@@ -90,21 +90,6 @@ cpc sensors --spec sensors.yaml
 同样的列表写在场景文件中站点的 `measurement.sensors` 中，供站点代理使用，并用 `measurement.host` 指定主机部分功率的确定方式
 （`server`：整机读数减加速卡；`cpu_dram`：CPU 与内存读数之和；`excluded`：不计主机部分）。
 
-== 部署通用导出器
-
-在任意需要监测的机器上运行通用导出器，Prometheus 抓取 `:9400/metrics`：
-
-```bash
-cpc exporter --port 9400 --types nvml --site gz   # 按类型
-cpc exporter --port 9400 --spec sensors.yaml       # 按配置
-docker run -d --gpus all -p 9400:9400 ghcr.io/x1ngchui/cpc-platform:0.3.0 \
-       exporter --types nvml --site gz
-```
-
-导出器启动时逐一读取指定的传感器，任一失败即退出。导出的指标：`cpc_device_power_watts`、`cpc_device_energy_joules_total`、
-`cpc_device_utilization_percent`（读数缺失的字段不输出样本）、`cpc_sensor_up`、`cpc_sensor_errors_total`；
-NVIDIA GPU 另有 `DCGM_FI_DEV_POWER_USAGE` 等 DCGM 兼容指标。记录规则 `host_kind:device_power_watts:sum` 按主机与设备类别汇总。
-
 == 健康状态与故障排查 <g-health>
 
 === 健康与就绪接口
@@ -132,8 +117,8 @@ NVIDIA GPU 另有 `DCGM_FI_DEV_POWER_USAGE` 等 DCGM 兼容指标。记录规则
 - 场景文件含未知字段或引用关系错误；数据集不符合规范、文件缺失或时间窗超出覆盖范围；
 - 未给出地址文件：除 `cpc up` 外，访问其他服务的命令须用 `-e` / `CPC_ENDPOINTS` 或 `--local`；
 - 有真实服务器的站点未声明 `measurement`，或声明的传感器不可用、未覆盖服务器占用的加速卡；
-- 网关、控制器或负载生成器在期限内（`--startup-timeout`，默认 30 s）无法从电网信号服务同步信号时钟。
-  Docker Compose 与 Kubernetes 会按重启策略重新启动这些服务，电网信号服务就绪后即恢复。
+- 网关、控制器或 `cpc live` 在期限内（网关与控制器的 `--startup-timeout`，默认 30 s）无法从电网信号服务同步信号时钟。
+  Docker Compose 部署会按重启策略重新启动这些服务，电网信号服务就绪后即恢复。
 
 == 命令与环境变量 <g-ref>
 
@@ -150,14 +135,12 @@ NVIDIA GPU 另有 `DCGM_FI_DEV_POWER_USAGE` 等 DCGM 兼容指标。记录规则
     [`cpc profile`], [由功率特性数据集生成服务器类型（`--where`、`--slots`、`--idle-w`、`--host-w`）],
     [`cpc sim`], [运行一次仿真（`--hours`、`--routing`、`--capacity` 及其参数、负载变换参数、`--out`）],
     [`cpc run`], [按实验描述运行多个仿真变体（`--jobs`、`--out`）],
-    [`cpc report`], [由结果目录作图],
-    [`cpc live`], [运行一次实验并写出结果目录（`--duration`、`--speedup`、`-e` 连接已部署的服务）],
+    [`cpc live`], [运行一次实验并写出结果目录（`--duration`、`--speedup`；`-e` 连接已部署的服务，`--local` 连接 `cpc up` 启动的服务）],
     [`cpc up`], [本机单进程启动全部服务，直到 Ctrl+C（`--speedup`、`--routing`、`--capacity`、`--interval`、`--no-controller`）],
-    [`cpc loadgen`], [向网关回放负载（`--local` 或 `-e`、`--duration`、负载变换参数、`--model`、`--out`）],
     [`cpc event`], [注入需求响应事件（`--site`、`--cap-kw`、`--duration-min`）],
     [`cpc grid` / `site` / `gateway` / `controller`], [单独启动某个服务（`-e` 地址文件或 `--local`；`--host`、`--port` 覆盖监听地址；
       `cpc site --control <电网信号服务地址>` 从控制节点取得场景与地址）],
-    [`cpc sensors` / `cpc exporter`], [列出或读取功率传感器（`--list`、`--types`、`--spec`）/ 通用功率导出器],
+    [`cpc sensors`], [列出或读取功率传感器（`--list`、`--types`、`--spec`）],
     [`python scripts/smoke_test.py`], [端到端冒烟测试（`--offline` 使用测试数据；`--external -e 地址文件` 检查已部署的环境）],
   ),
   caption: [命令速查],
@@ -184,13 +167,13 @@ NVIDIA GPU 另有 `DCGM_FI_DEV_POWER_USAGE` 等 DCGM 兼容指标。记录规则
 #let qa(q, a) = block(below: 1em, { set par(justify: false, first-line-indent: 0em); [#strong(q) \ #a] })
 
 #qa[端口被占用怎么办？][`cpc up` 默认使用 9000、8080、9300、9101 起的端口。可准备一个地址文件指定其他端口，用 `-e` 传入；
-Compose 部署修改 `docker-compose.yml` 中的端口映射。占用端口的进程可用 `ss -ltnp | grep :8080` 查看。]
+云服务器部署修改 `docker-compose.yml` 中的端口映射。占用端口的进程可用 `ss -ltnp | grep :8080` 查看。]
 
 #qa[请求很慢或连接失败，且机器上设置了 HTTP 代理？][平台内部调用已不读取代理环境变量；但 `curl` 等工具仍会走代理，
-访问本机服务时加 `--noproxy '*'`。Docker 容器与 kind 节点继承的 `127.0.0.1` 代理地址在容器内不可达，见 @g-kind 的说明。]
+访问本机服务时加 `--noproxy '*'`。Docker 容器继承的 `127.0.0.1` 代理地址在容器内不可达，容器中应使用宿主机可达的代理地址或不设代理。]
 
-#qa[Compose 启动后 Grafana 没有数据？][确认 Prometheus 的 Targets 页面（`http://localhost:9090/targets`）各目标为 UP；
-仪表盘的时间范围默认最近 30 分钟，需先运行负载生成器。]
+#qa[控制栈的 Grafana 没有数据？][确认 Prometheus 的 Targets 页面（`http://localhost:9090/targets`）各目标为 UP，
+`prometheus.yml` 中的站点地址已填写；仪表盘的时间范围默认最近 30 分钟，需先运行实验（`cpc live`）。]
 
 #qa[SLO 达成率偏低？][常见原因：容量策略缩容过快、服务器启动时间（`boot_s`）较长、负载超过总容量。
 `cpc check` 给出各站点的并发槽数，可与负载的平均到达率 × 平均服务时间比较；仿真结果的 `route_reasons` 中的 `overflow_*`
@@ -223,9 +206,6 @@ BMC 读数不变时只用 RAPL（`measurement.host: cpu_dram`）。`cpc measure`
 
 #qa[管理接口返回 401？][服务端设置了 `CPC_ADMIN_TOKEN`。调用时加 `-H "Authorization: Bearer <令牌>"`；
 控制器与 `cpc event` 会自动读取同名环境变量。]
-
-#qa[kind 部署卡在等待就绪？][`kubectl --context kind-cpc -n cpc get pods` 查看状态；`ErrImagePull` 多为镜像未加载，重新运行
-`python deploy/k8s/kind_up.py --skip-build`；`describe pod` 查看事件。]
 
 #qa[仿真结果每次都一样吗？][数据集固定版本，到达率缩放与来源区域分配使用场景中的 `workload.seed`，
 相同场景、数据集与策略的仿真结果相同；改变种子可评估随机性的影响。结果目录中的 `run.yaml` 记录了全部输入。]

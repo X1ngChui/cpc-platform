@@ -24,7 +24,6 @@
     columns: (8em, 11em, 1fr),
     header: ("名称", "参数（缺省值）", "规则"),
     [*路由*], [], [],
-    [`round_robin`], [—], [在可用站点间轮流选择],
     [`least_loaded`], [—], [选负载最低的站点],
     [`nearest`], [`max_wait_s`（0.5）、`overflow`], [按往返时延从近到远，选第一个估计排队时间不超过 `max_wait_s` 的站点],
     [`cost_aware`], [`max_load`（0.9）、`ttft_budget`（0.5）、`latency_weight`（0）、`overflow`], [在时延预算内选"等效电价 × PUE × 单请求能耗"最低的站点],
@@ -35,10 +34,8 @@
     [`grid_aware`], [`target_util`（0.6）、`rtt_budget_ms`（60）、`headroom`（1.1）、`scale_down_step`（1）], [按等效电价从低到高分配服务器，并给出路由权重（配合 `weighted` 路由）],
     [*派发*], [], [],
     [`least_loaded`], [—], [占用率最低的服务器（缺省）],
-    [`packing`], [—], [占用率最高的可用服务器，使空闲服务器便于关机],
     [`efficient_first`], [—], [单位并发槽满载功率最低的服务器优先],
     [`affinity`], [`key`（`session_id`）], [同一请求属性值（如会话）的请求落在同一服务器上],
-    [`priority`], [`key`（`priority`）], [排队时按请求属性的数值从大到小出队],
     [*电源管理*], [], [],
     [`ordered`], [—], [按配置顺序开机；关机时先停在服务请求最少的服务器（缺省）],
     [`efficient`], [—], [优先保留单位并发槽满载功率低的服务器],
@@ -188,7 +185,8 @@ class ByPrice(CapacityPolicy):
 == 本地策略
 
 派发策略的缺省流程是：用 `filter(req, server)` 筛出可以接收该请求的服务器，用 `score(req, server)` 打分，选分数最小者；
-没有可选服务器时请求排队，`priority(req)` 决定排队顺序。通常只需重写 `score`：
+没有可选服务器时请求排队，`priority(req)` 决定排队顺序（数值大者先出队，缺省为 0 即先到先出）。通常只需重写 `score`：
+
 
 ```python
 from cpc.sched import DispatchPolicy
@@ -205,6 +203,7 @@ class TenantPools(DispatchPolicy):
 ```
 
 注册到组 `cpc.dispatch`，在站点的 `scheduler.dispatch` 中引用（需要场景 `workload.attributes: [tenant]`）。
+按请求的优先级排队时重写 `priority`，例如 `return float(req.attrs.get("priority", 0))`（需要 `workload.attributes: [priority]`）。
 电源管理策略实现 `plan(want, servers)`，返回需要改变状态的服务器及其目标状态，如 `{"nm-h100-01": "off"}`；
 注册到组 `cpc.power`。
 

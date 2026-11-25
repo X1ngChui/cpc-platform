@@ -11,7 +11,8 @@
 - 平台不包含原始数据的解析代码：新数据源以转换脚本整理为平台格式（`examples/datasets/`）；合成数据只用于测试；
 - 平台内部的 HTTP 客户端使用 `trust_env=False`，服务间调用不经过系统代理；外部下载使用系统代理设置；
 - 不提交密钥、主机地址与个人信息：本地部署文件已在 `.gitignore` 中排除（`deploy/cloud/*/scenario.yaml`、`.env` 等）；
-- 代码风格：四空格缩进、`snake_case` 命名、类型注解；注释、日志与文档使用中文技术书面语。
+- 代码风格：四空格缩进、`snake_case` 命名、类型注解；代码中的注释、日志与命令行输出使用英文；
+  文档提供中文与英文两种版本，内容保持一致。
 
 == 测试
 
@@ -44,10 +45,12 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 
 ```bash
 pip install -e ".[docs]"
-python docs/build.py                # 编译 docs/pdf/design.pdf 与 docs/pdf/guide.pdf
+python docs/build.py                # 编译 docs/pdf/{design,guide}-{zh,en}.pdf
 python docs/figures/export.py       # 从 draw.io 源文件导出插图（需安装 draw.io 桌面版）
 ```
 
-文档源文件为 Typst（`docs/design/`、`docs/guide/`），模板在 `docs/template/cpc-doc.typ`，示意图源文件在 `docs/figures/src/`
-（draw.io，使用其内置图形库），导出的 PDF 插图在 `docs/figures/`；参考文献在 `docs/design/refs.yml`（GB/T 7714 格式输出）。
-中文字体使用 Noto CJK（Debian/Ubuntu 软件包 `fonts-noto-cjk`）。代码或接口变更须同步更新文档并重新编译 PDF。
+文档源文件为 Typst，中文版在 `docs/zh/{design,guide}/`，英文版在 `docs/en/{design,guide}/`，两种语言共用模板
+`docs/template/cpc-doc.typ`；示意图源文件在 `docs/figures/src/{zh,en}/`（draw.io，黑白为主），导出的 PDF 插图在
+`docs/figures/{zh,en}/`，导出后应检查渲染结果有无异常连线与遮挡；参考文献在 `docs/refs.yml`（中文版以 GB/T 7714、
+英文版以 IEEE 格式输出）。中文字体使用 Noto CJK（Debian/Ubuntu 软件包 `fonts-noto-cjk`）。代码或接口变更须同步更新
+两种语言的文档并重新编译 PDF。

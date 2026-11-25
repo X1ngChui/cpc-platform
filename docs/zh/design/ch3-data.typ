@@ -93,7 +93,7 @@ resources:
 
 描述文件属性 `cpc.origin`（带时区的时间）给出 `arrival_s` 的零点，可选；原始数据未给出绝对时间时省略。
 场景通过 `workload.attributes` 选择需要传给策略的扩展字段，所选字段作为请求属性（`RequestInfo.attrs`）在仿真中直接可见，
-在实验中由负载生成器以请求头 `x-cpc-attr-<字段名>`（JSON 值）发送，经网关转发至站点代理。
+在实验中由 `cpc live` 的负载回放以请求头 `x-cpc-attr-<字段名>`（JSON 值）发送，经网关转发至站点代理。
 
 === 电网信号（grid_signal）
 
@@ -155,16 +155,12 @@ resources:
     columns: (11em, 7em, 1fr),
     header: ("范例", "类别", "原始数据与要点"),
     [`azure_llm.py`], [workload], [Azure LLM Inference Trace 2023（1 小时）与 2024（1 周） @patel2024splitwise @azure2024trace。时间戳按 UTC 解释，`cpc.origin` 取最早的时间戳；输出 token 数为 0 的请求须显式选择报错或剔除。],
-    [`burstgpt.py`], [workload], [BurstGPT v2.0 @wang2025burstgpt。扩展字段 `model`、`log_type`；响应 token 数为 0 的失败请求须显式处理。],
-    [`mooncake.py`], [workload], [Mooncake FAST'25 trace @qin2025mooncake。`hash_ids` 转为约定扩展字段 `prefix_hashes`。],
     [`synthetic_workload.py`], [workload], [合成的非齐次泊松到达负载，只用于测试与功能演示。],
     [`cn_grid/convert.py`], [grid_signal], [省级工商业分时电价规则 @gd2021tou @gz2023tou @nm2023tou @sh2022tou 展开为逐时段电价（`label` 为时段名）；2023 年省级电力平均排放因子 @mee2025factors 作为转换时间范围内的恒定碳强度，该假设记录在描述文件中。],
-    [`eia930.py`], [grid_signal], [EIA-930 各平衡区逐时分燃料净发电量 @eia930 与分燃料生命周期排放因子 @ipcc2014annex3 @electricitymaps2026factors 计算逐时碳强度；数据不完整的小时不输出。],
-    [`constant_signal.py`], [grid_signal], [由参数给定的恒定信号（非实测），用于某种信号没有实测数据而取约定值的情形。],
     [`mlenergy.py`], [power_profile], [ML.ENERGY Benchmark v3 的 LLM 运行汇总 @chung2025mlenergy @mlenergy2025v3。],
   ),
   caption: [转换范例],
 )
 
 编写新的转换时，可使用 `cpc.datasets.build.write_dataset`：给出 Arrow 表、字段定义与描述属性，写出数据文件与描述文件，
-并按类别规范完整校验一次。
+并按类别规范完整校验一次。自有服务器的功率特性由 `cpc measure` 测量并直接写为 power_profile 数据集（@sec-calibration）。

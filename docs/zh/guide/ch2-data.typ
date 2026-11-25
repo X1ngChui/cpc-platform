@@ -42,11 +42,7 @@ export CPC_DATA_DIR=/data/cpc-datasets       # 可写入 ~/.bashrc 使其长期�
     columns: (15em, 1fr),
     header: ("命令（均在 examples/datasets/ 下）", "生成的数据集"),
     [`azure_llm.py --variant 2023-conv --zero-output fail`], [`azure-llm-2023-conv`：Azure 对话服务约 1 小时的请求（另有 `2023-code`；`2024-conv`、`2024-code` 为 1 周，原始文件约 1 GB）],
-    [`burstgpt.py --zero-output drop`], [`burstgpt-1`：ChatGPT 与 GPT-4 服务 2 个月的请求，含扩展字段 `model`、`log_type`],
-    [`mooncake.py --trace conversation --zero-output fail`], [`mooncake-fast25-conversation`：含扩展字段 `prefix_hashes`（另有 `toolagent`、`synthetic`）],
     [`cn_grid/convert.py --start 2026-01-01 --end 2027-01-01`], [`cn-grid-2026`：广东、贵州、内蒙古（蒙西）、上海的分时电价与碳强度],
-    [`eia930.py --series adjusted`], [`eia930-carbon-2024h1`：美国各电网平衡区 2024 年上半年逐时碳强度],
-    [`constant_signal.py --name ... --signal ... --unit ... --values ... --start ... --end ...`], [由给定数值生成恒定信号（非实测）],
     [`mlenergy.py`], [`mlenergy-benchmark-v3-llm`：H100、B200 上各模型的功率与 token 间隔测量],
   ),
   caption: [转换范例],
@@ -67,17 +63,18 @@ cpc data kinds                                         # 打印三类数据集�
 `cpc data check` 的输出示例：
 
 ```text
-azure-llm-2023-conv@7909210（workload）符合规范：requests 19366 行
+azure-llm-2023-conv@7909210 (workload) is valid: requests 19366 rows
 {
   "ref": "azure-llm-2023-conv@7909210",
   "requests": 19366,
-  "duration_s": 3502.0,
+  "duration_s": 3501.7,
   "mean_rps": 5.53,
   ...
 }
 ```
 
-数据不符合规范时，输出指出数据集、字段、违反的约束与具体取值，例如"字段 output_tokens：取值 0 不满足 规范下限 1"。
+数据不符合规范时，输出指出数据集、字段、违反的约束与具体取值，例如
+"dataset my-trace\@1, resource requests, field output_tokens: value 0 violates specification minimum 1"。
 
 == 整理自己的数据
 
@@ -167,7 +164,7 @@ workload:
   attributes: [tenant]        # 须是描述文件中声明过的字段
 ```
 
-策略通过 `req.attrs["tenant"]` 读取（@g-policy）。仿真中属性随请求直接传递；实验中负载生成器以请求头
+策略通过 `req.attrs["tenant"]` 读取（@g-policy）。仿真中属性随请求直接传递；实验中 `cpc live` 的负载回放以请求头
 `x-cpc-attr-tenant` 发送，网关转发给站点代理。电网信号数据集中的其他信号（例如可再生能源占比）在场景的 `grid.extras`
 中声明后，策略可以从 `signal.extra` 中读取（@g-scenario）。
 
@@ -192,7 +189,7 @@ cpc profile ${CPC_DATA_DIR}/mlenergy-benchmark-v3-llm \
 
 ```yaml
 h100x8:
-  description: 8×H100，meta-llama/Llama-3.1-405B-Instruct-FP8；...
+  description: 8xH100, meta-llama/Llama-3.1-405B-Instruct-FP8; ...
   slots: 128
   power_w:
   - [0.0, 1360.0]
@@ -205,8 +202,8 @@ h100x8:
   boot_s: 180.0
 ```
 
-`cpc data check <数据集>` 列出功率特性数据集中有哪些测量组。自己测量的服务器（例如用 `cpc live` 在不同到达率下运行，
-从结果中读取各站点的功率与 token 间隔）也可以整理为 power_profile 数据集后用同样的方式生成。
+`cpc data check <数据集>` 列出功率特性数据集中有哪些测量组。自己的服务器用 `cpc measure` 测量（@g-calibrate），
+它写出的 power_profile 数据集同时记录了并发槽数、在线空载功率与开机时间，`cpc profile` 直接使用这些测量值。
 
 *手工填写。* 已知几个占用率下的功率与 token 间隔时直接填写，至少需要空载（占用率 0）与一个在服务的点：
 

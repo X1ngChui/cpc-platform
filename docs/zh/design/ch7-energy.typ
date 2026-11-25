@@ -28,10 +28,10 @@
 )
 
 新增一种硬件只需实现一个 `Sensor` 子类的 `read()` 方法，并以 entry point（组 `cpc.sensors`）注册（@ch-ext）；
-站点代理、通用导出器、命令行工具都通过这一层获取功率，不依赖具体硬件。传感器的错误处理约定为：
+站点代理与命令行工具（`cpc sensors`、`cpc measure`）都通过这一层获取功率，不依赖具体硬件。传感器的错误处理约定为：
 
 - 构造阶段确定设备集合以及各字段使用的接口（能力探测，结果由 `capabilities()` 给出）；必需能力不可用时抛出 `SensorError`，
-  使站点代理或导出器启动失败。例如 NVML 的功率读数为必需能力，累计能耗计数器（Volta 及以后的 GPU 提供）与利用率为可选能力；
+  使站点代理启动失败。例如 NVML 的功率读数为必需能力，累计能耗计数器（Volta 及以后的 GPU 提供）与利用率为可选能力；
 - `read()` 整体失败（命令执行失败、接口不可达、输出无法解析）时抛出异常，由调用方记入该传感器的健康状态；
 - 单个设备或字段读取失败时，该值为 `None`，原因记入 `errors`；计数器差分的首次采样没有前一时刻，功率为 `None` 但不计为错误。
 
@@ -54,7 +54,7 @@
 
 所有传感器接受通用参数 `max_w`（功率读数的合理上限）：超过上限的读数记为缺失并记录原因，不以其他值替代，
 用于排除 BMC 等偶发的异常读数。
-`cpc sensors --list` 列出全部传感器类型及本机是否具备其前提条件；`cpc sensors --types nvml,rapl` 读取指定传感器并打印读数。平台不自动选择传感器：站点与导出器使用的传感器均由配置显式给出，
+`cpc sensors --list` 列出全部传感器类型及本机是否具备其前提条件；`cpc sensors --types nvml,rapl` 读取指定传感器并打印读数。平台不自动选择传感器：站点使用的传感器均由配置显式给出，
 同一设备不应由两个传感器同时报告（站点代理在启动时检查加速卡设备名是否重复）。
 
 === 采集方案选型
@@ -66,7 +66,6 @@
     columns: (9em, 1fr, 1fr),
     header: ("方案", "适用", "说明"),
     [NVIDIA dcgm-exporter], [Kubernetes / Linux 上的数据中心 GPU], [NVIDIA GPU Operator 的组成部分，指标最全；消费级显卡支持有限。平台的 GPU 指标与其同名。],
-    [平台通用导出器 `cpc exporter`], [任意 Linux 服务器], [依赖少，支持多种硬件；NVIDIA GPU 同时输出 DCGM 兼容指标。],
     [Kepler（CNCF）], [Kubernetes 节点与容器级 CPU 能耗], [基于 RAPL 与模型，能把能耗归属到容器/Pod；GPU 部分建议仍用 DCGM。],
     [node_exporter], [Linux 主机], [`node_rapl_*` 指标提供 RAPL 能量计数器（需裸金属与权限）。],
     [ipmi_exporter / Redfish], [整机功率], [反映包括风扇、电源损耗在内的服务器总功率，采样周期较长（秒级）。],
@@ -121,8 +120,6 @@ measurement:
     header: ("指标", "含义"),
     [`DCGM_FI_DEV_POWER_USAGE`], [真实服务器的 GPU 功率（W），与 dcgm-exporter 同名；标签 `gpu`、`modelName`、`Hostname`、`site`],
     [`DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION`], [GPU 累计能耗（mJ）],
-    [`cpc_device_power_watts`], [通用导出器：任意设备功率；标签 `sensor`、`device`、`kind`、`vendor`、`host`],
-    [`cpc_device_energy_joules_total`], [通用导出器：任意设备累计能耗（J）],
     [`cpc_node_it_power_watts`], [服务器 IT 功率；标签 `pool`、`source`（model / sensors）；读数缺失时为 NaN],
     [`cpc_node_power_valid`、`cpc_site_energy_coverage_ratio`], [服务器功率读数是否完整；站点功率有效时长占比],
     [`cpc_sensor_up`、`cpc_sensor_errors_total`], [传感器最近一次读取是否成功且无字段错误；读取失败次数],
@@ -151,7 +148,6 @@ Prometheus 记录规则（`deploy/prometheus/rules/cpc-energy.yml`）把它们�
     [`site:carbon_kg_per_hour`], [设施功率（kW）× 碳强度],
     [`site:power_cap_headroom_watts`], [功率上限 − 设施功率（需求响应余量）],
     [`site:joules_per_output_token:rate1m`], [设施功率 ÷ 输出 token 速率，即每输出 token 的设施能耗],
-    [`host_kind:device_power_watts:sum`], [通用导出器：按主机与设备类别汇总],
     [`global:slo_attainment:ratio5m`], [全局 SLO 达成率（5 分钟窗口）],
   ),
   caption: [标准化指标（记录规则）],

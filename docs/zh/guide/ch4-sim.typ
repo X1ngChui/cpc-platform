@@ -62,7 +62,7 @@ cpc run examples/experiments/policies.yaml --jobs 4
 ```
 
 各变体以独立进程并行运行（`--jobs` 限制同时运行的数量；每个进程各自加载负载数据，负载很大时可适当减少），
-结束后打印对比表并写出 `results/<实验名>/comparison.csv`。`examples/experiments/` 中另有美国电网场景的示例。
+结束后打印对比表并写出 `results/<实验名>/comparison.csv`。
 
 == 结果目录
 
@@ -75,7 +75,7 @@ cpc run examples/experiments/policies.yaml --jobs 4
     columns: (12em, 1fr),
     header: ("字段", "含义"),
     [`arrived`], [到达的请求数],
-    [`served`、`rejected`、`unrouted`、`unfinished`], [完成服务的请求数；被站点拒绝（队列已满）的；被路由策略拒绝的；仿真结束时尚未完成的（实验中另有 `failed`：连接失败或其他错误）],
+    [`served`、`rejected`、`unrouted`、`unfinished`], [完成服务的请求数；被站点拒绝（队列已满）的；被路由策略拒绝的；仿真结束时尚未完成的（实验中另有 `failed`：连接失败、不完整的流式响应或其他错误）],
     [`slo_attainment`], [完成的请求中首 token 时延与 token 间隔都满足 SLO 的比例],
     [`ttft_p50_s`、`ttft_p99_s`、`e2e_p50_s`], [首 token 时延的中位数与 99 分位数、端到端时延的中位数（秒，含网络往返时延）],
     [`it_kwh`、`facility_kwh`], [IT 电量与设施电量（kWh）],
@@ -135,13 +135,22 @@ for scale in (0.5, 1.0, 1.5):
 
 == 作图
 
-```bash
-pip install -e ".[analysis]"          # 首次使用时安装 matplotlib
-cpc report results/policies           # 对比图 comparison.png 与各变体的 run.png
-cpc report results/base               # 单次运行
-```
+结果数据包中的表格可以直接用常用的分析工具作图。以下示例画出各站点 IT 功率与开启的服务器数随时间的变化，
+以及各变体的电费对比（需要 pandas 与 matplotlib：`pip install pandas matplotlib`）：
 
-`run.png` 为各站点 IT 功率、开启的服务器数与电价随时间的变化；`comparison.png` 为各变体的电费、设施电量、碳排放与 SLO 达成率。
+```python
+import matplotlib.pyplot as plt
+import pandas as pd
+
+ts = pd.read_csv("results/policies/cost-reactive/timeseries.csv")
+fig, (a, b) = plt.subplots(2, 1, sharex=True, figsize=(8, 6))
+ts.plot(x="t_h", y=[c for c in ts.columns if c.endswith("_it_kw")], ax=a, ylabel="IT kW")
+ts.plot(x="t_h", y=[c for c in ts.columns if c.endswith("_nodes")], ax=b, ylabel="servers")
+fig.savefig("run.png")
+
+cmp = pd.read_csv("results/policies/comparison.csv")
+cmp.plot.bar(x="variant", y="cost").figure.savefig("cost.png")
+```
 
 == 比较两个结果目录：cpc compare
 

@@ -29,7 +29,6 @@
   tbl(
     columns: (7em, 13em, 1fr),
     header: ("名称", "参数（缺省值）", "规则"),
-    [`round_robin`], [—], [在可用站点间轮询（基线）。],
     [`least_loaded`], [—], [选负载最低的可用站点（基线）。],
     [`nearest`], [`max_wait_s`（0.5）、`overflow`], [按 RTT 从近到远，选第一个估计排队时间不超过 `max_wait_s` 的站点；都超过时溢出（`wait_exceeded`）。],
     [`cost_aware`], [`max_load`（0.9）、`ttft_budget`（0.5）、`latency_weight`（0）、`overflow`], [在有电网信号、负载低于 `max_load`、估计 TTFT 不超过 `ttft_budget` × SLO 的站点中，选"等效电价 × PUE × 单请求边际能耗 + `latency_weight` × 估计 TTFT"最小者。单请求边际能耗 =（满载 − 空载 IT 功率）/ 并发槽数 × 平均服务时间。没有信号时溢出（`no_signal`），预算或负载不满足时溢出（`over_budget`）。],
@@ -93,10 +92,8 @@
     columns: (8em, 9em, 1fr),
     header: ("名称", "参数（缺省值）", "规则"),
     [`least_loaded`], [—], [占用率最低的服务器（站内负载均衡，缺省）。],
-    [`packing`], [—], [占用率最高的可接收服务器（集中负载，便于空闲服务器关机）。],
     [`efficient_first`], [—], [单位并发槽满载功率最低的服务器优先，同类服务器间按占用率均衡（异构服务器池）。],
     [`affinity`], [`key`（`session_id`）], [按请求属性 `key` 的哈希选择首选服务器，使同一会话的请求落在同一服务器上，便于复用 KV 缓存；属性缺失时按占用率选择。],
-    [`priority`], [`key`（`priority`）], [服务器选择同 `least_loaded`；排队时按请求属性 `key` 的数值出队。],
   ),
   caption: [参考派发策略],
 )
@@ -143,7 +140,8 @@ class Greenest(RoutingPolicy):
         return RouteDecision.to(best.id, "min_carbon")
 ```
 
-本地策略的写法相同，例如按请求属性 `tenant` 把请求固定到某个服务器池的派发策略只需重写 `filter`。
+本地策略的写法相同，例如按请求属性 `tenant` 把请求固定到某个服务器池的派发策略只需重写 `filter`；
+按请求属性 `priority` 排队的派发策略只需重写 `priority`（返回 `float(req.attrs.get("priority", 0))`）。
 
 *注册。* 内置策略以装饰器注册（`ROUTING.register("名称")` 等）。外部策略以 Python 包的 entry points 提供，
 组名为 `cpc.routing`、`cpc.capacity`、`cpc.dispatch`、`cpc.power`（功率传感器为 `cpc.sensors`）：

@@ -68,7 +68,7 @@ venv 模块，先安装 `python3-venv`：
 sudo apt install python3-venv  # Debian / Ubuntu；其他发行版通常已包含
 python3 -m venv .venv          # 在仓库目录下创建虚拟环境 .venv
 . .venv/bin/activate           # 激活虚拟环境；命令行提示符前出现 (.venv)
-pip install -e ".[dev]"        # 安装平台及测试、作图所需的依赖
+pip install -e ".[dev]"        # 安装平台及测试所需的依赖
 ```
 
 每次打开新的终端，都需要先进入仓库目录并执行 `. .venv/bin/activate`。安装完成后可以使用 `cpc` 命令：
@@ -89,7 +89,7 @@ python scripts/smoke_test.py --offline    # 启动全部服务并逐项检查，
 ```
 
 冒烟测试会把各服务作为独立进程启动，依次检查服务就绪、请求处理、容量决策、能耗指标、需求响应、传感器故障与站点故障的处理，
-每一项输出"[通过]"，最后一行为"冒烟测试通过"。该测试使用随代码提供的测试数据，不需要下载。
+每一项输出"[ok]"，最后一行为"Smoke test passed"。该测试使用随代码提供的测试数据，不需要下载。
 
 = 快速上手 <g-quick>
 
@@ -120,23 +120,25 @@ python examples/datasets/cn_grid/convert.py --start 2026-01-01 --end 2027-01-01
 cpc check -s examples/quickstart/scenario.yaml
 ```
 
-`cpc check` 读取场景与其引用的全部数据集，检查配置与数据是否有效，并打印概要。输出的主要部分：
+`cpc check` 读取场景与其引用的全部数据集，检查配置与数据是否有效，并打印概要（服务器类型、站点、往返时延、
+电网信号与负载）。输出的主要部分：
 
 ```text
-服务器类型
-  名称            并发槽      空载 W      满载 W     满载 W/槽    开机 s  说明
-  h100x8        128      1360      5406       42.2     180  8×H100，Llama-3.1-405B-...
-  b200x4        128      1160      4450       34.8     180  4×B200，同一模型...
-站点
-  站点     区域                 PUE    服务器     并发槽     满载设施 kW  服务器池 / ...
-  sh     shanghai          1.25      1     128         6.8  h100:h100x8×1；...
+Server types
+  name        slots   idle W   peak W  peak W/slot  boot s  description
+  h100x8        128     1360     5406         42.2     180  8xH100, Llama-3.1-405B-Instruct-FP8 (...)
+  b200x4        128     1160     4450         34.8     180  4xB200, same model (...)
+
+Sites
+  site   region             PUE  servers  slots  peak facility kW  pools; dispatch/power policy
+  sh     shanghai          1.25        1    128               6.8  h100:h100x8x1; least_loaded/ordered
   ...
-往返时延（ms，来源 → 站点）
+Round-trip times (ms, source -> site)
                 sh      gd      gz      nm
-  east         4.5    19.8    27.4    24.1   （请求占比 0.4）
+  east         4.5    19.8    27.4    24.1   (share 0.4)
   ...
-负载 azure-llm-2023-conv@7909210：19366 个请求，0.97 小时，平均 5.53 请求/秒，...
-场景检查通过
+Workload azure-llm-2023-conv@7909210: 19366 requests, 0.97 h, 5.53 requests/s, ...
+Scenario check passed
 ```
 
 有任何问题（字段拼写错误、数据集不存在、负载时间窗超出数据范围等）时，命令给出原因并以非零状态退出。
@@ -150,14 +152,14 @@ cpc sim -s examples/quickstart/scenario.yaml --hours 0.9 --out results/qs-base
 仿真按场景中的策略（就近路由 `nearest` + 按负载开关服务器 `reactive`）运行 0.9 小时，结束后打印汇总：
 
 ```text
-仿真完成（0.58 秒）：路由 nearest，容量 reactive，0.9 小时
-  请求：到达请求 18356，完成 18356，站点拒绝 0，未路由 0，结束时未完成 0
-  SLO 达成率 99.99%；首 token 时延 P50 0.199 s，P99 0.871 s
-  设施电量 14.004 kWh（IT 11.449 kWh），电费 11.95 CNY，碳排放 8.07 kg，每请求 0.76 Wh
-结果已写入 results/qs-base/
+Simulation finished (0.67 s): routing nearest, capacity reactive, 0.9 h
+  requests: arrived 18356, served 18356, rejected by sites 0, unrouted 0, unfinished at the end 0
+  SLO attainment 99.99%; TTFT P50 0.199 s, P99 0.871 s
+  facility energy 14.004 kWh (IT 11.449 kWh), cost 11.95 CNY, carbon 8.07 kg, 0.76 Wh per request
+Result written to results/qs-base/
 ```
 
-SLO 达成率是首 token 时延与 token 间隔都在场景规定的上限之内的请求所占比例。
+SLO 达成率（SLO attainment）是首 token 时延与 token 间隔都在场景规定的上限之内的请求所占比例。
 
 == 比较多组策略
 
@@ -181,10 +183,10 @@ cpc run examples/quickstart/experiment.yaml
 各变体并行运行，结束后打印对比表：
 
 ```text
-  变体                 完成   拒绝      SLO  TTFT P99  设施 kWh  电费 CNY  碳 kg
-  nearest-static      18356      0   99.99%     0.865      17.9      15.7   10.0
-  nearest-reactive    18356      0   99.99%     0.871      14.0      12.0    8.1
-  cost-reactive       18356      0  100.00%     0.589       8.2       4.8    5.0
+  variant             served  rejected      SLO  TTFT P99  facility kWh  cost CNY  carbon kg
+  nearest-static       18356         0   99.99%     0.865          17.9      15.7       10.0
+  nearest-reactive     18356         0   99.99%     0.871          14.0      12.0        8.1
+  cost-reactive        18356         0  100.00%     0.589           8.2       4.8        5.0
 ```
 
 `static` 让全部服务器常开；`reactive` 按到达率关闭多余的服务器，降低了空载能耗；`cost_aware` 把请求送到等效电价
@@ -218,10 +220,14 @@ df = run["requests"].to_pandas()                         # 需要 pandas
 print(df[df.status == "served"].groupby("site").ttft_s.describe())
 ```
 
-作图（各站点功率、服务器数与电价随时间的变化，以及对比柱状图）：
+作图（各站点 IT 功率随时间的变化；需要 pandas 与 matplotlib）：
 
-```bash
-cpc report results/quickstart        # 生成 comparison.png 与各变体目录中的 run.png
+```python
+import pandas as pd
+
+ts = pd.read_csv("results/quickstart/cost-reactive/timeseries.csv")
+ax = ts.plot(x="t_h", y=[c for c in ts.columns if c.endswith("_it_kw")], ylabel="IT kW")
+ax.figure.savefig("it-power.png")
 ```
 
 == 运行一次实验

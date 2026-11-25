@@ -2,7 +2,7 @@
 
 = 实验 <g-live>
 
-实验以真实时间运行场景：各个服务通过 HTTP 通信，负载生成器按 trace 中的到达时间发送 OpenAI 兼容的推理请求。
+实验以真实时间运行场景：各个服务通过 HTTP 通信，`cpc live` 按 trace 中的到达时间发送 OpenAI 兼容的推理请求。
 实验用于检验策略在真实系统中的行为，并可以接入真实的推理实例与功率传感器。
 
 == 组成
@@ -15,7 +15,6 @@
     [站点代理], [9101 起], [每个站点一个：管理站点的服务器（开关、排队、派发）、测量功率，提供推理接口],
     [网关], [8080], [用户请求的入口：为每个请求选择站点（全局路由策略）并转发，模拟跨地域的网络时延],
     [控制器], [9300], [周期性地读取各站点状态与电网信号，调用容量策略，向站点下发开启服务器数与功率封顶比例],
-    [负载生成器], [—], [按场景的负载回放请求],
   ),
   caption: [实验系统的服务],
 )
@@ -46,18 +45,19 @@ cpc live -s configs/scenario.yaml --duration 600 --rate-scale 0.1 --speedup 60 \
     [`--model`], [请求中的模型名；接入真实推理实例时须与其服务的模型名一致（缺省 `cpc`）],
     [`--no-stream`], [使用非流式请求（不能测量首 token 时延）],
     [`-e`、`--endpoints`], [连接已部署的服务（见下文），而不在本进程中启动],
+    [`--local`], [连接本机端口上已运行的服务（`cpc up`）],
   ),
   caption: [cpc live 的参数],
 )
 
-结果中的请求状态：HTTP 200 为 served，503（站点队列已满或路由策略拒绝）为 rejected，其他错误与连接失败为 failed。
+结果中的请求状态：HTTP 200 为 served，503（站点队列已满或路由策略拒绝）为 rejected，其他错误、连接失败与不完整的流式响应为 failed。
 电量取各站点累计能耗在采样区间内的增量；电费与碳排放按每个采样区间开始时的电价与碳强度计算。
 
 *负载与本机能力。* 负载按真实时间发送，到达率过高会超出本机的处理能力（表现为大量请求超时或失败），可用 `--rate-scale`
 降低到达率。信号时钟加速不改变负载的到达速度；需要负载的日内变化与加速后的信号时钟同步时，用 `--time-scale`
 压缩 trace 的时间，并用 `--rate-scale` 相应降低到达率。
 
-== 手动操作：cpc up 与 cpc loadgen
+== 手动操作：cpc up
 
 需要在运行期间手动观察与操作时，用 `cpc up` 启动全部服务，它会一直运行到按 Ctrl+C：
 
@@ -65,14 +65,13 @@ cpc live -s configs/scenario.yaml --duration 600 --rate-scale 0.1 --speedup 60 \
 cpc up -s configs/scenario.yaml --speedup 60
 ```
 
-另开一个终端（同样先激活虚拟环境）发送负载：
+另开一个终端（同样先激活虚拟环境）回放负载并写出结果目录：
 
 ```bash
-cpc loadgen -s configs/scenario.yaml --local --duration 120 --rate-scale 0.1 \
-    --out logs/load.jsonl
+cpc live -s configs/scenario.yaml --local --duration 120 --rate-scale 0.1 --out results/manual-1
 ```
 
-`--local` 表示服务使用本机端口。结束时打印发送数、成功数、时延分位数与各站点分担的比例。也可以用任何 OpenAI 兼容的客户端
+`--local` 表示连接本机端口上已运行的服务（`cpc up` 启动的服务），而不在本进程中另行启动。也可以用任何 OpenAI 兼容的客户端
 访问网关：
 
 ```bash
@@ -106,7 +105,7 @@ curl http://localhost:8080/v1/chat/completions -H "Content-Type: application/jso
 curl -X PUT http://localhost:8080/admin/policy -H "Content-Type: application/json" \
      -d '{"policy": "cost_aware"}'                       # 切换路由策略
 curl -X PUT http://localhost:9300/admin/policy -H "Content-Type: application/json" \
-     -d '{"policy": "grid_aware"}'                       # 切换容量策略
+     -d '{"policy": "grid_aware"}'                       # 切换容量策略（配合路由策略 weighted）
 curl -X POST http://localhost:9300/admin/step            # 立即执行一次容量决策
 cpc event -s configs/scenario.yaml --local --site gd --cap-kw 8 --duration-min 120
 ```
@@ -137,130 +136,7 @@ cpc live       -s scenario.yaml -e endpoints.yaml --duration 3600
 ```
 
 每个服务按地址文件中自己的地址监听，`--host`、`--port` 可以覆盖（例如在容器中监听 `0.0.0.0`）。各服务使用同一份场景文件；
-网关、控制器与负载生成器启动时须能访问电网信号服务。`cpc live -e` 连接已运行的服务，此时全局策略由网关、控制器启动时的参数决定。
-
-== Docker Compose <g-compose>
-
-Docker Compose 在一台主机上以容器运行全部服务，并包含 Prometheus（指标存储）与 Grafana（仪表盘）。
-
-=== 启动
-
-```bash
-docker compose -f deploy/compose/docker-compose.yml up -d --build
-docker compose -f deploy/compose/docker-compose.yml ps
-```
-
-启动的容器：`grid`、`site-sh`、`site-gd`、`site-gz`、`site-nm`、`gateway`、`controller`、`prometheus`、`grafana`。
-各服务通过容器名互相访问（地址文件 `deploy/compose/endpoints.yaml`），并映射到宿主机端口：
-
-#figure(
-  tbl(
-    columns: (8em, 1fr),
-    header: ("服务", "宿主机地址"),
-    [网关], [`http://localhost:8080`],
-    [电网信号], [`http://localhost:9000`],
-    [控制器], [`http://localhost:9300`],
-    [站点 sh/gd/gz/nm], [`http://localhost:9101` – `9104`],
-    [Prometheus], [`http://localhost:9090`],
-    [Grafana], [`http://localhost:3000`（匿名只读；管理员 `admin` / 环境变量 `GRAFANA_PASSWORD`，默认 `admin`）],
-  ),
-  caption: [Compose 部署的访问地址],
-)
-
-可在 `deploy/compose/.env` 中设置环境变量：`CPC_SPEEDUP`（信号时钟加速，默认 60）、`CPC_ROUTING`、`CPC_CAPACITY`（默认策略）、
-`CPC_ADMIN_TOKEN`（管理接口令牌）、`GRAFANA_PASSWORD`。
-
-=== 运行实验与观察
-
-在宿主机上用 `cpc live` 连接 Compose 中的服务，回放负载并写出结果目录：
-
-```bash
-cpc live -s configs/scenario.yaml -e configs/endpoints.compose-host.yaml --duration 600 \
-    --rate-scale 0.1 --out results/compose-1
-```
-
-也可以只用容器中的负载生成器发送负载（不写出结果目录）：
-
-```bash
-docker compose -f deploy/compose/docker-compose.yml run --rm loadgen        # 默认 10 分钟
-CPC_LOAD_SECONDS=1800 docker compose -f deploy/compose/docker-compose.yml run --rm loadgen
-```
-
-电网信号服务与负载生成器容器以只读方式挂载宿主机的数据集目录（`${CPC_DATA_DIR:-~/.cache/cpc/datasets}`），
-须先在宿主机准备默认场景的数据集（@g-data）；到达率可用环境变量 `CPC_RATE_SCALE` 缩放。
-
-打开 Grafana 的"算电协同调度平台"仪表盘，可以看到
-设施总功率、用电成本速率、碳排放速率、请求速率、SLO 达成率，以及各站点的功率、电价、在线服务器数、碳强度、请求率、
-TTFT P99、需求响应余量、每 token 能耗、排队数与 GPU 功率。请求日志与决策日志在 `logs/compose/`。
-
-在 Prometheus 页面（`http://localhost:9090`）可以直接查询标准化指标，例如：
-
-```text
-site:facility_power_watts:sum                       各站点设施功率
-sum(site:energy_cost_per_hour)                      全局用电成本速率（电价货币单位/小时）
-increase(cpc_node_energy_joules_total[10m]) / 3.6e6 各服务器最近 10 分钟 IT 用电（kWh）
-histogram_quantile(0.99, sum by (le, site) (rate(cpc_gateway_ttft_seconds_bucket[5m])))
-```
-
-=== 验证与停止
-
-```bash
-python scripts/smoke_test.py --external -e configs/endpoints.compose-host.yaml
-docker compose -f deploy/compose/docker-compose.yml down
-```
-
-== Kubernetes（kind） <g-kind>
-
-=== 部署
-
-```bash
-python deploy/k8s/kind_up.py
-```
-
-脚本依次完成：按场景生成 Kubernetes 清单与 kind 集群配置（`deploy/k8s/generate.py`）→ 创建名为 `cpc` 的 kind 集群
-（1 个控制面节点 + 每个站点 1 个 worker 节点，worker 带 `topology.kubernetes.io/region=<站点 id>` 标签；
-控制面节点挂载宿主机的数据集目录 `${CPC_DATA_DIR}`，供电网信号服务读取）→ 构建平台镜像 →
-把平台、Prometheus、Grafana 镜像加载到集群节点 → `kubectl apply` → 等待全部 Deployment 就绪。完成后：
-
-#figure(
-  tbl(
-    columns: (8em, 1fr),
-    header: ("服务", "地址（NodePort 映射到宿主机）"),
-    [网关], [`http://localhost:30080`],
-    [Grafana], [`http://localhost:30300`],
-    [Prometheus], [`http://localhost:30090`],
-    [电网信号 / 控制器], [`http://localhost:30900` / `http://localhost:30930`],
-    [站点], [`http://localhost:30101` 起],
-  ),
-  caption: [kind 部署的访问地址],
-)
-
-```bash
-# 站点 Pod 分布在各自 region 的节点上
-kubectl --context kind-cpc -n cpc get pods -o wide
-kubectl --context kind-cpc -n cpc logs deploy/controller -f
-python scripts/smoke_test.py --external -e configs/endpoints.kind-host.yaml
-python deploy/k8s/kind_up.py --down                     # 删除集群
-```
-
-=== 清单结构
-
-`deploy/k8s/generated/` 中的清单由生成器产生，修改场景（如增加站点）后重新运行 `python deploy/k8s/generate.py` 即可：
-
-- `00-namespace.yaml`：命名空间 `cpc`；
-- `10-config.yaml`：地址文件、Prometheus 配置与记录规则、Grafana 数据源与仪表盘（ConfigMap）；
-- `20-grid.yaml`、`22-gateway.yaml`、`23-controller.yaml`：电网信号服务（固定在控制面节点，以 hostPath 读取数据集）、网关与控制器；
-- `21-sites.yaml`：每个站点一个 Deployment + Service，`nodeSelector` 固定到对应 region 的节点；
-- `30-monitoring.yaml`：Prometheus 与 Grafana。
-
-#note(title: "代理环境")[如果宿主机通过 `127.0.0.1` 上的代理上网，kind 节点会继承这个代理地址，但在节点容器内它是不可达的，
-直接拉取镜像会失败。`kind_up.py` 因此先在宿主机准备好全部镜像再加载到节点中（必要时导出单一平台的镜像包），节点本身不需要联网。]
-
-=== 真实 Kubernetes 集群
-
-在真实集群中，可用 NVIDIA GPU Operator 安装设备插件；给节点加上 `topology.kubernetes.io/region` 标签表示站点；
-每个站点部署 vLLM 实例，站点代理的真实服务器池（`backend: openai`）的 `upstreams` 指向这些实例的 Service 地址。
-未配置容器名时，开关机只停止或恢复向实例派发请求。
+网关、控制器与 `cpc live` 启动时须能访问电网信号服务。`cpc live -e` 连接已运行的服务，此时全局策略由网关、控制器启动时的参数决定。
 
 == 接入真实服务器 <g-real>
 
@@ -291,7 +167,7 @@ curl http://127.0.0.1:8000/health
 ```yaml
 sites:
   - id: lab
-    name: 本机 GPU（真实服务器）
+    name: local GPU (real server)
     region: guizhou
     lat: 26.40
     lon: 106.40
@@ -326,12 +202,12 @@ sites:
 *第四步：运行实验。*
 
 ```bash
-cpc live -s configs/scenario.local-gpu.yaml --routing round_robin --duration 60 \
+cpc live -s configs/scenario.local-gpu.yaml --routing least_loaded --duration 60 \
     --model cpc \
     --out results/live-gpu
 ```
 
-`--model cpc` 使请求中的模型名与 vLLM 的 `--served-model-name` 一致；`round_robin` 让请求轮流发往 lab 与仿真站点 emu。
+`--model cpc` 使请求中的模型名与 vLLM 的 `--served-model-name` 一致；`least_loaded` 把请求分给负载较低的站点（lab 或仿真站点 emu）。
 结束后，结果中站点 lab 的功率来自 GPU 的实测读数；运行期间访问 `http://localhost:9101/state` 可以看到服务器的
 `power_source` 为 `sensors`。
 
@@ -425,8 +301,8 @@ NVIDIA Container Toolkit 的软件源配置命令随版本变化，请以 NVIDIA
 
 ```bash
 git clone https://github.com/X1ngChui/cpc-platform.git && cd cpc-platform
-# 或 xingchui/cpc-platform:0.3.0，或自行 docker build
-docker pull ghcr.io/x1ngchui/cpc-platform:0.3.0
+# 或 xingchui/cpc-platform:0.4.0，或自行 docker build
+docker pull ghcr.io/x1ngchui/cpc-platform:0.4.0
 ```
 
 === 控制栈（控制节点，先启动）
@@ -439,7 +315,7 @@ cd deploy/cloud/control-stack
 cat > .env <<'EOF'
 CPC_ADMIN_TOKEN=<自定，各服务器相同>
 GRAFANA_PASSWORD=<自定>
-CPC_IMAGE=ghcr.io/x1ngchui/cpc-platform:0.3.0
+CPC_IMAGE=ghcr.io/x1ngchui/cpc-platform:0.4.0
 EOF
 cp ../scenario.cloud.example.yaml scenario.yaml      # 按实验修改
 cp ../endpoints.cloud.example.yaml endpoints.yaml    # 填入各服务器内网 IP
@@ -447,7 +323,8 @@ cp ../prometheus.cloud.example.yml prometheus.yml    # 填入各服务器 IP
 docker compose up -d
 ```
 
-控制栈的电网信号服务与负载生成器挂载控制节点的数据集目录（`CPC_DATA_DIR`），须先在控制节点准备场景所需的数据集（@g-data）。
+控制栈的电网信号服务挂载控制节点的数据集目录（`CPC_DATA_DIR`），在控制节点上运行的 `cpc live` 也读取该目录，
+须先在控制节点准备场景所需的数据集（@g-data）。
 修改场景后，重启控制栈（`docker compose up -d --force-recreate`）与各站点代理（`docker compose restart site-agent`）。
 
 === 站点栈（每台 GPU 服务器）
@@ -457,7 +334,7 @@ cd deploy/cloud/site-stack
 # 修改 SITE_ID、CONTROL_URL、CPC_ADMIN_TOKEN、MODEL、CPC_IMAGE
 cp .env.example .env
 docker compose up -d                 # 启动 vllm-0 与 site-agent
-docker compose logs -f site-agent    # 等待"功率传感器：['nvml']"与 vLLM 就绪
+docker compose logs -f site-agent    # 等待"power sensors: ['nvml']"与 vLLM 就绪
 ```
 
 `CONTROL_URL` 为控制节点电网信号服务的地址（如 `http://10.0.0.10:9000`）。站点代理在启动期限（缺省 120 秒）内等待控制节点可达，
@@ -546,15 +423,21 @@ python3 ../../../scripts/smoke_test.py --external -e endpoints.yaml -s scenario.
    `curl 'localhost:9090/api/v1/query_range?query=site:facility_power_watts:sum&start=...&end=...&step=15'`）；
 4. 实验结束后停止站点栈与控制栈（`docker compose down`），按需关机或释放实例。
 
+*监控。* 控制栈中的 Grafana 提供仪表盘 "cpc platform"：设施总功率、用电成本速率、碳排放速率、请求速率、SLO 达成率，
+以及各站点的功率、电价、在线服务器数、碳强度、请求率、TTFT P99、需求响应余量、每 token 能耗、排队数、GPU 功率、
+上游可用性与功率传感器状态。在 Prometheus 页面可以直接查询标准化指标，例如：
+
+```text
+site:facility_power_watts:sum                       各站点设施功率
+sum(site:energy_cost_per_hour)                      全局用电成本速率（电价货币单位/小时）
+increase(cpc_node_energy_joules_total[10m]) / 3.6e6 各服务器最近 10 分钟 IT 用电（kWh）
+histogram_quantile(0.99, sum by (le, site) (rate(cpc_gateway_ttft_seconds_bucket[5m])))
+```
+
 === 多台服务器之间的时延
 
-同一地域的服务器之间时延很小，跨数据中心时延默认由网关注入（`network.emulate_wan: true`）。如果希望时延出现在网络层，
-可以把 `emulate_wan` 设为 `false`，在控制节点上用 `deploy/cloud/netem.sh` 对各站点 IP 加单向时延（需要 root）：
-
-```bash
-sudo ./netem.sh eth0 add 10.0.0.11=14 10.0.0.12=12 10.0.0.13=10
-sudo ./netem.sh eth0 del
-```
+同一地域的服务器之间时延很小，跨数据中心时延默认由网关注入（`network.emulate_wan: true`）。服务器确实分布在不同地域时，
+把 `emulate_wan` 设为 `false`，由真实网络产生时延。
 
 == 由真实服务器的测量生成服务器类型 <g-calibrate>
 
@@ -578,10 +461,10 @@ cpc measure --site http://<站点地址>:9100 --device A10 --model-name Qwen2.5-
 运行中逐级打印结果：
 
 ```text
-  并发 0：预热 0 s，测量 60 s …
-    功率 67.6 W（完整率 85%）  在服务 0.00  token 间隔 —  吞吐 0.0/s  请求 0  失败 0
-  并发 1：预热 15 s，测量 60 s …
-    功率 202.9 W（完整率 100%） 在服务 1.00 token 间隔 29.4 ms 吞吐 29.9/s 请求 14 失败 0
+  concurrency 0: warm-up 0 s, measurement 60 s ...
+    power 67.6 W (85% complete)  in service 0.00  inter-token -  throughput 0.0/s  requests 0  errors 0
+  concurrency 1: warm-up 15 s, measurement 60 s ...
+    power 202.9 W (100% complete)  in service 1.00  inter-token 29.4 ms  throughput 29.9/s  requests 14  errors 0
   ...
 ```
 
@@ -613,13 +496,13 @@ cpc compare results/live-1 results/sim-1
 以两台 CPU 服务器（llama.cpp）为真实站点、另有一个仿真站点的 15 分钟实验为例，输出的一部分：
 
 ```text
-  范围    指标                    live-1       sim-1    比值
-  总计    完成请求                   233         233    1.00
-          SLO 达成率               84.1%       83.7%    0.99
-          IT 电量 (kWh)            0.137       0.131    0.96
-  sh      完成请求                    60          63    1.05
-          TTFT P50 (s)             3.494       3.847    1.10
-          IT 电量 (kWh)            0.041       0.042    1.00
+  scope   metric                       live-1       sim-1   ratio
+  total   served                          233         233    1.00
+          SLO attainment                84.1%       83.7%    0.99
+          IT energy (kWh)               0.137       0.131    0.96
+  sh      served                           60          63    1.05
+          TTFT P50 (s)                  3.494       3.847    1.10
+          IT energy (kWh)               0.041       0.042    1.00
 ```
 
 比值偏离 1 较多的项指出服务器类型与真实服务器的差异，例如另一台同型号服务器的空载功率不同、预填充吞吐的估计偏低等；

@@ -45,8 +45,8 @@ class MyAccel(Sensor):
 
     requires = "厂商管理库 libmyaccel"
 
-    def __init__(self, cards: list[int] | None = None):
-        super().__init__()
+    def __init__(self, cards: list[int] | None = None, **params):
+        super().__init__(**params)      # 通用参数（max_w）与未知参数检查
         self.cards = cards or [0]
 
     def read(self) -> list[Reading]:
@@ -60,6 +60,7 @@ my-accel = "my_sensors:MyAccel"
 ```
 
 站点 `measurement.sensors` 中以 `{type: my-accel, cards: [0, 1]}` 引用；`cpc sensors --types my-accel` 读取并打印读数。
+使用这类加速卡的真实服务器在其 upstream 中以 `devices: [acc0, acc1]` 声明。
 
 == 执行器
 

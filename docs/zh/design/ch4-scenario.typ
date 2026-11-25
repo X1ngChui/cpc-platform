@@ -13,7 +13,7 @@
     [`sources[]`], [来源区域：标识、名称、经纬度、请求量占比 `share`。],
     [`node_profiles`], [服务器类型：功率与性能模型参数（@sec-server-model）。],
     [`sites[]`], [站点：标识、名称、电网区域 `region`、经纬度、PUE、服务器池 `pools`、功率测量 `measurement`、最少在线服务器数 `min_active`、并网功率上限 `grid_cap_kw`、站内调度策略 `scheduler`。],
-    [`network`], [来源区域到站点的往返时延模型与实测值覆盖；实验中是否由网关注入时延。],
+    [`network`], [来源区域到站点的往返时延模型；实验中是否由网关注入时延。],
     [`grid`], [电价、碳强度与扩展信号的数据集与区域对应；需求响应事件。],
     [`workload`], [负载数据集、传给策略的扩展字段、时间窗与缩放变换、随机种子。],
     [`slo`], [TTFT 与 TPOT 上限。],
@@ -29,7 +29,7 @@
 ```yaml
 sites:
   - id: nm
-    name: 内蒙古·和林格尔
+    name: Inner Mongolia - Horinger
     region: inner_mongolia          # 电网信号数据集中的区域键
     lat: 40.38
     lon: 111.82
@@ -66,7 +66,7 @@ sites:
 ```yaml
 node_profiles:
   h100x8:
-    description: 8×H100，Llama-3.1-405B-Instruct-FP8
+    description: 8xH100, Llama-3.1-405B-Instruct-FP8
     slots: 128                                   # 并发槽数
     power_w: [[0, 1360], [0.0624, 4060.4], [0.2493, 4544.3],
               [0.4989, 4962.1], [0.9973, 5406.1]]
@@ -107,7 +107,8 @@ $u$ 取请求开始服务时（含该请求）的占用率。
 `cpc profile` 由功率特性数据集中同一组（设备、设备数、模型）的测量生成服务器类型：每次测量以
 $u = "concurrency" \/ "slots"$ 为占用率，成为 `power_w` 表的一个点（功率为测量值加 `--host-w`）与 `tpot_s` 表的一个点；
 `power_w` 的首点为 `--idle-w` 给出的在线空载功率。测量只覆盖在服务期间，在线空载功率、主机功率、预填充吞吐与开机时间
-须另行给出，未给出的必填项在输出中注明。表也可以按任意公式计算若干点后写入。
+须另行给出，未给出的必填项在输出中注明。`cpc measure` 测量真实服务器时同时记录并发槽数、在线空载功率、开机时间与关机功率，
+`cpc profile` 直接使用这些测量值。表也可以按任意公式计算若干点后写入。
 
 默认场景的 `h100x8` 由 ML.ENERGY Benchmark v3 中 8×H100 运行 Llama-3.1-405B-Instruct-FP8 的 6 次测量生成，
 `b200x4` 由 4×B200 运行同一模型的测量生成；两者的在线空载功率与主机功率为示意值。
@@ -115,7 +116,7 @@ $u = "concurrency" \/ "slots"$ 为占用率，成为 `power_w` 表的一个点�
 == 网络时延
 
 来源区域到站点的往返时延 $"RTT" = "base_ms" + 2 dot d dot "route_factor" \/ "km_per_ms"$，$d$ 为两地大圆距离，
-`route_factor` 为路由绕行系数，`km_per_ms` 为光纤中的传播速度（约 200 km/ms）；`network.overrides` 可按来源与站点给出实测值。
+`route_factor` 为路由绕行系数，`km_per_ms` 为光纤中的传播速度（约 200 km/ms）。
 实验中，`emulate_wan` 为真时网关在转发前与返回后各注入 RTT 的一半；各服务实际分布在不同地域时应设为假。
 `cpc check` 打印 RTT 矩阵。
 
@@ -159,4 +160,4 @@ workload:
 
 时间窗超出数据覆盖范围时报错。`rate_scale` ≤ 1 时每个请求以该概率独立保留；> 1 时叠加 ⌈`rate_scale`⌉ 个稀疏化副本，
 每个副本的保留概率为 `rate_scale` / ⌈`rate_scale`⌉。请求按 `sources[].share` 随机分配到来源区域；
-仿真器与负载生成器使用同一种子，因此两者的请求序列与来源分配一致。
+仿真器与 `cpc live` 的负载回放使用同一种子，因此两者的请求序列与来源分配一致。

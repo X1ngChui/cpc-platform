@@ -40,8 +40,8 @@ clock:
 
 ```yaml
 sources:
-  - {id: east,  name: 上海, lat: 31.23, lon: 121.47, share: 0.40}
-  - {id: south, name: 广州, lat: 23.13, lon: 113.26, share: 0.35}
+  - {id: east,  name: Shanghai,  lat: 31.23, lon: 121.47, share: 0.40}
+  - {id: south, name: Guangzhou, lat: 23.13, lon: 113.26, share: 0.35}
 ```
 
 `lat`、`lon` 为纬度与经度，用于计算到各站点的距离与往返时延；`share` 为请求量的占比，平台按比例把负载中的每个请求
@@ -52,7 +52,7 @@ sources:
 ```yaml
 node_profiles:
   h100x8:
-    description: 8×H100，Llama-3.1-405B-Instruct-FP8
+    description: 8xH100, Llama-3.1-405B-Instruct-FP8
     slots: 128
     power_w: [[0, 1360], [0.0624, 4060.4], [0.2493, 4544.3],
               [0.4989, 4962.1], [0.9973, 5406.1]]
@@ -85,7 +85,7 @@ node_profiles:
 ```yaml
 sites:
   - id: nm                         # 站点标识（在命令行、指标与结果中使用）
-    name: 内蒙古·和林格尔
+    name: Inner Mongolia - Horinger
     region: inner_mongolia         # 电网区域：电网信号数据集中的区域名
     lat: 40.38
     lon: 111.82
@@ -116,11 +116,10 @@ network:
   km_per_ms: 200            # 光纤中的传播速度（km/ms）
   emulate_wan: true         # 实验中由网关注入时延
   default_source: east      # 未标明来源区域的请求归属的区域（实验中使用）
-  overrides: {east: {sh: 3.2}}   # 实测的往返时延（ms），覆盖公式计算值
 ```
 
 往返时延 = `base_ms` + 2 × 距离 × `route_factor` / `km_per_ms`。整个 `network` 部分可以省略，此时使用上述缺省值
-（`overrides` 与 `default_source` 为空）。`cpc check` 打印各来源区域到各站点的往返时延。
+（`default_source` 为空）。`cpc check` 打印各来源区域到各站点的往返时延。
 
 == grid：电网信号与需求响应
 
@@ -181,16 +180,16 @@ scheduler:
   tbl(
     columns: (14em, 1fr),
     header: ("错误信息（摘要）", "原因与处理"),
-    [`不认识的字段`], [字段名拼写错误或放错了层级；报错给出字段路径与相近的正确字段名],
-    [`缺少必填字段`], [该字段没有缺省值，须填写；字段名拼错时与上一条同时出现],
-    [`未知的路由策略`（或容量、派发、电源管理策略）], [策略名拼写错误或策略包未安装；报错列出全部可选的策略名],
-    [`不接受参数`], [策略参数名拼写错误；报错列出该策略的全部参数],
-    [`数据集 ... 不存在`、`缺少文件`], [数据集尚未准备，或路径写错；`CPC_DATA_DIR` 是否与准备数据时一致],
-    [`没有收录站点的区域`], [站点的 `region` 在电网信号数据集中不存在；改正 `region` 或用 `regions` 对应],
-    [`不含场景时钟起点`], [`clock.start` 超出电网信号数据的覆盖范围；转换数据时扩大时间范围或调整起点],
-    [`时间窗 ... 超出 ... 的覆盖范围`], [`workload.start_s` 与 `duration_s` 超出负载数据的长度],
-    [`短于仿真时长`], [`cpc sim --hours` 大于负载变换后的长度；减小时长或扩大时间窗],
-    [`power_w：第一个点的占用率须为 0`], [功率表须从空载开始],
+    [`unknown field`], [字段名拼写错误或放错了层级；报错给出字段路径与相近的正确字段名（`did you mean ...`）],
+    [`required field is missing`], [该字段没有缺省值，须填写；字段名拼错时与上一条同时出现],
+    [`unknown routing policy`（或 capacity、dispatch、power policy）], [策略名拼写错误或策略包未安装；报错列出全部可选的策略名],
+    [`does not accept`], [策略参数名拼写错误；报错列出该策略的全部参数],
+    [`dataset ... does not exist`、`is missing`], [数据集尚未准备，或路径写错；`CPC_DATA_DIR` 是否与准备数据时一致],
+    [`does not cover the site regions`], [站点的 `region` 在电网信号数据集中不存在；改正 `region` 或用 `regions` 对应],
+    [`does not include the clock start`], [`clock.start` 超出电网信号数据的覆盖范围；转换数据时扩大时间范围或调整起点],
+    [`window ... is outside`], [`workload.start_s` 与 `duration_s` 超出负载数据的长度],
+    [`less than the simulated`], [`cpc sim --hours` 大于负载变换后的长度；减小时长或扩大时间窗],
+    [`the first point must be at occupancy 0`], [功率表须从空载开始],
   ),
   caption: [场景的常见错误],
 )

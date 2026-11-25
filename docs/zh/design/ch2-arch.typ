@@ -11,7 +11,8 @@
   负载及其变换、服务目标与策略（@ch-scenario）；
 - *共享部分*：服务器模型、数据中心运行时（@ch-runtime）、全局与本地策略（@ch-policy）、电网信号模型与指标核算。
   这些部分与时钟无关，仿真与实验调用同一实现；
-- *运行层*：仿真由离散事件仿真器驱动；实验由电网信号服务、网关、控制器、站点代理与负载生成器等服务进程以真实时间驱动；
+- *运行层*：仿真由离散事件仿真器驱动；实验由电网信号服务、网关、控制器与站点代理等服务进程以真实时间驱动，
+  `cpc live` 回放负载并采样；
 - *结果*：仿真与实验的结果写为同一格式的结果数据包；实验另有 Prometheus 指标、请求日志与决策日志（@ch-workflow）。
 
 #figure(image("../../figures/zh/architecture.pdf", width: 100%), caption: [平台的分层结构]) <fig-arch>
@@ -59,7 +60,7 @@
 
 == 数据通路
 
-*请求通路。* 负载生成器（或用户）向网关发送 OpenAI 兼容请求，请求头 `x-cpc-source` 指明来源区域，`x-cpc-attr-<字段名>`
+*请求通路。* `cpc live` 的负载回放（或用户）向网关发送 OpenAI 兼容请求，请求头 `x-cpc-source` 指明来源区域，`x-cpc-attr-<字段名>`
 携带请求扩展属性。网关构造集群视图（各站点状态摘要、电网信号、来源到站点的 RTT、路由权重），调用路由策略得到目标站点，
 按 RTT 的一半注入时延后转发；站点代理把请求提交给数据中心运行时，由派发策略选择服务器，在服务器上执行
 （仿真服务器按模型计时，真实服务器转发给推理实例）；响应经网关返回，再注入 RTT 的一半。
@@ -93,7 +94,7 @@
     [数据集], [描述文件结构与类别规范（核心字段、类型、单位）；数据文件存在；数据满足字段约束（非空、取值范围、枚举、唯一性）；负载按到达时间排序；电网信号时段不重叠、信号单位已声明；负载时间窗在数据覆盖范围内。],
     [电网信号服务], [电价与碳强度信号的单位符合要求；全部站点的区域在数据集中收录；数据覆盖场景时钟起点。],
     [站点代理], [功率传感器逐一构造并读数成功；真实服务器声明的加速卡均有读数且设备名不重复；`measurement.host` 所需的读数类别存在；配置了容器名时 Docker Engine 可达且容器存在；开启功率封顶时，加速卡的传感器支持封顶。],
-    [网关、控制器、负载生成器], [在期限内（默认 30 s）从电网信号服务同步信号时钟。],
+    [网关、控制器、`cpc live`], [在期限内从电网信号服务同步信号时钟（网关与控制器默认 30 s）；`cpc live` 另等待全部服务就绪。],
     [服务地址], [除 `cpc up` 外，需要访问其他服务的命令须给出地址文件（`-e` 或 `CPC_ENDPOINTS`）或显式使用本机地址（`--local`）。],
   ),
   caption: [启动检查],
@@ -128,9 +129,7 @@
     header: ("部署方式", "适用情形", "入口"),
     [本机单进程], [开发调试与功能演示], [`cpc up`],
     [各服务独立进程], [检验进程间隔离与故障处理], [`cpc grid`、`cpc site`、`cpc gateway`、`cpc controller`],
-    [Docker Compose], [单机完整环境（含 Prometheus、Grafana）], [`deploy/compose/`],
-    [Kubernetes], [每个站点固定到带 `topology.kubernetes.io/region` 标签的节点], [`deploy/k8s/`],
-    [云服务器], [接入真实 GPU：每台服务器一个站点栈，另有一个控制栈], [`deploy/cloud/`],
+    [云服务器], [接入真实服务器：一个控制栈（含 Prometheus、Grafana 与仿真站点），每台 GPU 或 CPU 服务器一个站点栈（Docker Compose）], [`deploy/cloud/`],
   ),
   caption: [部署方式],
 )
@@ -143,23 +142,24 @@
 src/cpc/
 ├── datasets/     数据集描述（descriptor）、类别规范（profiles）、
 │                 表格读取与校验（table）、负载 / 电网信号 / 功率特性的加载
-│                 （workload、grid、power）、写出与下载（build、fetch）
+│                 （workload、grid、power）、写出（build）
 ├── config.py     场景与服务地址配置
 ├── models.py     服务器功率与性能模型、广域网时延模型、信号时钟
 ├── datacenter.py 数据中心运行时（仿真与实验共用）
 ├── sched/        全局策略（routing、capacity）与本地策略（local）
 ├── registry.py   插件注册（entry points）
 ├── schemas.py    状态摘要、指令与需求统计的数据结构
-├── sim/          离散事件仿真器与作图
+├── sim/          离散事件仿真器
 ├── results.py    结果数据包（RunResult）与实验描述
 ├── live.py       实验运行：回放负载、采样、写出结果数据包
+├── measure.py    真实服务器的功率特性测量（cpc measure）
 ├── launch.py     在一个进程中启动实验服务（cpc up、cpc live）
-├── grid/ site/ gateway/ controller/ loadgen/   实验服务
-├── sensors/      功率传感器、能耗积分、通用功率导出器
+├── grid/ site/ gateway/ controller/   实验服务
+├── sensors/      功率传感器与能耗积分
 ├── health.py     依赖的健康状态与指标
 └── cli.py        命令行入口 cpc
 examples/datasets/    原始公开数据的转换范例
 examples/experiments/ 实验描述范例
 configs/              场景文件与地址文件
-deploy/               Compose、Kubernetes、云服务器部署与监控配置
+deploy/               云服务器部署（Docker Compose）与监控配置
 ```

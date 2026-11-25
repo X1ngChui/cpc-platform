@@ -166,7 +166,7 @@
   // ---------- revision history and contents
   if revisions.len() > 0 {
     block(text(font: sans, size: 14pt, weight: "bold", L.revisions), below: 1em)
-    tbl(columns: (5em, 7em, 7em, 1fr), header: L.rev-header, ..revisions.flatten())
+    tbl(columns: (5em, 6.5em, 8.5em, 1fr), header: L.rev-header, ..revisions.flatten())
     v(1.5em)
   }
   {
