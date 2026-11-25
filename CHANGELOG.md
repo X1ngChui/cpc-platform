@@ -2,6 +2,24 @@
 
 版本号遵循语义化版本。
 
+## 未发布
+
+### 精简
+
+- 服务器类型只以表给出：`power_w`（占用率 → 服务器 IT 功率，首点为在线空载）与 `tpot_s`（占用率 → token 间隔），
+  点间线性插值；删除参数式模型的字段（`gpus`、`gpu_idle_w`、`gpu_max_w`、`power_exponent`、`host_*`、
+  `decode_s_per_token`、`decode_slowdown` 等）。功率封顶表示为功率上限 = 空载 + 封顶比例 × (满载 − 空载)。
+- 删除控制器的 Kubernetes 执行器、`cpc data fetch` 与 URL 资源、`cpc compare`、`cpc signals`、`cpc rtt`、
+  电网信号服务的 `/v1/forecast`、路由策略 `random`、响应头 `x-cpc-energy-est-j`、仿真服务器的模拟加速卡指标。
+
+### 新增
+
+- `cpc check`：检查场景与数据并打印概要；`cpc live`：运行一次实验并写出与仿真相同格式的结果目录；
+  `cpc profile`：由功率特性数据集生成服务器类型（取代 `cpc data calibrate`）。
+- Python 接口 `cpc.simulate()`、`cpc.read_run()`；`cpc data` 子命令为 `kinds`、`check`、`show`；
+  `cpc report` 不再需要场景文件。
+- 快速上手场景 `examples/quickstart/`；《使用手册》按操作流程重写。
+
 ## v0.2.0（2026-11-25）
 
 ### 数据

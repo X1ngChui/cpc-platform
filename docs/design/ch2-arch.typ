@@ -12,7 +12,7 @@
 - *共享部分*：服务器模型、数据中心运行时（@ch-runtime）、全局与本地策略（@ch-policy）、电网信号模型与指标核算。
   这些部分与时钟无关，仿真与实验调用同一实现；
 - *运行层*：仿真由离散事件仿真器驱动；实验由电网信号服务、网关、控制器、站点代理与负载生成器等服务进程以真实时间驱动；
-- *结果*：仿真结果写为结果数据包；实验结果由指标、请求日志与决策日志给出（@ch-workflow）。
+- *结果*：仿真与实验的结果写为同一格式的结果数据包；实验另有 Prometheus 指标、请求日志与决策日志（@ch-workflow）。
 
 #figure(image("../figures/architecture.pdf", width: 100%), caption: [平台的分层结构]) <fig-arch>
 
@@ -31,7 +31,7 @@
     [功率], [服务器模型], [仿真服务器为服务器模型；真实服务器为传感器实测],
     [动作执行], [直接改变状态，启动完成为定时事件], [执行器钩子（容器启停、功率上限设置）与就绪检查],
     [通信], [进程内调用], [HTTP：OpenAI 兼容推理接口、状态与管理接口],
-    [结果], [结果数据包], [Prometheus 指标、请求日志、决策日志],
+    [结果], [结果数据包（`cpc sim`、`cpc run`）], [结果数据包（`cpc live`）；另有 Prometheus 指标、请求日志、决策日志],
   ),
   caption: [仿真与实验的共享与独立部分],
 ) <tbl-shared>
@@ -151,7 +151,9 @@ src/cpc/
 ├── registry.py   插件注册（entry points）
 ├── schemas.py    状态摘要、指令与需求统计的数据结构
 ├── sim/          离散事件仿真器与作图
-├── results.py    结果数据包与实验描述
+├── results.py    结果数据包（RunResult）与实验描述
+├── live.py       实验运行：回放负载、采样、写出结果数据包
+├── launch.py     在一个进程中启动实验服务（cpc up、cpc live）
 ├── grid/ site/ gateway/ controller/ loadgen/   实验服务
 ├── sensors/      功率传感器、能耗积分、通用功率导出器
 ├── health.py     依赖的健康状态与指标

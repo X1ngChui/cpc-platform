@@ -120,7 +120,7 @@ measurement:
   tbl(
     columns: (17em, 1fr),
     header: ("指标", "含义"),
-    [`DCGM_FI_DEV_POWER_USAGE`], [GPU 功率（W），与 dcgm-exporter 同名；标签 `gpu`、`modelName`、`Hostname`、`site`],
+    [`DCGM_FI_DEV_POWER_USAGE`], [真实服务器的 GPU 功率（W），与 dcgm-exporter 同名；标签 `gpu`、`modelName`、`Hostname`、`site`],
     [`DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION`], [GPU 累计能耗（mJ）],
     [`cpc_device_power_watts`], [通用导出器：任意设备功率；标签 `sensor`、`device`、`kind`、`vendor`、`host`],
     [`cpc_device_energy_joules_total`], [通用导出器：任意设备累计能耗（J）],
@@ -164,7 +164,7 @@ Prometheus 记录规则（`deploy/prometheus/rules/cpc-energy.yml`）把它们�
   实验中由 `cpc_node_energy_joules_total` 与 `cpc_node_energy_missing_seconds_total` 导出，站点状态摘要的 `energy_coverage`
   为功率有效时长占比。传感器层的 `EnergyIntegrator` 对有累计能耗计数器的设备直接使用计数器，并处理计数器复位。
 - *成本与碳排放*：仿真器按时间片（缺省 5 分钟）累计 IT 能耗，乘以 PUE 得设施能耗，再乘以时间片中点的电价与碳强度；
-  信号缺失的时间片不核算成本与碳排放，汇总中的 `signal_coverage` 给出有信号的设施电量占比。
-  实验中由 Prometheus 记录规则给出成本速率与碳排放速率，对时间积分即得总量。
-- *单请求能耗*：站点在非流式响应头 `x-cpc-energy-est-j` 中给出估计值（请求开始时服务器功率按在服务请求数均摊 × 服务时间 × PUE；
-  服务器功率缺失时不给出），只作参考；每 token 能耗应以一段时间的站点能耗除以期间输出的 token 数计算。
+  `cpc live` 按采样区间取站点累计能耗的差分，乘以 PUE 与区间起点的电价与碳强度。信号缺失的区间不核算成本与碳排放，
+  汇总中的 `signal_coverage` 给出有信号的设施电量占比。Prometheus 记录规则另给出成本速率与碳排放速率。
+- *单请求能耗*：短请求的能耗无法单独测准，平台不给出逐请求的能耗；每请求或每 token 能耗以一段时间的站点能耗
+  除以期间完成的请求数或输出的 token 数计算（结果汇总中的 `wh_per_request`）。

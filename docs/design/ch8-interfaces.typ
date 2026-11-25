@@ -13,7 +13,7 @@
   tbl(
     columns: (4em, 13em, 1fr),
     header: ("方法", "路径", "说明"),
-    [POST], [`/v1/chat/completions`], [OpenAI 兼容对话接口，支持 `stream`。请求头 `x-cpc-source`、`x-cpc-attr-<字段名>`（JSON 值）作为请求信息传给派发策略。响应头：`x-cpc-site`、`x-cpc-node`（服务器）、`x-cpc-queue-s`（站内排队时间）；非流式另有 `x-cpc-service-s`、`x-cpc-energy-est-j`（估计能耗，服务器功率缺失时不给出）。队列已满返回 503（`type: overloaded`）；站点有仿真服务器而请求未给出 `max_tokens` 时返回 400。],
+    [POST], [`/v1/chat/completions`], [OpenAI 兼容对话接口，支持 `stream`。请求头 `x-cpc-source`、`x-cpc-attr-<字段名>`（JSON 值）作为请求信息传给派发策略。响应头：`x-cpc-site`、`x-cpc-node`（服务器）、`x-cpc-queue-s`（站内排队时间）；非流式另有 `x-cpc-service-s`（服务时间）。队列已满返回 503（`type: overloaded`）；站点有仿真服务器而请求未给出 `max_tokens` 时返回 400。],
     [POST], [`/v1/completions`], [OpenAI 兼容补全接口，同上。],
     [GET], [`/v1/models`], [模型列表（有真实服务器时转发给在线的推理实例）。],
     [GET], [`/state`], [状态摘要 `SiteSnapshot`（@ch-runtime），另含传感器等依赖的健康状态 `components`。],
@@ -49,7 +49,7 @@
   tbl(
     columns: (4em, 13em, 1fr),
     header: ("方法", "路径", "说明"),
-    [GET], [`/state`], [当前策略及其所需输入 `requires`、控制周期、执行器、上游健康状态、最近一次周期记录（`result` 为 `applied` 或 `skipped`，含跳过原因与排除的站点）。],
+    [GET], [`/state`], [当前策略及其所需输入 `requires`、控制周期、上游健康状态、最近一次周期记录（`result` 为 `applied` 或 `skipped`，含跳过原因与排除的站点）。],
     [GET], [`/readyz`], [信号时钟同步完成后返回 200。],
     [POST], [`/admin/step`（管理）], [立即执行一次控制周期并返回决策记录。],
     [PUT], [`/admin/policy`（管理）], [切换容量策略。],
@@ -66,7 +66,6 @@
     [GET], [`/v1/clock`], [信号时钟：起点、加速倍数、起始墙钟时间、当前信号时间。],
     [GET], [`/readyz`], [数据集加载与校验在启动时完成，服务运行即返回 200。],
     [GET], [`/v1/signals[?at=带时区的时间]`], [各站点的 `GridSignal`；`missing` 列出信号不可用的站点及原因，`sources` 给出各信号的数据集（`名称@版本:信号`）。],
-    [GET], [`/v1/forecast?site=&hours=24&step_min=60`], [某站点未来若干小时的逐点信号（数据集中有记录的时段），不可用的点为 `null`。],
     [GET], [`/v1/events`], [已登记的需求响应事件。],
     [POST], [`/v1/events`（管理）], [注入事件：`{"site", "cap_kw", "start"/"end" 或 "duration_min", "kind"}`。],
     [DELETE], [`/v1/events[?site=]`（管理）], [清除全部或某站点的事件。],
@@ -106,7 +105,7 @@ sites:
     [`CPC_ENDPOINTS`], [地址文件路径],
     [`CPC_ADMIN_TOKEN`], [管理接口令牌；设置后管理接口须携带 `Authorization: Bearer <令牌>`],
     [`CPC_LOG_LEVEL`、`CPC_LOG_FORMAT`], [日志级别；日志格式（`json` 为结构化日志）],
-    [`HF_TOKEN`], [`cpc data fetch` 下载声明 `cpc_auth: hf` 的资源时使用的 Hugging Face 访问令牌],
+    [`HF_TOKEN`], [转换范例下载受控访问的原始数据（ML.ENERGY Benchmark）时使用的 Hugging Face 访问令牌],
   ),
   caption: [环境变量],
 )

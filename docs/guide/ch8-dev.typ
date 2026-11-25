@@ -1,10 +1,10 @@
 #import "../template/cpc-doc.typ": *
 
-= 开发 <g-dev>
+= 开发与发布 <g-dev>
 
 == 约定
 
-- 可替换部件（策略、传感器）经抽象接口与注册机制接入；新增实现不修改平台主体；
+- 可替换部件（策略、传感器）经抽象接口与 entry points 注册接入（@g-policy）；新增实现不修改平台主体；
 - 数据中心内部的状态与规则只在 `cpc.datacenter` 中实现，仿真器与站点代理都调用它；仿真与实验特有的部分分别在
   `cpc.sim` 与 `cpc.site` 中；
 - 失败处理遵循"启动期报错、运行期隔离并显式报告"：不叠加降级链，不以默认值、模型估计值或其他数据源替代缺失的数据；
@@ -12,44 +12,6 @@
 - 平台内部的 HTTP 客户端使用 `trust_env=False`，服务间调用不经过系统代理；外部下载使用系统代理设置；
 - 不提交密钥、主机地址与个人信息：本地部署文件已在 `.gitignore` 中排除（`deploy/cloud/*/scenario.yaml`、`.env` 等）；
 - 代码风格：四空格缩进、`snake_case` 命名、类型注解；注释、日志与文档使用中文技术书面语。
-
-== 编写策略包
-
-策略以独立的 Python 包提供，通过 entry points 注册，平台在首次查找策略时加载：
-
-```text
-my-policies/
-├── pyproject.toml
-└── my_policies/
-    ├── __init__.py
-    └── routing.py        # class Greenest(RoutingPolicy): ...
-```
-
-```toml
-[project]
-name = "my-policies"
-version = "0.1.0"
-dependencies = ["cpc-platform>=0.2"]
-
-[project.entry-points."cpc.routing"]
-greenest = "my_policies.routing:Greenest"
-```
-
-```bash
-pip install -e ./my-policies
-cpc sim -s configs/scenario.yaml --routing greenest --hours 24 --out results/greenest
-cpc up --routing greenest                      # 实验中使用同一实现
-```
-
-组名 `cpc.routing`、`cpc.capacity`、`cpc.dispatch`、`cpc.power` 分别对应路由、容量、派发与电源管理策略。要点：
-
-1. 构造函数的关键字参数来自场景中的 `params`；未知参数应在构造时报错（调用基类构造函数即可）；
-2. 策略只使用视图中的时间（`view.now`），不读取系统时钟，以保证仿真与实验中行为一致；
-3. 容量策略在 `requires` 中声明所需输入，平台保证调用时输入齐全；
-4. 路由策略返回 `RouteDecision`，原因使用有限取值的短标识（作为指标标签）；
-5. 容器部署时，在平台镜像基础上安装策略包（例如 `FROM ghcr.io/x1ngchui/cpc-platform:0.2.0` 后 `pip install` 策略包）。
-
-功率传感器以同样方式提供（组 `cpc.sensors`），写法见《平台设计说明书》"扩展"一章；`cpc sensors --types <名称>` 读取并打印读数。
 
 == 测试
 

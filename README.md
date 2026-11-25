@@ -7,7 +7,7 @@
 - **数据规范**：数据集为描述文件（Frictionless Data Package v2 子集 + `cpc` 类别规范）与数据文件（CSV / Parquet）。
   每类数据规定核心字段，其余信息以扩展字段承载并可传给策略；平台只做校验与列式加载，原始数据的转换范例见 `examples/datasets/`
   （Azure LLM Inference Trace 2023 / 2024、BurstGPT、Mooncake、EIA-930、ML.ENERGY Benchmark、中国省级分时电价与排放因子）。
-- **仿真与实验共用**：场景、服务器模型（参数式或查表式）、数据中心运行时（服务器状态机、排队与派发、容量指令、能耗计量）、
+- **仿真与实验共用**：场景、服务器模型（功率与 token 间隔随占用率变化的表）、数据中心运行时（服务器状态机、排队与派发、容量指令、能耗计量）、
   全局与本地策略在两种运行方式中为同一实现；实验中仿真服务器与真实服务器可在同一站点共存。
 - **两级调度**：全局路由策略与容量策略只依赖数据中心状态摘要；站内派发策略与电源管理策略负责数据中心内部，
   可利用请求扩展属性与异构服务器池。策略以 entry points 注册，新增实现不修改平台。
@@ -36,15 +36,19 @@ pip install -e ".[dev]"
 pytest                                    # 单元测试
 python scripts/smoke_test.py --offline    # 端到端冒烟测试（测试场景，不需要下载数据）
 
-# 准备默认场景的数据集（写入 ${CPC_DATA_DIR:-~/.cache/cpc/datasets}）
-python examples/datasets/azure_llm.py --variant 2024-conv --zero-output fail
+# 准备快速上手场景的数据（写入 ${CPC_DATA_DIR:-~/.cache/cpc/datasets}，约 1 MB）
+python examples/datasets/azure_llm.py --variant 2023-conv --zero-output fail
 python examples/datasets/cn_grid/convert.py --start 2026-01-01 --end 2027-01-01
 
-cpc sim --hours 24 --out results/base                  # 单次仿真，结果写为数据包
-cpc run examples/experiments/policies.yaml             # 按实验描述比较多组策略
-cpc up --speedup 60                                    # 本机启动全部实验服务
-cpc loadgen --local --duration 120 --rate-scale 0.2    # 另一个终端回放负载
+S=examples/quickstart/scenario.yaml
+cpc check -s $S                                     # 检查场景与数据，打印概要
+cpc sim -s $S --hours 0.9 --out results/qs          # 仿真，结果写为结果目录
+cpc run examples/quickstart/experiment.yaml         # 比较多组策略
+cpc live -s $S --duration 120 --rate-scale 0.2      # 以真实时间运行实验，结果格式与仿真相同
 ```
+
+Python 中：`cpc.simulate("examples/quickstart/scenario.yaml", routing="cost_aware", hours=0.9)`、`cpc.read_run(<结果目录>)`。
+默认场景 `configs/scenario.yaml` 使用 Azure 2024 一周的负载（`azure_llm.py --variant 2024-conv`，原始文件约 1 GB）。
 
 Docker Compose（含 Prometheus 与 Grafana）：`docker compose -f deploy/compose/docker-compose.yml up -d --build`；
 Kubernetes（kind）：`python deploy/k8s/kind_up.py`；云服务器与真实服务器接入见《使用手册》。
@@ -64,6 +68,7 @@ src/cpc/              datasets 数据集 · datacenter 数据中心运行时 · 
                       grid / site / gateway / controller / loadgen 实验服务 · sensors 功率传感器 · cli 命令行
 examples/datasets/    原始公开数据的转换范例
 examples/experiments/ 实验描述范例
+examples/quickstart/   快速上手场景与实验描述
 configs/              场景文件与地址文件
 deploy/               compose · k8s · cloud（站点栈 / 控制栈）· prometheus 记录规则 · grafana 仪表盘
 scripts/              端到端冒烟测试
@@ -73,5 +78,5 @@ docs/                 Typst 源文件、draw.io 插图源文件与 PDF
 
 ## 说明
 
-服务器模型中不由测量数据标定的参数（空载功率、主机功率、预填充吞吐、开机时间）与分时电价的平段价格为示意值；
-接入真实服务器后应按手册标定。平台附带的调度策略用于演示接口与数据通路，不代表推荐的研究方法。
+服务器类型中不来自测量数据的参数（在线空载功率、主机功率、预填充吞吐、开机时间）与分时电价的平段价格为示意值；
+接入真实服务器后应以实测数据生成服务器类型（`cpc profile`）。平台附带的调度策略用于演示接口与数据通路，不代表推荐的研究方法。

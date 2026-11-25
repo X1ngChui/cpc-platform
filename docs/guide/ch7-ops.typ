@@ -2,9 +2,39 @@
 
 = 观测与运维 <g-ops>
 
-Prometheus 指标与记录规则的定义见《平台设计说明书》"能耗测量与核算"一章；Compose 与 Kubernetes 部署包含预置的 Prometheus 与 Grafana。
+各服务以 Prometheus 格式在 `/metrics` 提供指标；Compose 与 Kubernetes 部署包含预置的 Prometheus 与 Grafana 仪表盘。
+指标与记录规则的完整定义见《平台设计说明书》"能耗测量与核算"一章。
 
-== 功率传感器
+== 常用指标
+
+#figure(
+  tbl(
+    columns: (17em, 1fr),
+    header: ("指标", "含义"),
+    [`cpc_site_it_power_watts`、`cpc_site_facility_power_watts`], [站点 IT 功率与设施功率（W）],
+    [`cpc_site_nodes_on`、`cpc_site_queue_length`], [站点在线服务器数、排队请求数],
+    [`cpc_node_it_power_watts`], [服务器 IT 功率（标签 `site`、`pool`、`node`、`source`：model 为服务器模型，sensors 为实测）],
+    [`cpc_node_energy_joules_total`], [服务器累计 IT 能耗（J）],
+    [`DCGM_FI_DEV_POWER_USAGE`], [真实服务器的 GPU 功率（W），与 NVIDIA dcgm-exporter 同名],
+    [`cpc_grid_price_per_kwh`、`cpc_grid_carbon_intensity_kg_per_kwh`], [各站点当前的电价与碳强度],
+    [`cpc_gateway_ttft_seconds`、`cpc_gateway_e2e_seconds`], [首 token 时延与端到端时延的分布（直方图）],
+    [`cpc_gateway_route_decisions_total`], [路由决策计数（标签 `policy`、`reason`）],
+    [`cpc_sensor_up`、`cpc_upstream_up`], [传感器、上游服务是否正常（1 正常，0 故障）],
+  ),
+  caption: [常用指标],
+)
+
+在 Prometheus 页面中查询的示例：
+
+```text
+site:facility_power_watts:sum                       各站点设施功率
+sum(site:energy_cost_per_hour)                      全局用电成本速率（每小时）
+sum(site:carbon_kg_per_hour)                        全局碳排放速率（kg / 小时）
+increase(cpc_node_energy_joules_total[10m]) / 3.6e6 各服务器最近 10 分钟的 IT 用电（kWh）
+histogram_quantile(0.99, sum by (le, site) (rate(cpc_gateway_ttft_seconds_bucket[5m])))
+```
+
+== 功率传感器 <g-sensors>
 
 ```bash
 # 全部传感器类型、依赖、本机是否具备前提条件
@@ -115,19 +145,19 @@ NVIDIA GPU 另有 `DCGM_FI_DEV_POWER_USAGE` 等 DCGM 兼容指标。记录规则
   tbl(
     columns: (13em, 1fr),
     header: ("命令", "作用"),
-    [`cpc up`], [本机单进程启动全部服务（`--speedup`、`--routing`、`--capacity`、`--interval`、`--no-controller`）],
-    [`cpc grid` / `site` / `gateway` / `controller`], [单独启动某个服务（`-s` 场景、`-e` 地址文件或 `--local`、`--host`/`--port` 覆盖监听地址）],
-    [`cpc loadgen`], [负载生成（`--duration`、`--start-s`、`--duration-s`、`--time-scale`、`--rate-scale`、`--no-stream`、`--model`、`--out`）],
-    [`cpc sim`], [离散事件仿真（`--routing`、`--capacity` 及其参数、`--hours`、`--bin-s`、负载变换参数、`--out`）],
-    [`cpc run`], [按实验描述运行多个变体（`--jobs`、`--out`）],
-    [`cpc compare`], [并行仿真多组策略（`--runs "路由:容量,..."`、负载变换参数）],
-    [`cpc data`], [数据集：`kinds`、`validate`、`info`、`summary`、`fetch`、`calibrate`],
-    [`cpc report`], [仿真结果作图],
-    [`cpc signals` / `cpc rtt`], [打印电网信号 / RTT 矩阵],
+    [`cpc check`], [检查场景与数据，打印服务器类型、站点、往返时延、电网信号与负载概要（`-s`、`--date`）],
+    [`cpc data`], [数据集：`kinds`（字段定义）、`check`（检查并统计）、`show`（描述文件摘要）],
+    [`cpc profile`], [由功率特性数据集生成服务器类型（`--where`、`--slots`、`--idle-w`、`--host-w`）],
+    [`cpc sim`], [运行一次仿真（`--hours`、`--routing`、`--capacity` 及其参数、负载变换参数、`--out`）],
+    [`cpc run`], [按实验描述运行多个仿真变体（`--jobs`、`--out`）],
+    [`cpc report`], [由结果目录作图],
+    [`cpc live`], [运行一次实验并写出结果目录（`--duration`、`--speedup`、`-e` 连接已部署的服务）],
+    [`cpc up`], [本机单进程启动全部服务，直到 Ctrl+C（`--speedup`、`--routing`、`--capacity`、`--interval`、`--no-controller`）],
+    [`cpc loadgen`], [向网关回放负载（`--local` 或 `-e`、`--duration`、负载变换参数、`--model`、`--out`）],
     [`cpc event`], [注入需求响应事件（`--site`、`--cap-kw`、`--duration-min`）],
+    [`cpc grid` / `site` / `gateway` / `controller`], [单独启动某个服务（`-e` 地址文件或 `--local`；`--host`、`--port` 覆盖监听地址）],
     [`cpc sensors` / `cpc exporter`], [列出或读取功率传感器（`--list`、`--types`、`--spec`）/ 通用功率导出器],
-    [`python scripts/smoke_test.py`], [端到端冒烟测试（`--external -e 地址文件` 检查已部署环境）],
-    [`python docs/build.py`], [编译文档 PDF],
+    [`python scripts/smoke_test.py`], [端到端冒烟测试（`--offline` 使用测试数据；`--external -e 地址文件` 检查已部署的环境）],
   ),
   caption: [命令速查],
 )
@@ -140,7 +170,7 @@ NVIDIA GPU 另有 `DCGM_FI_DEV_POWER_USAGE` 等 DCGM 兼容指标。记录规则
     header: ("变量", "作用"),
     [`CPC_ENDPOINTS`], [地址文件路径（等价于 `-e`）],
     [`CPC_DATA_DIR`], [数据集目录，缺省 `~/.cache/cpc/datasets`],
-    [`HF_TOKEN`], [Hugging Face 访问令牌（下载受控访问的原始数据或资源）],
+    [`HF_TOKEN`], [Hugging Face 访问令牌（转换范例下载受控访问的原始数据）],
     [`CPC_LOG_FORMAT`], [日志格式：`text`（默认）或 `json`（结构化日志）],
     [`CPC_ADMIN_TOKEN`], [管理接口令牌；服务端校验、控制器与命令行工具调用时自动携带],
     [`CPC_LOG_LEVEL`], [日志级别，默认 INFO],
@@ -162,8 +192,9 @@ Compose 部署修改 `docker-compose.yml` 中的端口映射。占用端口的�
 #qa[Compose 启动后 Grafana 没有数据？][确认 Prometheus 的 Targets 页面（`http://localhost:9090/targets`）各目标为 UP；
 仪表盘的时间范围默认最近 30 分钟，需先运行负载生成器。]
 
-#qa[SLO 达成率偏低？][常见原因：容量策略缩容过快、服务器启动时间（`boot_s`）相对信号时钟加速过长、负载超过总容量。
-演示时信号加速 60 倍，`reactive` 策略的扩容来不及跟上快速变化的日内负载是预期现象；正式实验应使用真实时间。]
+#qa[SLO 达成率偏低？][常见原因：容量策略缩容过快、服务器启动时间（`boot_s`）较长、负载超过总容量。
+`cpc check` 给出各站点的并发槽数，可与负载的平均到达率 × 平均服务时间比较；仿真结果的 `route_reasons` 中的 `overflow_*`
+与 `rejected` 表示容量不足。]
 
 #qa[NVML 不可用（`pynvml` 导入失败或 `NVML Shared Library Not Found`）？][安装 `pip install nvidia-ml-py`；Linux 容器中需要
 NVIDIA Container Toolkit 并以 `--gpus all` 启动；WSL2 中 `libnvidia-ml.so` 由宿主机驱动经 `/usr/lib/wsl/lib` 提供。
@@ -187,5 +218,12 @@ NVIDIA Container Toolkit 并以 `--gpus all` 启动；WSL2 中 `libnvidia-ml.so`
 #qa[仿真结果每次都一样吗？][数据集固定版本，到达率缩放与来源区域分配使用场景中的 `workload.seed`，
 相同场景、数据集与策略的仿真结果相同；改变种子可评估随机性的影响。结果目录中的 `run.yaml` 记录了全部输入。]
 
-#qa[提示数据集缺失或不符合规范？][按 @g-data 转换或下载数据集，并以 `cpc data validate <目录>` 检查；
-错误信息给出不符合的字段、约束与取值。]
+#qa[提示数据集缺失或不符合规范？][按 @g-data 准备数据集，并以 `cpc data check <目录>` 检查；
+错误信息给出不符合的字段、约束与取值。`cpc check -s <场景>` 一次检查场景引用的全部数据集。]
+
+#qa[实验中大量请求失败或超时？][到达率超出本机的处理能力时会出现这种情况，用 `--rate-scale` 降低到达率；
+也可能是推理实例未就绪或模型名不一致（`--model` 须与推理实例的模型名相同）。结果中 `failed` 的请求在 `requests.parquet`
+中可以按 `site` 与 `server` 查看分布。]
+
+#qa[实验结果的电费为 0 或 `signal_coverage` 小于 1？][采样时电网信号不可用：检查 `clock.start` 与 `--speedup` 下的信号时间
+是否超出电网信号数据的覆盖范围（`http://localhost:9000/v1/signals` 中的 `missing` 给出原因）。]

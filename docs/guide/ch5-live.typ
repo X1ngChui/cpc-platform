@@ -1,77 +1,147 @@
 #import "../template/cpc-doc.typ": *
 
-= 实验部署 <g-deploy>
+= 实验 <g-live>
 
-实验系统由电网信号服务、各站点代理、网关与控制器组成，负载生成器按场景回放请求。各服务的地址由地址文件给出
-（`-e` 或环境变量 `CPC_ENDPOINTS`）；本机运行时以 `--local` 使用固定的本机地址。场景文件与部署方式无关。
+实验以真实时间运行场景：各个服务通过 HTTP 通信，负载生成器按 trace 中的到达时间发送 OpenAI 兼容的推理请求。
+实验用于检验策略在真实系统中的行为，并可以接入真实的推理实例与功率传感器。
 
-== 本机单进程 <g-local>
+== 组成
+
+#figure(
+  tbl(
+    columns: (9em, 6em, 1fr),
+    header: ("服务", "本机端口", "作用"),
+    [电网信号服务], [9000], [提供各站点当前的电价、碳强度与功率上限；接受需求响应事件；是信号时钟的权威来源],
+    [站点代理], [9101 起], [每个站点一个：管理站点的服务器（开关、排队、派发）、测量功率，提供推理接口],
+    [网关], [8080], [用户请求的入口：为每个请求选择站点（全局路由策略）并转发，模拟跨地域的网络时延],
+    [控制器], [9300], [周期性地读取各站点状态与电网信号，调用容量策略，向站点下发开启服务器数与功率封顶比例],
+    [负载生成器], [—], [按场景的负载回放请求],
+  ),
+  caption: [实验系统的服务],
+)
+
+本机运行时各服务使用上表中的端口；分布部署时，服务地址写在地址文件中（@g-endpoints）。
+
+== 运行一次实验：cpc live
 
 ```bash
-cpc up --speedup 60
+cpc live -s configs/scenario.yaml --duration 600 --rate-scale 0.1 --speedup 60 \
+    --out results/live-1
 ```
 
-`cpc up` 在一个进程中启动电网信号服务（9000）、各站点代理（9101 起）、网关（8080）与控制器（9300）；
-任一服务启动失败时停止其余服务并以非零状态退出。`--speedup 60` 使信号时钟加速 60 倍（真实 1 分钟 = 信号 1 小时）。
-请求日志与决策日志写入 `logs/`。常用选项：`--routing`、`--capacity` 指定全局策略，`--interval` 指定控制周期，
-`--no-controller` 不启动控制器，`--initial-active` 指定各站点初始在线的服务器数，`-s` 指定场景文件。
+`cpc live` 在本进程中启动全部服务，等待它们就绪，回放 600 秒负载，同时每隔 10 秒（`--sample-s`）读取各站点的状态与电网信号，
+结束后停止服务并写出结果目录。结果目录的格式与仿真相同（@g-sim），另有 `logs/` 子目录保存网关的请求日志与控制器的决策日志。
 
-另开一个终端发送负载：
+#figure(
+  tbl(
+    columns: (13em, 1fr),
+    header: ("参数", "含义"),
+    [`--duration`], [实验时长（秒，必填）],
+    [`--speedup`], [信号时钟加速倍数；如 60 表示 10 分钟的实验覆盖信号时间 10 小时],
+    [`--routing`、`--capacity`], [覆盖场景中的全局策略（只用于本进程启动的服务）],
+    [`--interval`], [容量策略的决策周期（秒）],
+    [`--initial-active`], [各站点开始时开启的服务器数（缺省全部开启）],
+    [`--sample-s`], [状态采样周期（秒，缺省 10），即结果时间序列中每行的时长],
+    [`--rate-scale` 等], [负载变换参数，与 `cpc sim` 相同],
+    [`--model`], [请求中的模型名；接入真实推理实例时须与其服务的模型名一致（缺省 `cpc`）],
+    [`--no-stream`], [使用非流式请求（不能测量首 token 时延）],
+    [`-e`、`--endpoints`], [连接已部署的服务（见下文），而不在本进程中启动],
+  ),
+  caption: [cpc live 的参数],
+)
+
+结果中的请求状态：HTTP 200 为 served，503（站点队列已满或路由策略拒绝）为 rejected，其他错误与连接失败为 failed。
+电量取各站点累计能耗在采样区间内的增量；电费与碳排放按每个采样区间开始时的电价与碳强度计算。
+
+*负载与本机能力。* 负载按真实时间发送，到达率过高会超出本机的处理能力（表现为大量请求超时或失败），可用 `--rate-scale`
+降低到达率。信号时钟加速不改变负载的到达速度；需要负载的日内变化与加速后的信号时钟同步时，用 `--time-scale`
+压缩 trace 的时间，并用 `--rate-scale` 相应降低到达率。
+
+== 手动操作：cpc up 与 cpc loadgen
+
+需要在运行期间手动观察与操作时，用 `cpc up` 启动全部服务，它会一直运行到按 Ctrl+C：
 
 ```bash
-cpc loadgen --local --duration 120 --rate-scale 0.2 --out logs/loadgen.jsonl
+cpc up -s configs/scenario.yaml --speedup 60
 ```
 
-负载按真实时间回放，来源区域分配与仿真一致，场景 `workload.attributes` 选定的字段以 `x-cpc-attr-*` 请求头发送。
-负载与信号时钟的加速相互独立；需要负载的日内变化与加速后的信号时钟同步时，以 `--time-scale` 压缩 trace 时间，
-并以 `--rate-scale` 相应降低到达率。结束后打印汇总：发送数、成功数、端到端时延与 TTFT 的中位数和 P99、SLO 达成率、各站点分担比例。
+另开一个终端（同样先激活虚拟环境）发送负载：
 
-也可以用任何 OpenAI 兼容客户端访问网关：
+```bash
+cpc loadgen -s configs/scenario.yaml --local --duration 120 --rate-scale 0.1 \
+    --out logs/load.jsonl
+```
+
+`--local` 表示服务使用本机端口。结束时打印发送数、成功数、时延分位数与各站点分担的比例。也可以用任何 OpenAI 兼容的客户端
+访问网关：
 
 ```bash
 curl http://localhost:8080/v1/chat/completions -H "Content-Type: application/json" \
-     -H "x-cpc-source: east" -H 'x-cpc-attr-session_id: "u42"' \
+     -H "x-cpc-source: east" \
      -d '{"model": "cpc", "max_tokens": 32,
           "messages": [{"role": "user", "content": "hello"}]}'
 ```
+
+请求头 `x-cpc-source` 指明来源区域；响应头 `x-cpc-site`、`x-cpc-node` 给出处理请求的站点与服务器，`x-cpc-route-reason`
+给出路由原因。
+
+*观察运行状态。* 各服务提供 JSON 格式的状态接口，可以在浏览器中打开：
 
 #figure(
   tbl(
     columns: (17em, 1fr),
     header: ("地址", "内容"),
-    [`http://localhost:9101/state`], [站点状态摘要：各服务器池与服务器的状态、在服务与排队请求、功率及其完整率],
-    [`http://localhost:8080/state`], [网关：各来源到达率、各站点视图、当前路由策略与权重、上游健康状态],
-    [`http://localhost:9300/state`], [控制器：最近一次周期的决策、观测与信号],
-    [`http://localhost:9000/v1/signals`], [各站点当前的电价、碳强度、功率上限与数据来源],
+    [`http://localhost:9101/state`], [第一个站点的状态：各服务器的状态、正在处理与排队的请求、功率与累计能耗],
+    [`http://localhost:8080/state`], [网关：各来源区域的到达率、各站点的负载与信号、当前路由策略与权重],
+    [`http://localhost:9300/state`], [控制器：当前容量策略与最近一次决策],
+    [`http://localhost:9000/v1/signals`], [各站点当前的电价、碳强度与功率上限],
     [`http://localhost:8080/docs`], [网关的交互式接口文档（其他服务同理）],
   ),
-  caption: [本机运行时的观察入口],
+  caption: [状态接口],
 )
 
-运行时操作（设置了 `CPC_ADMIN_TOKEN` 时须携带 `Authorization: Bearer <令牌>`）：
+*运行时操作。* 切换策略、注入需求响应事件：
 
 ```bash
 curl -X PUT http://localhost:8080/admin/policy -H "Content-Type: application/json" \
-     -d '{"policy": "cost_aware"}'
+     -d '{"policy": "cost_aware"}'                       # 切换路由策略
 curl -X PUT http://localhost:9300/admin/policy -H "Content-Type: application/json" \
-     -d '{"policy": "grid_aware"}'
-# 需求响应：站点 gd 设施功率不超过 8 kW，持续 120 分钟（信号时间）
-cpc event --local --site gd --cap-kw 8 --duration-min 120
+     -d '{"policy": "grid_aware"}'                       # 切换容量策略
+curl -X POST http://localhost:9300/admin/step            # 立即执行一次容量决策
+cpc event -s configs/scenario.yaml --local --site gd --cap-kw 8 --duration-min 120
 ```
 
-== 各服务独立进程
+最后一条命令要求站点 gd 的设施功率在 120 分钟（信号时间）内不超过 8 kW。设置了环境变量 `CPC_ADMIN_TOKEN` 时，
+管理接口须带请求头 `Authorization: Bearer <令牌>`（`cpc event` 自动读取该环境变量）。
+
+== 地址文件与分布部署 <g-endpoints>
+
+各服务可以分别启动，甚至位于不同的主机上。此时用地址文件说明每个服务的地址：
+
+```yaml
+grid: http://10.0.0.10:9000
+gateway: http://10.0.0.10:8080
+controller: http://10.0.0.10:9300
+sites:
+  sh: http://10.0.0.11:9100
+  gd: http://10.0.0.12:9100
+```
 
 ```bash
-cpc grid --local &                         # 先启动电网信号服务（信号时钟的权威来源）
-cpc site --local --site sh &               # 每个站点一个进程
-cpc gateway --local --log logs/gateway.jsonl &
-cpc controller --local --log logs/controller.jsonl &
+cpc grid       -s scenario.yaml -e endpoints.yaml                 # 先启动电网信号服务
+cpc site       -s scenario.yaml -e endpoints.yaml --site sh       # 每个站点一个
+cpc gateway    -s scenario.yaml -e endpoints.yaml --log gateway.jsonl
+cpc controller -s scenario.yaml -e endpoints.yaml --log controller.jsonl
+# 回放负载、采样、写出结果
+cpc live       -s scenario.yaml -e endpoints.yaml --duration 3600
 ```
 
-分布到多台主机时，编写地址文件（格式见《平台设计说明书》"服务接口"一章）并以 `-e` 给出；`--host`、`--port` 覆盖监听地址。
-网关、控制器与负载生成器启动时须在期限内（`--startup-timeout`，缺省 30 秒）从电网信号服务同步信号时钟。
+每个服务按地址文件中自己的地址监听，`--host`、`--port` 可以覆盖（例如在容器中监听 `0.0.0.0`）。各服务使用同一份场景文件；
+网关、控制器与负载生成器启动时须能访问电网信号服务。`cpc live -e` 连接已运行的服务，此时全局策略由网关、控制器启动时的参数决定。
 
 == Docker Compose <g-compose>
+
+Docker Compose 在一台主机上以容器运行全部服务，并包含 Prometheus（指标存储）与 Grafana（仪表盘）。
 
 === 启动
 
@@ -100,7 +170,16 @@ docker compose -f deploy/compose/docker-compose.yml ps
 可在 `deploy/compose/.env` 中设置环境变量：`CPC_SPEEDUP`（信号时钟加速，默认 60）、`CPC_ROUTING`、`CPC_CAPACITY`（默认策略）、
 `CPC_ADMIN_TOKEN`（管理接口令牌）、`GRAFANA_PASSWORD`。
 
-=== 压测与观察
+=== 运行实验与观察
+
+在宿主机上用 `cpc live` 连接 Compose 中的服务，回放负载并写出结果目录：
+
+```bash
+cpc live -s configs/scenario.yaml -e configs/endpoints.compose-host.yaml --duration 600 \
+    --rate-scale 0.1 --out results/compose-1
+```
+
+也可以只用容器中的负载生成器发送负载（不写出结果目录）：
 
 ```bash
 docker compose -f deploy/compose/docker-compose.yml run --rm loadgen        # 默认 10 分钟
@@ -179,54 +258,99 @@ python deploy/k8s/kind_up.py --down                     # 删除集群
 
 === 真实 Kubernetes 集群
 
-在真实集群（例如在云服务器上用 k3s 搭建）中，推荐的做法是：用 NVIDIA GPU Operator 安装设备插件与 dcgm-exporter；
-给节点打上 `topology.kubernetes.io/region` 标签表示站点；每个站点部署一个 vLLM Deployment（每个副本占一张 GPU）；
-容量控制器使用 Kubernetes 执行器直接伸缩副本数：
+在真实集群中，可用 NVIDIA GPU Operator 安装设备插件与 dcgm-exporter；给节点加上 `topology.kubernetes.io/region` 标签表示站点；
+每个站点部署 vLLM 实例，站点代理的真实服务器池（`backend: openai`）的 `upstreams` 指向这些实例的 Service 地址。
+未配置容器名时，开关机只停止或恢复向实例派发请求。
 
-```bash
-cpc controller -s scenario.yaml --actuator kubernetes \
-               --k8s-namespace cpc --k8s-template "vllm-{site}"
-```
-
-此时站点代理的真实服务器池（`backend: openai`）的上游指向该站点 vLLM 的 Service。
 == 接入真实服务器 <g-real>
 
-真实服务器是一个 OpenAI 兼容推理实例（vLLM、SGLang、llama.cpp server 等）及其占用的加速卡，在场景中以真实服务器池声明，
-站点的功率测量在 `measurement` 中声明：
+真实服务器是一个 OpenAI 兼容的推理实例（例如 vLLM）及其占用的 GPU。以下步骤在一台装有 NVIDIA GPU 的 Linux 主机上，
+把一个 vLLM 实例接入场景 `configs/scenario.local-gpu.yaml` 中的站点 lab，功率由 NVML 测量，开关机通过启停容器实现。
 
-```yaml
-node_profiles:
-  gpu-server: {gpus: 1, gpu_model: measured, host_idle_w: 150, host_max_w: 250, slots: 32}
-sites:
-  - id: lab
-    region: guizhou
-    pools:
-      - id: gpu
-        profile: gpu-server
-        backend: openai
-        upstreams:
-          - {id: lab-0, url: "http://127.0.0.1:8000", gpu_indices: [0],
-             container: cpc-vllm-0, max_inflight: 32}
-    measurement:
-      sensors: [{type: nvml, gpus: [0]}]
-      host: excluded
+*第一步：准备环境。* 安装 NVIDIA 驱动（`nvidia-smi` 能看到 GPU）、Docker 与 NVIDIA Container Toolkit
+（`docker run --rm --gpus all ubuntu nvidia-smi` 能看到 GPU），并安装平台的可选依赖：
+
+```bash
+pip install -e ".[nvml,docker]"
+cpc sensors --types nvml          # 读取 GPU 功率，确认 NVML 可用
 ```
 
-- `gpu_indices`（或 `devices`）声明实例占用的加速卡，站点代理按此把传感器读数归属到服务器；
-- `container` 为可选的容器名：给出时站点代理通过 Docker Engine 启停该容器实现开关机（需安装 `docker` 可选依赖，并能访问 Docker 套接字）；
-  未给出时开关机只停止向该实例派发请求；
-- `max_inflight` 为并发上限，宜与推理引擎的最大批大小一致；`ready_path`（缺省 `/health`）用于就绪检查；
-- 服务器类型的参数在实验中用于全局策略的容量与功率估计，在仿真中用于模拟该服务器，宜由该服务器的测量标定（@g-calibrate）。
+*第二步：启动推理实例。* 以下命令启动一个 vLLM 容器，服务一个小模型，对外的模型名为 `cpc`：
 
-站点有仿真服务器时，请求须给出 `max_tokens`；负载生成器发送 `max_tokens` 与 `ignore_eos: true`，使真实模型的输出长度与 trace 一致，
-请求中的 `model` 由 `cpc loadgen --model` 指定，须与推理实例的模型名一致。
-站点代理启动时检查传感器可用、声明的加速卡有读数、配置的容器存在，任一不满足即退出并报告原因。
+```bash
+docker run -d --name cpc-vllm-local --gpus all -p 127.0.0.1:8000:8000 --ipc=host \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  vllm/vllm-openai:latest --model Qwen/Qwen2.5-0.5B-Instruct --served-model-name cpc \
+  --max-model-len 16384 --gpu-memory-utilization 0.6 --max-num-seqs 32
+# 模型加载完成后返回 200（首次需要下载模型与编译，可能需要数分钟）
+curl http://127.0.0.1:8000/health
+```
 
-*功率封顶。* 以 `cpc site --enable-power-cap` 启动时，容量指令中的功率封顶比例通过传感器设置加速卡功率上限（NVML 需要 root 权限）；
-未开启时只记录目标比例。云服务器上部分 GPU 不允许用户修改功率上限。
+*第三步：在场景中声明真实服务器。* `configs/scenario.local-gpu.yaml` 中的站点 lab：
 
-*整机开关。* 停止推理容器后 GPU 处于空载，仍然耗电，测得的功率如实反映这一点。研究整机关机节能时，
-可通过 BMC（IPMI、Redfish）或云平台接口实现新的执行器钩子（《平台设计说明书》"扩展"一章）。
+```yaml
+sites:
+  - id: lab
+    name: 本机 GPU（真实服务器）
+    region: guizhou
+    lat: 26.40
+    lon: 106.40
+    pue: 1.2
+    pools:
+      - id: gpu
+        profile: local                     # 服务器类型（用于容量估计与仿真）
+        backend: openai                    # 真实服务器
+        upstreams:                         # 每一项是一个推理实例
+          - {id: lab-0, url: "http://127.0.0.1:8000", gpu_indices: [0],
+             container: cpc-vllm-local, max_inflight: 32}
+    measurement:                           # 功率测量
+      sensors: [{type: nvml, gpus: [0]}]
+      host: excluded                       # 只计 GPU 功率
+```
+
+#figure(
+  tbl(
+    columns: (10em, 1fr),
+    header: ("字段", "含义"),
+    [`url`], [推理实例的地址；站点代理把请求转发到这里，并以 `url` + `ready_path`（缺省 `/health`）检查是否就绪],
+    [`gpu_indices` 或 `devices`], [实例占用的 GPU 序号（或传感器给出的设备名），用于把 GPU 功率归属到这台服务器],
+    [`container`], [容器名（可选）。给出时，关机即停止容器、开机即启动容器；未给出时关机只停止派发请求],
+    [`max_inflight`], [并发上限，宜与推理引擎的最大批大小（vLLM 的 `--max-num-seqs`）一致],
+    [`measurement.sensors`], [功率传感器列表（@g-sensors）],
+    [`measurement.host`], [主机部分功率的计算方式：`server`（整机读数减 GPU 读数，需要 IPMI / Redfish 等整机传感器）、`cpu_dram`（CPU 与内存读数之和）、`excluded`（不计主机部分）],
+  ),
+  caption: [真实服务器的字段],
+)
+
+*第四步：运行实验。*
+
+```bash
+cpc live -s configs/scenario.local-gpu.yaml --routing round_robin --duration 60 \
+    --model cpc \
+    --out results/live-gpu
+```
+
+`--model cpc` 使请求中的模型名与 vLLM 的 `--served-model-name` 一致；`round_robin` 让请求轮流发往 lab 与仿真站点 emu。
+结束后，结果中站点 lab 的功率来自 GPU 的实测读数；运行期间访问 `http://localhost:9101/state` 可以看到服务器的
+`power_source` 为 `sensors`。
+
+*开关机。* 向站点下发指令即可观察开关机过程（实验运行期间，容量策略也会按负载自动下发）：
+
+```bash
+curl -X POST localhost:9101/admin/capacity -H 'Content-Type: application/json' \
+     -d '{"active_nodes": 0}'
+docker inspect -f '{{.State.Status}}' cpc-vllm-local     # exited：容器已停止
+curl -X POST localhost:9101/admin/capacity -H 'Content-Type: application/json' \
+     -d '{"active_nodes": 1}'
+```
+
+开机后服务器处于 booting 状态，就绪检查通过后转为 on 并开始接收请求。停止容器后 GPU 仍有空载功耗，测得的功率如实反映这一点。
+
+*功率封顶。* 以 `cpc site --enable-power-cap` 启动站点代理时，指令中的功率封顶比例通过 NVML 设置 GPU 的功率上限（需要 root 权限；
+部分云服务器不允许修改）；未开启时只记录目标比例。
+
+*启动检查。* 站点代理启动时检查传感器可用、声明的 GPU 有读数、配置的容器存在，任一不满足即退出并给出原因。
+运行中传感器读取失败时，该服务器的功率记为缺失（不以估计值替代），在状态与指标中报告，请求服务不受影响。
 
 == 云服务器 <g-cloud>
 
@@ -360,8 +484,9 @@ python3 ../../../scripts/smoke_test.py --external -e endpoints.yaml -s scenario.
 === 运行实验与收集数据
 
 1. 确认信号时钟：正式实验把场景中的 `clock.speedup` 设为 1，`clock.start` 设为希望模拟的日期时刻；
-2. 在控制节点运行负载：`cpc loadgen -s scenario.yaml -e endpoints.yaml --duration 7200 --out logs/loadgen.jsonl`；
-3. 数据位置：网关请求日志与控制器决策日志在 `control-stack/logs/`；指标在 Prometheus 中（可用 HTTP API 导出：
+2. 在控制节点运行实验：`cpc live -s scenario.yaml -e endpoints.yaml --duration 7200 --out results/cloud-1`，
+   结果目录的格式与仿真相同；
+3. 其他数据：网关请求日志与控制器决策日志在 `control-stack/logs/`；指标在 Prometheus 中（可用 HTTP API 导出：
    `curl 'localhost:9090/api/v1/query_range?query=site:facility_power_watts:sum&start=...&end=...&step=15'`）；
 4. 实验结束后停止站点栈与控制栈（`docker compose down`），按需关机或释放实例。
 
@@ -375,16 +500,16 @@ sudo ./netem.sh eth0 add 10.0.0.11=14 10.0.0.12=12 10.0.0.13=10
 sudo ./netem.sh eth0 del
 ```
 
-== 由真实服务器的测量标定 <g-calibrate>
+== 由真实服务器的测量生成服务器类型 <g-calibrate>
 
-使仿真中的服务器模型与真实服务器一致的步骤：
+使仿真中的服务器与真实服务器一致的步骤：
 
 1. 只向一个真实服务器所在的站点发请求，逐级提高到达率（例如每级 3 分钟），直至并发接近上限：
    `cpc loadgen -s scenario.yaml --gateway http://<站点地址>:9100 --grid http://<控制节点>:9000 --rate-scale <r> --duration 180`；
 2. 由 Prometheus 导出各时刻的在服务请求数与 GPU 功率（`cpc_node_busy_slots`、`DCGM_FI_DEV_POWER_USAGE`），
    由请求日志得到 token 间隔；按稳态区间整理为 power_profile 数据集（每级一行：`device`、`device_count`、`model`、
    `concurrency`、`power_w`、`itl_s`）；
-3. `cpc data calibrate <数据集> --where ... --slots <并发上限>`（可加 `--curves`），把结果写入场景的 `node_profiles`；
-   空载功率取无请求时的实测值，预填充吞吐由首 token 时延估计；
+3. `cpc profile <数据集> --where ... --slots <并发上限> --idle-w <无请求时的实测功率>`，把输出写入场景的 `node_profiles`；
+   预填充吞吐可由首 token 时延估计；
 4. 在数据集描述文件中记录测量条件（GPU 型号、模型、推理引擎及其版本、批大小上限）。
 

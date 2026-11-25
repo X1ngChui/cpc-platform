@@ -9,7 +9,7 @@
     columns: (8em, 1fr, 1fr),
     header: ("扩展点", "方式", "不需要修改平台的范围"),
     [数据], [按类别规范整理数据集；扩展字段直接加入表结构], [新的数据来源、扩展字段、扩展电网信号（场景 `grid.extras`）、请求属性（`workload.attributes`）],
-    [服务器类型], [场景 `node_profiles` 中的参数或曲线；`cpc data calibrate` 由测量标定], [新的加速卡、模型与推理引擎组合],
+    [服务器类型], [场景 `node_profiles` 中的功率与 token 间隔表；`cpc profile` 由测量生成], [新的加速卡、模型与推理引擎组合],
     [路由策略], [继承 `RoutingPolicy`；entry point 组 `cpc.routing`], [任意跨数据中心路由算法],
     [容量策略], [继承 `CapacityPolicy`，声明 `requires`；entry point 组 `cpc.capacity`], [任意容量与功率分配算法，可同时给出路由权重],
     [派发策略], [继承 `DispatchPolicy`；entry point 组 `cpc.dispatch`], [站内请求派发与排队顺序],
@@ -64,6 +64,6 @@ my-accel = "my_sensors:MyAccel"
 == 执行器
 
 站点代理的执行器钩子（`cpc.site.executors.RealNodeHooks`）实现真实服务器的开关机（配置了容器名时通过 Docker Engine 启停容器，
-否则只停止派发）、功率封顶（显式开启时通过传感器设置加速卡功率上限）与就绪检查。控制器的执行器决定指令的下发对象：
-`site-agent` 向站点代理下发指令；`kubernetes` 按站点伸缩推理实例 Deployment 的副本数。
-其他执行方式（如通过服务器的带外管理接口开关整机）可按同一接口实现。
+否则只停止派发）、功率封顶（显式开启时通过传感器设置加速卡功率上限）与就绪检查。控制器把指令下发给站点代理，
+由数据中心运行时按状态机执行，再由执行器钩子作用于真实服务器。其他执行方式（如通过服务器的带外管理接口开关整机）
+可按同一钩子接口（`power_on`、`power_off`、`set_cap`、`is_ready`）实现。

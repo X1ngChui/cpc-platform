@@ -59,61 +59,64 @@ sites:
 
 == 服务器模型 <sec-server-model>
 
-服务器模型给出服务器在给定状态、占用率与功率封顶比例下的功率，以及请求的服务时间。设占用率
-$u = "在服务请求数" \/ "并发槽数"$，功率封顶比例为 $c$。
+服务器类型以两张随占用率变化的表描述服务器的功率与速度。占用率 $u = "在服务的请求数" \/ "并发槽数"$，取值 $[0, 1]$；
+表中各点之间线性插值，超出表的范围时取端点值。
 
-*功率。* 单卡功率在 $u = 0$ 时为空载功率 $P_"idle"$；$u > 0$ 时有两种给法：
+```yaml
+node_profiles:
+  h100x8:
+    description: 8×H100，Llama-3.1-405B-Instruct-FP8
+    slots: 128                                   # 并发槽数
+    power_w: [[0, 1360], [0.0624, 4060.4], [0.2493, 4544.3],
+              [0.4989, 4962.1], [0.9973, 5406.1]]
+    tpot_s:  [[0.0624, 0.03406], [0.2493, 0.04039], [0.4989, 0.04689], [0.9973, 0.06527]]
+    prefill_tokens_per_s: 5000                   # 预填充吞吐
+    boot_s: 180                                  # 开机到可服务的时间
+```
 
-- 参数式：$P(u, c) = P_a + (P_"cap" - P_a) dot u^alpha$，$P_"cap" = max(P_a, c dot P_"max")$。
-  $P_a$ 为在服务时的功率下限（`gpu_active_min_w`，未给出时取 $P_"idle"$），$P_"max"$ 为满载功率，指数 $alpha$ 刻画功率随批大小的增长；
-  大模型推理的解码阶段受显存带宽限制，功率随并发凹增长 @patel2024characterizing；
-- 查表式：$P(u, c) = P_a + (C(u) - P_a) dot (P_"cap" - P_a) \/ (P_"max" - P_a)$，$C$ 为分段线性曲线 `gpu_power_curve`，
-  $P_a$、$P_"max"$ 为曲线的最小值与最大值。曲线通常直接取自功率特性数据集的测量点，适用于参数式拟合不佳的情形（如部分混合专家模型）。
+*功率。* `power_w` 给出服务器 IT 功率 $P(u)$，第一个点须为 $u = 0$，即在线而没有请求时的功率 $P_"idle"$；
+$P_"max"$ 为表中的最大值。启动中的服务器按 $P_"idle"$ 计，关机的服务器按 `off_w`（缺省 0）计。
+功率封顶比例为 $c$ 时，功率上限为 $P_"idle" + c dot (P_"max" - P_"idle")$，服务器功率取 $min(P(u), "上限")$。
+大模型推理的功率随并发凹增长，且从空载到少量并发有明显的跃升 @patel2024characterizing；以表描述可以直接使用测量点，
+不需要假设函数形式。
 
-主机部分功率 $H(u) = H_"idle" + (H_"max" - H_"idle") dot u$；服务器 IT 功率 $= H(u) + n_"gpu" dot P(u, c)$。
-关机服务器的功率为 `standby_w`，启动中的服务器按空载计。
-
-*性能。* 预填充时间 $T_"pre" = L_"in" \/ (R_"pre" dot s(c))$；token 间隔 $T_"pot" = d_0 (1 + k u) \/ s(c)$（参数式）
-或 $T(u) \/ s(c)$（查表式，曲线 `tpot_curve`），其中 $s(c) = c^beta$ 为功率封顶后的相对速度；
-服务时间为 $T_"pre" + L_"out" dot T_"pot"$，首 token 时延为排队时间、$T_"pre"$、一个 $T_"pot"$ 与往返时延之和。
+*速度。* 预填充时间 $T_"pre" = L_"in" \/ (R_"pre" dot s(c))$，token 间隔 $T_"pot" = T(u) \/ s(c)$，$T$ 为 `tpot_s` 表，
+$s(c) = c^beta$ 为功率封顶后的相对速度（$c$ 截断到 $["cap_min_ratio", 1]$，$beta$ = `cap_perf_exponent`）。
+服务时间为 $T_"pre" + L_"out" dot T_"pot"$；首 token 时延为排队时间、$T_"pre"$、一个 $T_"pot"$ 与往返时延之和。
 $u$ 取请求开始服务时（含该请求）的占用率。
 
 #figure(
   tbl(
     columns: (13em, 1fr),
-    header: ([参数（`node_profiles.<类型>`）], [含义]),
-    [`gpus`、`gpu_model`], [每台服务器的加速卡数与型号],
-    [`gpu_idle_w`], [单卡空载功率（没有在服务的请求）],
-    [`gpu_active_min_w`、`gpu_max_w`、`power_exponent`], [参数式功率：在服务时的功率下限 $P_a$、满载功率 $P_"max"$、指数 $alpha$],
-    [`gpu_power_curve`], [查表式功率：\[\[占用率, 单卡功率 W\], …\]，占用率在 (0, 1\] 内严格递增],
-    [`host_idle_w`、`host_max_w`、`standby_w`], [主机部分空载、满载功率；关机功率],
-    [`slots`], [并发槽数],
-    [`prefill_tokens_per_s`], [预填充吞吐 $R_"pre"$],
-    [`decode_s_per_token`、`decode_slowdown`], [参数式 token 间隔：$d_0$、$k$],
-    [`tpot_curve`], [查表式 token 间隔：\[\[占用率, 秒\], …\]],
-    [`cap_min_ratio`、`cap_perf_exponent`], [功率封顶比例下限；速度对封顶比例的敏感度 $beta$],
-    [`boot_s`], [开机到可服务的时间],
+    header: ([字段（`node_profiles.<名称>`）], [含义]),
+    [`description`], [说明（可选），如硬件、模型与数据来源],
+    [`slots`], [并发槽数（必填）],
+    [`power_w`], [功率表 \[\[占用率, 服务器 IT 功率 W\], …\]（必填），首点占用率为 0，占用率严格递增],
+    [`tpot_s`], [token 间隔表 \[\[占用率, 秒\], …\]（必填），占用率严格递增],
+    [`prefill_tokens_per_s`], [预填充吞吐 $R_"pre"$（必填）],
+    [`boot_s`], [开机到可服务的时间（必填）],
+    [`off_w`], [关机时的功率（缺省 0）],
+    [`cap_min_ratio`、`cap_perf_exponent`], [功率封顶比例的下限（缺省 0.5）；速度对封顶比例的指数 $beta$（缺省 0.4）],
   ),
-  caption: [服务器模型参数],
+  caption: [服务器类型的字段],
 )
 
-=== 由功率特性数据标定 <sec-calibration>
+=== 由测量数据生成 <sec-calibration>
 
-`cpc data calibrate` 对功率特性数据集中同一组（设备、设备数、模型）的测量，以 $u = "concurrency" \/ "slots"$ 拟合：
-单卡功率 $P(u) = P_a + (P_"max" - P_a) u^alpha$（最小二乘，$alpha$ 在 \[0.1, 2\] 上网格搜索，要求 $P_a >= 0$），
-token 间隔 $T(u) = d_0 (1 + k u)$（线性最小二乘），并报告拟合残差；加 `--curves` 时另给出查表式曲线。
-测量只覆盖在服务期间，空载功率、主机功率、预填充吞吐与开机时间不由标定给出，须另行实测或明确标注为示意值。
+`cpc profile` 由功率特性数据集中同一组（设备、设备数、模型）的测量生成服务器类型：每次测量以
+$u = "concurrency" \/ "slots"$ 为占用率，成为 `power_w` 表的一个点（功率为测量值加 `--host-w`）与 `tpot_s` 表的一个点；
+`power_w` 的首点为 `--idle-w` 给出的在线空载功率。测量只覆盖在服务期间，在线空载功率、主机功率、预填充吞吐与开机时间
+须另行给出，未给出的必填项在输出中注明。表也可以按任意公式计算若干点后写入。
 
-例如，默认场景的服务器类型 `h100x8` 由 ML.ENERGY Benchmark v3 中 8×H100 运行 Llama-3.1-405B-Instruct-FP8 的测量标定
-（`slots` = 128）：$P_a$ = 306.4 W，$P_"max"$ = 581.6 W，$alpha$ = 0.38，$d_0$ = 31.63 ms，$k$ = 1.039；
-`b200x4` 由 4×B200 运行同一模型的测量标定。
+默认场景的 `h100x8` 由 ML.ENERGY Benchmark v3 中 8×H100 运行 Llama-3.1-405B-Instruct-FP8 的 6 次测量生成，
+`b200x4` 由 4×B200 运行同一模型的测量生成；两者的在线空载功率与主机功率为示意值。
 
 == 网络时延
 
 来源区域到站点的往返时延 $"RTT" = "base_ms" + 2 dot d dot "route_factor" \/ "km_per_ms"$，$d$ 为两地大圆距离，
 `route_factor` 为路由绕行系数，`km_per_ms` 为光纤中的传播速度（约 200 km/ms）；`network.overrides` 可按来源与站点给出实测值。
 实验中，`emulate_wan` 为真时网关在转发前与返回后各注入 RTT 的一半；各服务实际分布在不同地域时应设为假。
-`cpc rtt` 打印 RTT 矩阵。
+`cpc check` 打印 RTT 矩阵。
 
 == 电网信号与需求响应
 

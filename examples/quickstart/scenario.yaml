@@ -1,0 +1,77 @@
+# 快速上手场景：4 个数据中心站点、3 个用户来源区域，负载为 Azure LLM Inference Trace 2023（对话服务，约 1 小时）。
+#
+# 准备数据（约 1 MB 下载，见《使用手册》"快速上手"）：
+#   python examples/datasets/azure_llm.py --variant 2023-conv --zero-output fail
+#   python examples/datasets/cn_grid/convert.py --start 2026-01-01 --end 2027-01-01
+# 然后：
+#   cpc check -s examples/quickstart/scenario.yaml
+#   cpc sim -s examples/quickstart/scenario.yaml --hours 0.9
+#   cpc run examples/quickstart/experiment.yaml
+
+name: quickstart
+
+clock:
+  start: "2026-07-15T11:00:00+08:00"   # 信号时间从 7 月 15 日 11:00 开始（广东 11–12 点为尖峰电价）
+  speedup: 1                           # 实验中信号时钟的加速倍数；仿真中不起作用
+
+sources:                               # 用户请求的来源区域；请求按 share 的比例随机分配
+  - {id: east,  name: 上海, lat: 31.23, lon: 121.47, share: 0.40}
+  - {id: south, name: 广州, lat: 23.13, lon: 113.26, share: 0.35}
+  - {id: north, name: 北京, lat: 39.90, lon: 116.40, share: 0.25}
+
+node_profiles:                         # 服务器类型：功率与 token 间隔随占用率变化的表
+  h100x8:
+    description: 8×H100，Llama-3.1-405B-Instruct-FP8（表由 ML.ENERGY Benchmark v3 的测量生成；空载与主机功率为示意值）
+    slots: 128
+    power_w: [[0, 1360], [0.0624, 4060.4], [0.1246, 4184.3], [0.2493, 4544.3], [0.4989, 4962.1], [0.7477, 5274.6], [0.9973, 5406.1]]
+    tpot_s: [[0.0624, 0.03406], [0.1246, 0.03565], [0.2493, 0.04039], [0.4989, 0.04689], [0.7477, 0.05561], [0.9973, 0.06527]]
+    prefill_tokens_per_s: 5000
+    boot_s: 180
+  b200x4:
+    description: 4×B200，同一模型（生成方法同上；空载与主机功率为示意值）
+    slots: 128
+    power_w: [[0, 1160], [0.0623, 4051.2], [0.1246, 3993.0], [0.2492, 4144.4], [0.4989, 4274.5], [0.9974, 4449.8]]
+    tpot_s: [[0.0623, 0.02991], [0.1246, 0.03313], [0.2492, 0.03665], [0.4989, 0.04409], [0.9974, 0.05741]]
+    prefill_tokens_per_s: 8000
+    boot_s: 180
+
+sites:                                 # 数据中心站点
+  - {id: sh, name: 长三角·上海, region: shanghai, lat: 31.15, lon: 121.12, pue: 1.25,
+     pools: [{id: h100, profile: h100x8, count: 1}]}
+  - {id: gd, name: 粤港澳·韶关, region: guangdong, lat: 24.81, lon: 113.60, pue: 1.25,
+     pools: [{id: h100, profile: h100x8, count: 1}]}
+  - {id: gz, name: 贵州·贵安, region: guizhou, lat: 26.40, lon: 106.40, pue: 1.20,
+     pools: [{id: h100, profile: h100x8, count: 2}]}
+  - id: nm
+    name: 内蒙古·和林格尔
+    region: inner_mongolia
+    lat: 40.38
+    lon: 111.82
+    pue: 1.20
+    pools:                             # 两种服务器组成的站点；站内优先使用单位并发槽功率低的服务器
+      - {id: h100, profile: h100x8, count: 1}
+      - {id: b200, profile: b200x4, count: 1}
+    scheduler:
+      dispatch: {policy: efficient_first}
+      power: {policy: efficient}
+
+grid:
+  price:  {dataset: "${CPC_DATA_DIR}/cn-grid-2026", signal: price}
+  carbon: {dataset: "${CPC_DATA_DIR}/cn-grid-2026", signal: carbon_intensity}
+  dr_events:                           # 需求响应：广东站点 11:20–11:50 设施功率不超过 5 kW
+    - {site: gd, cap_kw: 5, start: "2026-07-15T11:20:00+08:00", end: "2026-07-15T11:50:00+08:00"}
+
+workload:
+  dataset: "${CPC_DATA_DIR}/azure-llm-2023-conv"
+  seed: 1
+
+slo:
+  ttft_s: 2.0
+  tpot_s: 0.15
+
+scheduler:
+  routing:  {policy: nearest, params: {max_wait_s: 0.5}}
+  capacity: {policy: reactive, params: {target_util: 0.6}}
+  control_interval_s: 15
+  sim_control_interval_s: 60
+  carbon_price_per_kg: 0.1

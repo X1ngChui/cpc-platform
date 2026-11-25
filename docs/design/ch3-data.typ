@@ -31,7 +31,7 @@ cpc:
 resources:
   - name: requests                   # 资源名由类别规定
     type: table
-    path: requests.parquet           # 相对路径或 URL
+    path: requests.parquet           # 相对于描述文件的路径
     format: parquet                  # csv / parquet
     hash: "sha256:..."               # 出处信息（可选）
     schema:
@@ -51,7 +51,7 @@ resources:
     [`name`、`version`], [数据集的标识，运行结果以 `name@version` 记录所用数据集。],
     [`licenses`、`sources`、`title`、`description`], [许可与来源，供查阅与结果出处记录。],
     [`cpc.kind`、`cpc.profile`], [数据集类别与类别规范版本（当前为 1）。],
-    [`resources[].path`], [相对于描述文件所在目录的路径，或 URL（以 `cpc data fetch` 下载到描述文件所在目录）。],
+    [`resources[].path`], [相对于描述文件所在目录的路径。],
     [`resources[].format`], [`csv` 或 `parquet`。],
     [`resources[].hash`、`bytes`], [出处信息，采用"算法前缀"写法（如 `sha256:<十六进制摘要>`）。],
     [`schema.fields[]`], [字段名、类型（`string`、`number`、`integer`、`boolean`、`datetime`、`date`、`list` 等）、约束（`required`、`unique`、`minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum`、`enum`）、单位 `unit`；`list` 类型在 CSV 中以 `delimiter` 分隔，元素类型由 `itemType` 给出。],
@@ -143,7 +143,7 @@ resources:
 `cpc.datasets.descriptor.load_descriptor` 读取描述文件并检查其结构与类别规范；`cpc.datasets.table.read_table`
 以 Apache Arrow 读取所需的列，按声明的类型解析，检查约束与核心字段的非空要求。任何不符合都报告为 `DatasetError`，
 平台不修正、不丢弃、不填补数据。负载加载后再检查到达时间的顺序；电网信号加载后检查时段与单位。
-`cpc data validate <路径>` 对数据集做完整校验并报告各资源的行数。
+`cpc data check <路径>` 对数据集做完整校验，并报告各资源的行数与统计。
 
 == 转换范例
 

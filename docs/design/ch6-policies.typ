@@ -30,7 +30,6 @@
     columns: (7em, 13em, 1fr),
     header: ("名称", "参数（缺省值）", "规则"),
     [`round_robin`], [—], [在可用站点间轮询（基线）。],
-    [`random`], [`seed`（0）], [在可用站点间均匀随机（基线）。],
     [`least_loaded`], [—], [选负载最低的可用站点（基线）。],
     [`nearest`], [`max_wait_s`（0.5）、`overflow`], [按 RTT 从近到远，选第一个估计排队时间不超过 `max_wait_s` 的站点；都超过时溢出（`wait_exceeded`）。],
     [`cost_aware`], [`max_load`（0.9）、`ttft_budget`（0.5）、`latency_weight`（0）、`overflow`], [在有电网信号、负载低于 `max_load`、估计 TTFT 不超过 `ttft_budget` × SLO 的站点中，选"等效电价 × PUE × 单请求边际能耗 + `latency_weight` × 估计 TTFT"最小者。单请求边际能耗 =（满载 − 空载 IT 功率）/ 并发槽数 × 平均服务时间。没有信号时溢出（`no_signal`），预算或负载不满足时溢出（`over_budget`）。],
