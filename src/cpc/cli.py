@@ -508,8 +508,10 @@ def cmd_live(args) -> None:
     if args.speedup is not None:
         scn.clock.speedup = args.speedup
     out = Path(args.out or f"results/live-{datetime.now():%Y%m%d-%H%M%S}")
-    local = not args.endpoints
-    ep = default_local_endpoints(scn) if local else load_endpoints(args.endpoints, scn)
+    if args.endpoints and args.local:
+        raise ConfigError("give -e or --local, not both")
+    local = not (args.endpoints or args.local)  # start the services in this process
+    ep = load_endpoints(args.endpoints, scn) if args.endpoints else default_local_endpoints(scn)
     if not local and (args.routing or args.capacity):
         raise ConfigError("deployed services use the policies they were started with; switch them with /admin/policy")
     for name, attr in ((args.routing, "routing"), (args.capacity, "capacity")):
@@ -825,6 +827,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = scenario(sub.add_parser("live", help="run an experiment: replay the workload, sample, write the result package"))
     sp.add_argument("--duration", type=_positive, required=True, help="duration (s)")
     sp.add_argument("--endpoints", "-e", default=None, help="endpoints of deployed services; default: start all services here")
+    sp.add_argument("--local", action="store_true", help="connect to services running at the local addresses (cpc up)")
     policies(sp, " (services started here only)")
     sp.add_argument("--sample-s", type=_positive, default=10.0, help="sampling period of sites and signals (s, default 10)")
     sp.add_argument("--model", default="cpc", help="model field of the requests (model name of real instances)")

@@ -71,6 +71,9 @@ def test_user_errors_are_one_line(tmp_path, capsys):
     assert "required field is missing" in out and "unknown field (did you mean 'slots'?)" in out and "Traceback" not in out
     bad.write_text("name: x\n  y: [\n", encoding="utf-8")
     assert "is not valid YAML" in err(["check", "-s", str(bad)])
+    live = ["live", "-s", s, "--duration", "1"]
+    assert "give -e or --local, not both" in err([*live, "--local", "-e", str(tmp_path / "endpoints.yaml")])
+    assert "started with" in err([*live, "--local", "--routing", "least_loaded"])  # running services keep their policies
 
 
 def test_policy_params_override_scenario_policy(tmp_path):
