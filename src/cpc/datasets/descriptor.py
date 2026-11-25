@@ -54,17 +54,13 @@ class Field:
 @dataclass(frozen=True)
 class Resource:
     name: str
-    path: str  # 相对于描述文件目录的路径或 URL
+    path: str  # 相对于描述文件目录的路径
     format: str
     hash: str | None
     bytes: int | None
     fields: tuple[Field, ...]
     missing_values: tuple[str, ...] = ("",)
     extra: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def is_remote(self) -> bool:
-        return self.path.startswith(("http://", "https://"))
 
     def field(self, name: str) -> Field | None:
         return next((f for f in self.fields if f.name == name), None)
@@ -97,9 +93,7 @@ class Descriptor:
         return r
 
     def local_path(self, r: Resource) -> Path:
-        """资源的本地路径：相对路径相对于描述文件目录；URL 资源下载到描述文件目录下，文件名取 URL 的最后一段。"""
-        if r.is_remote:
-            return self.root / r.path.rstrip("/").rsplit("/", 1)[-1]
+        """资源的本地路径（相对于描述文件目录）。"""
         p = Path(r.path)
         if p.is_absolute() or ".." in p.parts:
             raise DatasetError(f"数据集 {self.ref} 的资源 {r.name} 路径须为描述文件目录内的相对路径：{r.path}")

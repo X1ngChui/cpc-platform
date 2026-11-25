@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from pydantic import BaseModel, Field
 
@@ -125,14 +125,3 @@ class GridModel:
             except SignalUnavailable as e:
                 missing[s.id] = str(e)
         return out, missing
-
-    def forecast(self, site_id: str, t0: datetime, hours: float = 24, step_min: int = 60) -> list[GridSignal | None]:
-        """按数据集逐点给出未来若干小时的信号；不可用的点为 None。"""
-        n = int(hours * 60 / step_min)
-        out: list[GridSignal | None] = []
-        for i in range(n):
-            try:
-                out.append(self.signal(site_id, t0 + timedelta(minutes=i * step_min)))
-            except SignalUnavailable:
-                out.append(None)
-        return out

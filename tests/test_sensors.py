@@ -163,7 +163,8 @@ class FakeSensor(Sensor):
 
 
 def two_nodes():
-    return [Server(id=f"n{i}", pool="p", profile=NodeProfile(), slots=8, gpus=1, model_power=False, state="on",
+    prof = NodeProfile(slots=8, power_w=[(0, 100), (1, 400)], tpot_s=[(1, 0.02)], prefill_tokens_per_s=1e4, boot_s=0)
+    return [Server(id=f"n{i}", pool="p", profile=prof, slots=8, model_power=False, state="on",
                    upstream=UpstreamConfig(id=f"n{i}", url="http://x", gpu_indices=[i])) for i in range(2)]
 
 

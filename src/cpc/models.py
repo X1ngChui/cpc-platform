@@ -1,4 +1,4 @@
-"""基础模型：服务器功率模型、推理性能（时延）模型、广域网时延模型、信号时钟。
+"""基础模型：服务器模型（功率与时延，按表插值）、广域网时延模型、信号时钟。
 
 服务器模型由数据中心运行时调用，仿真器与站点代理（仿真服务器）共用，保证两种运行方式下的物理假设一致。
 """
@@ -15,69 +15,49 @@ from .config import NetworkConfig, NodeProfile, Scenario, SiteConfig, SourceRegi
 # ---------------------------------------------------------------- 功率模型
 
 
-def interp(curve: list[tuple[float, float]], x: float) -> float:
-    """分段线性插值；超出曲线范围时取端点值。"""
-    if x <= curve[0][0]:
-        return curve[0][1]
-    for (x0, y0), (x1, y1) in zip(curve, curve[1:]):
+def interp(table: list[tuple[float, float]], x: float) -> float:
+    """分段线性插值；超出表的范围时取端点值。"""
+    if x <= table[0][0]:
+        return table[0][1]
+    for (x0, y0), (x1, y1) in zip(table, table[1:]):
         if x <= x1:
             return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
-    return curve[-1][1]
+    return table[-1][1]
 
 
-def gpu_power_w(p: NodeProfile, occupancy: float, cap_ratio: float = 1.0) -> float:
-    """单卡功率。占用率为 0 时为空载功率 P_idle。
-    参数式：P = P_a + (P_cap − P_a)·occ^α，P_a 为在服务时的功率下限 gpu_active_min_w（未给出时取 P_idle），
-    P_cap = max(P_a, cap·P_max)。
-    查表式：P = P_a + (C(occ) − P_a)·(P_cap − P_a)/(P_max − P_a)，C 为 gpu_power_curve，P_a、P_max 为曲线的最小、最大值
-    （功率封顶按比例压缩动态部分）。"""
-    occ = min(max(occupancy, 0.0), 1.0)
-    if occ == 0.0:
-        return p.gpu_idle_w
-    if p.gpu_power_curve is not None:
-        ys = [y for _, y in p.gpu_power_curve]
-        base, top = min(ys), max(ys)
-        val = interp(p.gpu_power_curve, occ)
-        if cap_ratio >= 1.0 or top <= base:
-            return val
-        p_cap = max(base, cap_ratio * top)
-        return base + (val - base) * (p_cap - base) / (top - base)
-    base = p.gpu_idle_w if p.gpu_active_min_w is None else p.gpu_active_min_w
-    p_cap = max(base, cap_ratio * p.gpu_max_w)
-    return base + (p_cap - base) * occ**p.power_exponent
+def idle_w(p: NodeProfile) -> float:
+    """在线空载功率（表中 u = 0 的取值）。"""
+    return p.power_w[0][1]
 
 
-def host_power_w(p: NodeProfile, occupancy: float) -> float:
-    occ = min(max(occupancy, 0.0), 1.0)
-    return p.host_idle_w + (p.host_max_w - p.host_idle_w) * occ
+def peak_w(p: NodeProfile) -> float:
+    """满载功率（表中的最大值）。"""
+    return max(y for _, y in p.power_w)
 
 
-def node_power_w(p: NodeProfile, state: str, occupancy: float, cap_ratio: float = 1.0) -> tuple[float, float]:
-    """返回 (服务器 IT 功率, 其中 GPU 总功率)。state ∈ {off, booting, on, draining}。"""
+def cap_limit_w(p: NodeProfile, cap_ratio: float) -> float:
+    """封顶比例 c 下的功率上限：空载 + c × (满载 − 空载)。"""
+    c = min(max(cap_ratio, p.cap_min_ratio), 1.0)
+    return idle_w(p) + c * (peak_w(p) - idle_w(p))
+
+
+def power_w(p: NodeProfile, state: str, occupancy: float, cap_ratio: float = 1.0) -> float:
+    """服务器 IT 功率。state ∈ {off, booting, on, draining}；启动中按在线空载计；功率不超过封顶上限。"""
     if state == "off":
-        return p.standby_w, 0.0
+        return p.off_w
     if state == "booting":
-        g = p.gpus * p.gpu_idle_w
-        return p.host_idle_w + g, g
-    g = p.gpus * gpu_power_w(p, occupancy, cap_ratio)
-    return host_power_w(p, occupancy) + g, g
-
-
-def node_peak_w(p: NodeProfile, cap_ratio: float = 1.0) -> float:
-    return node_power_w(p, "on", 1.0, cap_ratio)[0]
-
-
-def node_idle_w(p: NodeProfile) -> float:
-    return node_power_w(p, "on", 0.0, 1.0)[0]
+        return idle_w(p)
+    v = interp(p.power_w, min(max(occupancy, 0.0), 1.0))
+    return v if cap_ratio >= 1.0 else min(v, cap_limit_w(p, cap_ratio))
 
 
 # ---------------------------------------------------------------- 性能模型
 
 
 def speed_factor(p: NodeProfile, cap_ratio: float) -> float:
-    """功率封顶后的相对速度：cap^β（β<1：解码阶段受显存带宽限制，对频率不敏感）。"""
-    cap = min(max(cap_ratio, p.cap_min_ratio), 1.0)
-    return cap**p.cap_perf_exponent
+    """功率封顶后的相对速度：c ^ cap_perf_exponent（c 截断到 [cap_min_ratio, 1]）。"""
+    c = min(max(cap_ratio, p.cap_min_ratio), 1.0)
+    return c**p.cap_perf_exponent
 
 
 def prefill_s(p: NodeProfile, input_tokens: int, cap_ratio: float = 1.0) -> float:
@@ -85,10 +65,7 @@ def prefill_s(p: NodeProfile, input_tokens: int, cap_ratio: float = 1.0) -> floa
 
 
 def tpot_s(p: NodeProfile, occupancy: float, cap_ratio: float = 1.0) -> float:
-    """token 间隔。参数式：d0·(1 + k·occ)；查表式：tpot_curve(occ)。功率封顶时除以相对速度。"""
-    occ = min(max(occupancy, 0.0), 1.0)
-    base = interp(p.tpot_curve, occ) if p.tpot_curve is not None else p.decode_s_per_token * (1.0 + p.decode_slowdown * occ)
-    return base / speed_factor(p, cap_ratio)
+    return interp(p.tpot_s, min(max(occupancy, 0.0), 1.0)) / speed_factor(p, cap_ratio)
 
 
 def service_s(p: NodeProfile, input_tokens: int, output_tokens: int, occupancy: float, cap_ratio: float = 1.0) -> float:
@@ -154,7 +131,3 @@ class SimClock:
     @classmethod
     def from_dict(cls, d: dict) -> "SimClock":
         return cls(start=datetime.fromisoformat(d["start"]), speedup=float(d["speedup"]), epoch_wall=float(d["epoch_wall"]))
-
-
-def diurnal_factor(hour: float, amplitude: float, peak_hour: float) -> float:
-    return max(0.0, 1.0 + amplitude * math.cos(2 * math.pi * (hour - peak_hour) / 24.0))

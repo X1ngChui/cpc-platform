@@ -40,7 +40,7 @@ def test_route_reasons_and_provenance(scn):
 
 
 def test_heterogeneous_pools_with_local_policies(scn):
-    scn.node_profiles["old"] = scn.node_profiles["a100x8"].model_copy(update={"gpu_max_w": 500, "gpu_idle_w": 90})
+    scn.node_profiles["old"] = scn.node_profiles["a100x8"].model_copy(update={"power_w": [(0, 1500), (1, 5500)]})
     for s in scn.sites:
         s.pools = [PoolConfig(id="new", profile="a100x8", count=2), PoolConfig(id="old", profile="old", count=2)]
         s.scheduler.dispatch.policy = "efficient_first"

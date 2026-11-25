@@ -125,7 +125,6 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
     m_e2e = Histogram("cpc_gateway_e2e_seconds", "端到端时延（含注入的广域网时延）", ["source", "site"], buckets=LAT_BUCKETS, registry=reg)
     m_ttft = Histogram("cpc_gateway_ttft_seconds", "首 token 时延（流式请求）", ["source", "site"], buckets=LAT_BUCKETS, registry=reg)
     m_tok = Counter("cpc_gateway_tokens", "token 数", ["source", "site", "kind"], registry=reg)
-    m_energy = Counter("cpc_gateway_energy_est_joules", "站点给出的请求能耗估计（设施侧）", ["source", "site"], registry=reg)
     m_rtt = Gauge("cpc_gateway_wan_rtt_ms", "来源到站点的往返时延（ms）", ["source", "site"], registry=reg)
     m_w = Gauge("cpc_gateway_route_weight", "控制器下发的路由权重", ["source", "site"], registry=reg)
     m_rate = Gauge("cpc_gateway_source_rate", "来源区域到达率（请求/秒）", ["source"], registry=reg)
@@ -191,8 +190,7 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
     app.state.gw = st
     m_policy.labels(pol["policy"].name).set(1)
 
-    def finish(rec: dict, status: int, src: str, sid: str, t0: float, n_in: int, n_out: int | None, ttft: float | None,
-               energy: float | None) -> None:
+    def finish(rec: dict, status: int, src: str, sid: str, t0: float, n_in: int, n_out: int | None, ttft: float | None) -> None:
         e2e = time.monotonic() - t0
         m_req.labels(src, sid, str(status)).inc()
         if status == 200:
@@ -202,8 +200,6 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
                 m_tok.labels(src, sid, "completion").inc(n_out)
             if ttft is not None:
                 m_ttft.labels(src, sid).observe(ttft)
-            if energy is not None:
-                m_energy.labels(src, sid).inc(energy)
             if n_out is not None:
                 if ttft is not None:
                     tpot = (e2e - ttft) / max(n_out - 1, 1)
@@ -212,7 +208,7 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
                     ok = e2e <= scn.slo.ttft_s + n_out * scn.slo.tpot_s
                 m_slo.labels(src, sid, "met" if ok else "violated").inc()
                 rec["slo_ok"] = ok
-        rec.update(status=status, e2e_s=round(e2e, 4), ttft_s=None if ttft is None else round(ttft, 4), energy_est_j=energy)
+        rec.update(status=status, e2e_s=round(e2e, 4), ttft_s=None if ttft is None else round(ttft, 4))
         writer.write(rec)
 
     def reject(rec: dict, src: str, status: int, body: dict) -> JSONResponse:
@@ -299,8 +295,7 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
             if not stream:
                 if rtt_s:
                     await asyncio.sleep(rtt_s / 2)
-                energy = float(r.headers["x-cpc-energy-est-j"]) if "x-cpc-energy-est-j" in r.headers else None
-                finish(rec, r.status_code, src, sid, t0, n_in, n_out, None, energy)
+                finish(rec, r.status_code, src, sid, t0, n_in, n_out, None)
                 try:
                     content = r.json()
                 except ValueError:
@@ -322,7 +317,7 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
                                 extra={"event": "stream_interrupted", "site": sid, "request": req.id})
                 finally:
                     await r.aclose()
-                    finish(rec, r.status_code if "stream_error" not in rec else 502, src, sid, t0, n_in, n_out, ttft, None)
+                    finish(rec, r.status_code if "stream_error" not in rec else 502, src, sid, t0, n_in, n_out, ttft)
 
             return StreamingResponse(gen(), status_code=r.status_code, media_type="text/event-stream", headers=hdr)
         rec = {**base, "attempts": attempts, "route_reason": decision.reason if decision else None}

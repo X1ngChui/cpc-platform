@@ -6,7 +6,7 @@
 - 缺省把原始文件下载到 `${CPC_DATA_DIR}/raw/<来源>/`，转换结果写到 `${CPC_DATA_DIR}/<数据集名>/`
   （`CPC_DATA_DIR` 未设置时为 `~/.cache/cpc/datasets`）；`--raw` 指定已有的原始文件，`--out` 指定输出目录。
 - 转换中的取舍以命令行参数显式给出（如输出 token 数为 0 的请求是报错还是剔除），并记录在描述文件的 `cpc.conversion` 中。
-- 写出与校验使用 `cpc.datasets.build.write_dataset`；结果可用 `cpc data validate <目录>` 再次检查。
+- 写出与校验使用 `cpc.datasets.build.write_dataset`；结果可用 `cpc data check <目录>` 再次检查。
 
 | 脚本 | 类别 | 原始数据 | 许可 |
 |---|---|---|---|

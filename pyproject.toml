@@ -1,6 +1,6 @@
 [project]
 name = "cpc-platform"
-version = "0.2.0"
+version = "0.3.0.dev0"
 description = "算电协同（能耗感知）跨数据中心 AI 计算任务调度平台"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -21,8 +21,6 @@ dependencies = [
 nvml = ["nvidia-ml-py>=12.535"]
 # 通过 Docker Engine API 启停推理容器（节点开关机）
 docker = ["docker>=7.0"]
-# 通过 Kubernetes API 伸缩副本数
-k8s = ["kubernetes>=29.0"]
 # 仿真结果作图
 analysis = ["matplotlib>=3.8"]
 # 文档编译（Typst 编译器的 Python 封装）

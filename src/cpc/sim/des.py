@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import heapq
 import math
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import partial
 
@@ -27,6 +26,7 @@ from ..datacenter import Action, Datacenter, Job, Overloaded, Server
 from ..datasets.workload import WorkloadTrace, assign_sources, load_workload
 from ..grid.signals import GridModel, GridSignal, SignalUnavailable
 from ..models import prefill_s, rtt_matrix, tpot_s
+from ..results import RunResult
 from ..schemas import DemandSnapshot
 from ..sched import CapacityPolicy, ClusterView, ControlView, RequestInfo, RoutingPolicy, SiteView
 from ..sched.local import make_dispatch, make_power
@@ -37,14 +37,6 @@ SIGNAL_REFRESH_S = 60.0  # 电网信号刷新间隔（仿真秒）
 # 请求状态
 PENDING, SERVED, REJECTED, UNROUTED = 0, 1, 2, 3
 STATUS = {PENDING: "unfinished", SERVED: "served", REJECTED: "rejected", UNROUTED: "unrouted"}
-
-
-@dataclass
-class SimResult:
-    summary: dict
-    timeseries: list[dict]
-    requests: dict[str, np.ndarray]
-    decisions: list[dict]
 
 
 class Simulator:
@@ -209,7 +201,7 @@ class Simulator:
 
     # ------------------------------------------------------------ 主循环
 
-    def run(self) -> SimResult:
+    def run(self) -> RunResult:
         self.push(0.0, CONTROL, None)
         arr = self.trace.t
         i, n = 0, self.n
@@ -246,7 +238,7 @@ class Simulator:
             b += 1
         return self.result()
 
-    def result(self) -> SimResult:
+    def result(self) -> RunResult:
         keys = ("it_kwh", "facility_kwh", "cost", "carbon_kg")
         ts, tot = [], dict.fromkeys(keys, 0.0)
         per_site = {sid: {**dict.fromkeys(keys, 0.0), "requests": 0} for sid in self.sites}
@@ -307,4 +299,4 @@ class Simulator:
             "output_tokens": self.trace.output_tokens[:self.n], "queue_s": self.r_wait, "ttft_s": self.r_ttft,
             "e2e_s": self.r_e2e, "tpot_s": self.r_tpot, "slo_ok": ok,
         }
-        return SimResult(summary, ts, reqs, self.decisions)
+        return RunResult(summary, ts, reqs, self.decisions)

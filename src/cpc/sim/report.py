@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import csv
 import json
-from datetime import datetime, timedelta
 from pathlib import Path
 
 import matplotlib
@@ -16,7 +15,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-from ..config import Scenario  # noqa: E402
+import yaml  # noqa: E402
 
 PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
 INK, INK2, MUTED, GRID, AXIS, SURFACE = "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7", "#fcfcfb"
@@ -37,8 +36,8 @@ def setup_style() -> None:
     })
 
 
-def _site_colors(scn: Scenario) -> dict[str, str]:
-    return {s.id: PALETTE[i % len(PALETTE)] for i, s in enumerate(scn.sites)}
+def _site_colors(sites: list[str]) -> dict[str, str]:
+    return {sid: PALETTE[i % len(PALETTE)] for i, sid in enumerate(sites)}
 
 
 def _label_ends(ax, xs, series: dict[str, list[float]], names: dict[str, str]) -> None:
@@ -55,15 +54,18 @@ def _label_ends(ax, xs, series: dict[str, list[float]], names: dict[str, str]) -
                     fontsize=8, color=INK2, annotation_clip=False)
 
 
-def plot_run(run_dir: str | Path, scn: Scenario) -> Path:
+def plot_run(run_dir: str | Path) -> Path:
+    """单次运行的时间序列图（站点列表取自结果目录中的 run.yaml）。"""
     setup_style()
     run_dir = Path(run_dir)
     with open(run_dir / "timeseries.csv", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     t = [float(r["t_h"]) for r in rows]
-    colors = _site_colors(scn)
-    names = {s.id: s.id for s in scn.sites}
+    meta = yaml.safe_load((run_dir / "run.yaml").read_text(encoding="utf-8"))
+    sites = [s["id"] for s in meta["scenario"]["sites"]]
+    colors = _site_colors(sites)
+    names = {sid: sid for sid in sites}
     fig, axes = plt.subplots(3, 1, figsize=(8.2, 7.4), sharex=True, gridspec_kw={"hspace": 0.32})
     cur = summary.get("currency", "")
     specs = [("it_kw", "各站点 IT 功率（kW）", False), ("nodes", "各站点非关机服务器数（时间平均）", True),
@@ -82,8 +84,9 @@ def plot_run(run_dir: str | Path, scn: Scenario) -> Path:
         _label_ends(ax, t, series, names)
     h, l = axes[0].get_legend_handles_labels()
     fig.legend(h, l, ncol=len(colors), loc="lower center", bbox_to_anchor=(0.5, -0.01), handlelength=1.6)
-    axes[-1].set_xlabel("时刻（h）")
-    axes[-1].set_xticks(range(0, int(max(t)) + 2, 3))
+    axes[-1].set_xlabel("经过时间（h）")
+    if t and max(t) >= 6:
+        axes[-1].set_xticks(range(0, int(max(t)) + 2, 3))
     fig.suptitle(f"路由策略 {summary['routing']} ＋ 容量策略 {summary['capacity']}", x=0.01, ha="left", fontsize=12, color=INK)
     out = run_dir / "run.png"
     fig.savefig(out, bbox_inches="tight")
@@ -118,49 +121,6 @@ def plot_comparison(cmp_dir: str | Path) -> Path:
     axes[0].set_yticks(y)
     axes[0].set_yticklabels(labels, color=INK2)
     out = cmp_dir / "comparison.png"
-    fig.savefig(out, bbox_inches="tight")
-    plt.close(fig)
-    return out
-
-
-def plot_signals(scn: Scenario, day: datetime | None, out: str | Path) -> Path:
-    from ..grid.signals import GridModel, SignalUnavailable
-
-    setup_style()
-    g = GridModel(scn)
-    tz = scn.clock.start.tzinfo
-    day = (day or scn.clock.start).astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
-    ts = [day + timedelta(minutes=10 * i) for i in range(24 * 6 + 1)]
-    hours = [i / 6 for i in range(len(ts))]
-    colors = _site_colors(scn)
-    names = {s.id: f"{s.id}（{s.name}）" for s in scn.sites}
-    fig, axes = plt.subplots(2, 1, figsize=(8.2, 5.6), sharex=True, gridspec_kw={"hspace": 0.3})
-    src = g.sources()
-    for key, ax, title in (("price", axes[0], f"电价（{g.currency}/kWh；{src['price']}）"),
-                           ("carbon", axes[1], f"碳强度（kgCO2/kWh；{src['carbon']}）")):
-        series = {}
-        for sid in colors:
-            ys = []
-            for t in ts:
-                try:
-                    x = g.signal(sid, t)
-                    ys.append(x.price if key == "price" else x.carbon_intensity)
-                except SignalUnavailable:
-                    ys.append(float("nan"))  # 数据缺失的时刻不绘制
-            series[sid] = ys
-            if key == "price":
-                ax.step(hours, ys, where="post", color=colors[sid], label=names[sid])
-            else:
-                ax.plot(hours, ys, color=colors[sid], label=names[sid])
-        ax.set_title(title, fontsize=10)
-        ax.set_ylim(bottom=0)
-    h, l = axes[0].get_legend_handles_labels()
-    fig.legend(h, l, ncol=len(colors), loc="lower center", bbox_to_anchor=(0.5, -0.04), handlelength=1.6)
-    axes[1].set_xlabel(f"时刻（h），{day:%Y-%m-%d}")
-    axes[1].set_xticks(range(0, 25, 3))
-    axes[1].set_xlim(0, 24)
-    out = Path(out)
-    out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     return out

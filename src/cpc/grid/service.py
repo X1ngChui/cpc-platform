@@ -3,7 +3,6 @@
 对外提供：
 - GET  /v1/clock                     信号时钟（其他服务据此同步）
 - GET  /v1/signals[?at=ISO时间]       各站点当前（或指定时刻）的电价、碳强度、功率上限；信号不可用的站点列入 missing
-- GET  /v1/forecast?site=&hours=24   某站点未来若干小时的逐时信号
 - GET  /v1/events  POST /v1/events  DELETE /v1/events   需求响应事件的查询、注入与清除
 - GET  /healthz、/readyz              存活检查；就绪检查（数据加载与校验在启动时完成，服务运行即就绪）
 - GET  /metrics                      Prometheus 指标（cpc_grid_*）
@@ -95,16 +94,6 @@ def create_app(scn: Scenario, clock: SimClock | None = None) -> FastAPI:
         signals, missing = model.snapshot(t)
         return {"time": t.isoformat(), "signals": {k: v.model_dump(mode="json") for k, v in signals.items()},
                 "missing": missing, "sources": model.sources()}
-
-    @app.get("/v1/forecast")
-    def forecast(site: str, hours: float = 24, step_min: int = 60) -> dict:
-        try:
-            scn.site(site)
-        except KeyError:
-            raise HTTPException(404, f"unknown site {site}")
-        t0 = clock.now().replace(minute=0, second=0, microsecond=0)
-        return {"site": site, "points": [None if s is None else s.model_dump(mode="json")
-                                         for s in model.forecast(site, t0, hours, step_min)]}
 
     @app.get("/v1/events")
     def list_events() -> list[dict]:

@@ -58,12 +58,34 @@ def make_body(a: Arrival, rng: random.Random, stream: bool, model: str = "cpc") 
 
 async def run(gateway: str, scn: Scenario, duration_s: float, grid: str | None = None, stream: bool = True,
               out: str | None = None, model: str = "cpc", max_concurrency: int = 4000) -> dict:
+    """回放负载并返回汇总；out 给出时把逐请求记录写为 JSONL。"""
+    trace, results = await replay(gateway, scn, duration_s, grid, stream, model, max_concurrency)
+    summary = summarize(results, scn, stream)
+    summary["workload"] = trace.ref
+    if out:
+        p = Path(out)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            for r in results:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    return summary
+
+
+async def replay(gateway: str, scn: Scenario, duration_s: float, grid: str | None = None, stream: bool = True,
+                 model: str = "cpc", max_concurrency: int = 4000, trace: WorkloadTrace | None = None,
+                 ) -> tuple[WorkloadTrace, list[dict]]:
+    """按变换后 trace 的相对时间回放请求，返回负载与逐请求记录（按到达顺序）。trace 缺省时按场景加载。
+
+    记录字段：t（计划到达时间，秒）、source、n_in、n_out、status（HTTP 状态码；连接失败为 -1）、site、server、
+    route_reason、ttft_s（流式请求）、e2e_s、error。
+    """
     async with httpx.AsyncClient(timeout=httpx.Timeout(900.0, connect=10.0),
                                  limits=httpx.Limits(max_connections=max_concurrency, max_keepalive_connections=500),
                                  trust_env=False) as client:
         if grid:
             await sync_clock(client, grid, 10.0)  # 确认平台的电网信号服务可达（与其他服务使用同一信号时钟）
-        trace = load_workload(scn)
+        if trace is None:
+            trace = load_workload(scn)
         if trace.duration_s < duration_s:
             raise ValueError(f"负载 {trace.ref} 变换后只覆盖 {trace.duration_s:.0f} s，短于压测时长 {duration_s:.0f} s")
         arrivals = arrivals_from(trace, scn, duration_s)
@@ -85,6 +107,7 @@ async def run(gateway: str, scn: Scenario, duration_s: float, grid: str | None =
                             rec["status"] = r.status_code
                             rec["site"] = r.headers.get("x-cpc-site")
                             rec["route_reason"] = r.headers.get("x-cpc-route-reason")
+                            rec["server"] = r.headers.get("x-cpc-node")
                             async for _ in r.aiter_raw():
                                 if ttft is None:
                                     ttft = time.monotonic() - t0
@@ -93,8 +116,8 @@ async def run(gateway: str, scn: Scenario, duration_s: float, grid: str | None =
                         r = await client.post(url, json=body, headers=a.headers())
                         rec["status"] = r.status_code
                         rec["site"] = r.headers.get("x-cpc-site")
-                        if "x-cpc-energy-est-j" in r.headers:
-                            rec["energy_est_j"] = float(r.headers["x-cpc-energy-est-j"])
+                        rec["route_reason"] = r.headers.get("x-cpc-route-reason")
+                        rec["server"] = r.headers.get("x-cpc-node")
                 except httpx.HTTPError as e:
                     rec["status"] = -1
                     rec["error"] = type(e).__name__
@@ -108,16 +131,8 @@ async def run(gateway: str, scn: Scenario, duration_s: float, grid: str | None =
                 await asyncio.sleep(delay)
             tasks.append(asyncio.create_task(one(a)))
         await asyncio.gather(*tasks)
-
-    summary = summarize(results, scn, stream)
-    summary["workload"] = trace.ref
-    if out:
-        p = Path(out)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, "w", encoding="utf-8") as f:
-            for r in results:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    return summary
+    results.sort(key=lambda r: r["t"])
+    return trace, results
 
 
 def summarize(results: list[dict], scn: Scenario, stream: bool) -> dict:

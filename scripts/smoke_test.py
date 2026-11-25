@@ -12,7 +12,7 @@
 1. 各服务就绪（/readyz）；
 2. 压测请求全部成功；
 3. 控制器完成决策并下发指令；
-4. 站点导出 DCGM 兼容功率指标、设施功率指标，电网信号服务导出电价与碳强度，真实站点传感器正常；
+4. 站点导出服务器功率与设施功率指标（真实服务器另有 DCGM 兼容的加速卡指标），电网信号服务导出电价与碳强度；
 5. 需求响应事件生效后站点在线服务器与设施功率不超过上限；
 6. 传感器故障：lab 的功率标记为缺失并在状态与指标中报告，lab 仍正常服务；
 7. 站点故障：停止站点 sh 的进程后，网关与控制器将其标记为不可用并排除，其余站点正常服务。
@@ -198,12 +198,14 @@ def basic_checks(scn, ep, args, dr_site: str, real_site: str | None) -> None:
 
     print("4. 能耗感知指标")
     m = http.get(ep.sites[dr_site] + "/metrics").text
-    check("DCGM_FI_DEV_POWER_USAGE{" in m, "站点导出 DCGM 兼容 GPU 功率指标")
+    check("cpc_node_it_power_watts{" in m, "站点导出服务器功率指标")
     check("cpc_site_facility_power_watts{" in m, "站点导出设施功率指标")
     g = http.get(ep.grid + "/metrics").text
     check("cpc_grid_price_per_kwh{" in g and "cpc_grid_carbon_intensity_kg_per_kwh{" in g, "电网信号服务导出电价与碳强度")
     if real_site:
         check(metric(ep.sites[real_site], "cpc_sensor_up", site=real_site, sensor="meter") == 1, f"真实站点 {real_site} 的功率计正常")
+        check("DCGM_FI_DEV_POWER_USAGE{" in http.get(ep.sites[real_site] + "/metrics").text,
+              f"真实站点 {real_site} 导出 DCGM 兼容的加速卡功率指标")
 
     print("5. 需求响应事件")
     snap = http.get(ep.sites[dr_site] + "/state").json()

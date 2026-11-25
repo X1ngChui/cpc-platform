@@ -28,8 +28,7 @@ def resource_file(d: Descriptor, r: Resource) -> Path:
     """资源的本地文件；不存在时报错。"""
     p = d.local_path(r)
     if not p.is_file():
-        hint = f"运行 cpc data fetch {d.file}" if r.is_remote else "检查数据集目录"
-        raise DatasetError(f"数据集 {d.ref} 的资源 {r.name} 缺少文件 {p}；{hint}")
+        raise DatasetError(f"数据集 {d.ref} 的资源 {r.name} 缺少文件 {p}")
     return p
 
 

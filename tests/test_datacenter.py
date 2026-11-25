@@ -6,12 +6,12 @@ import pytest
 
 from cpc.config import NodeProfile, PoolConfig, SiteConfig
 from cpc.datacenter import Datacenter, Job, Overloaded
-from cpc.models import node_power_w
+from cpc.models import power_w
 from cpc.schemas import CapacityTarget
 from cpc.sched import RequestInfo, make_dispatch, make_power
 
-FAST = NodeProfile(gpus=1, slots=2, gpu_idle_w=50, gpu_max_w=300, host_idle_w=100, host_max_w=200, boot_s=10)
-SLOW = NodeProfile(gpus=1, slots=2, gpu_idle_w=80, gpu_max_w=600, host_idle_w=100, host_max_w=200, boot_s=10)
+FAST = NodeProfile(slots=2, power_w=[(0, 150), (1, 500)], tpot_s=[(0, 0.02), (1, 0.03)], prefill_tokens_per_s=1e4, boot_s=10)
+SLOW = NodeProfile(slots=2, power_w=[(0, 180), (1, 800)], tpot_s=[(0, 0.02), (1, 0.03)], prefill_tokens_per_s=1e4, boot_s=10)
 
 
 def make_dc(pools=(("a", "fast", 2),), dispatch="least_loaded", power="ordered", qlps=1.0, **kw):
@@ -79,7 +79,7 @@ def test_capacity_drain_boot_and_power():
 def test_energy_metering_and_missing_power():
     dc, _, _ = make_dc(pools=(("a", "fast", 1),))
     s = dc.servers[0]
-    idle = node_power_w(FAST, "on", 0.0)[0]
+    idle = power_w(FAST, "on", 0.0)
     m = dc.meter(10.0)
     assert m.energy_j == pytest.approx(idle * 10) and m.live_s == 10.0
     s.model_power = False  # 改为实测：驱动方在 advance 之后写入读数

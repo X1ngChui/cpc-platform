@@ -14,7 +14,7 @@ from cpc.cli import main as cli_main
 from cpc.datasets import DatasetError, expand, load_descriptor
 from cpc.datasets.build import write_dataset
 from cpc.datasets.grid import SignalSet, SignalUnavailable
-from cpc.datasets.power import calibrate, load_points
+from cpc.datasets.power import load_points, profile_from_points
 from cpc.datasets.table import validate
 from cpc.datasets.workload import TraceTransform, load_trace
 
@@ -170,24 +170,28 @@ def test_power_profile_calibration():
     d = load_descriptor(DATA / "power-test")
     pts = load_points(d, {"device": "X1"})
     assert len(pts) == 4 and pts[0].attrs == {}
-    cal = calibrate(pts, slots=64)
-    p = cal.params
-    assert p["gpus"] == 4 and p["slots"] == 64 and p["gpu_active_min_w"] < p["gpu_max_w"]
-    assert 0 < p["decode_s_per_token"] < 0.03 and cal.fit["points"] == 4
+    p = profile_from_points(pts, slots=64, idle_w=500, host_w=100, prefill_tokens_per_s=9000, boot_s=30)
+    assert p["power_w"][0] == [0.0, 500] and p["power_w"][1] == [0.125, 1700.0] and p["power_w"][-1] == [1.0, 2450.0]
+    assert p["tpot_s"][0] == [0.125, 0.021] and p["slots"] == 64 and p["boot_s"] == 30
+    from cpc.config import NodeProfile
+
+    NodeProfile.model_validate(p)  # 生成的表可直接写入场景
     with pytest.raises(DatasetError, match="同一组"):
-        calibrate(load_points(d), slots=64)
+        profile_from_points(load_points(d), slots=64, idle_w=500)
 
 
 # ------------------------------------------------------------------ 命令行
 
 
 def test_cli_data_commands(capsys):
-    cli_main(["data", "validate", str(DATA / "power-test"), str(DATA / "cn-grid-2026-07")])
+    cli_main(["data", "check", str(DATA / "power-test"), str(DATA / "cn-grid-2026-07")])
     out = capsys.readouterr().out
-    assert "power-test@1（power_profile）符合规范" in out and "signals 1029 行" in out
-    cli_main(["data", "summary", str(DATA / "cn-grid-2026-07")])
-    assert "inner_mongolia" in capsys.readouterr().out
-    cli_main(["data", "calibrate", str(DATA / "power-test"), "--where", "device=X1", "device_count=4", "--slots", "64"])
-    assert '"gpu_active_min_w"' in capsys.readouterr().out
+    assert "power-test@1（power_profile）符合规范" in out and "signals 1029 行" in out and "inner_mongolia" in out
+    cli_main(["data", "show", str(DATA / "power-test")])
+    assert '"licenses"' in capsys.readouterr().out
+    cli_main(["profile", str(DATA / "power-test"), "--where", "device=X1", "device_count=4", "--slots", "64",
+              "--idle-w", "500", "--name", "x1"])
+    out = capsys.readouterr().out
+    assert out.startswith("x1:") and "- [0.0, 500.0]" in out and "须补充" in out
     cli_main(["data", "kinds"])
     assert "prefix_hashes" in capsys.readouterr().out

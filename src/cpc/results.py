@@ -1,11 +1,11 @@
 """运行结果数据包与实验描述。
 
-一次运行（仿真）的结果写入一个目录，构成一个 Data Package：
+一次运行（仿真 cpc sim / cpc run，或实验 cpc live）的结果写入一个目录，构成一个 Data Package：
     datapackage.yaml   描述文件：资源、字段与出处（cpc.kind = run_result）
-    run.yaml           运行描述：场景（展开后的完整内容）、策略与参数、仿真时长、数据集引用、平台版本、开始时间、耗时
+    run.yaml           运行描述：运行方式（simulation / live）、场景（展开后的完整内容）、策略与参数、时长、平台版本、创建时间
     summary.json       汇总指标
     timeseries.csv     按时间片的各站点 IT 功率、在线服务器数、到达率与电网信号
-    requests.parquet   逐请求记录（到达时间、来源、站点、服务器、状态、路由原因、时延、是否满足 SLO）
+    requests.parquet   逐请求记录（到达时间、来源、站点、状态、路由原因、时延、是否满足 SLO）
     decisions.jsonl    容量策略的逐周期决策
 
 实验描述（cpc run）：一个场景 + 若干变体，每个变体覆盖策略或负载参数；各变体独立运行，结果写入 <out>/<变体名>/，
@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import json
 import platform
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,29 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import __version__
 from .config import ConfigError, PolicyConfig, Scenario
+
+@dataclass
+class RunResult:
+    """一次运行的结果：汇总、时间序列（每个时间片一行）、逐请求记录（列名 → 数组）与容量决策。"""
+
+    summary: dict
+    timeseries: list[dict]
+    requests: dict[str, np.ndarray]
+    decisions: list[dict]
+
+
+def read_run(path: str | Path) -> dict:
+    """读取结果数据包：返回 summary（dict）、run（dict）、requests（pyarrow.Table）、timeseries（行列表）、decisions（列表）。"""
+    d = Path(path)
+    if not (d / "summary.json").is_file():
+        raise FileNotFoundError(f"{d} 不是结果目录（缺少 summary.json）")
+    with open(d / "timeseries.csv", encoding="utf-8") as f:
+        ts = list(csv.DictReader(f))
+    decisions = [json.loads(x) for x in (d / "decisions.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
+    return {"summary": json.loads((d / "summary.json").read_text(encoding="utf-8")),
+            "run": yaml.safe_load((d / "run.yaml").read_text(encoding="utf-8")),
+            "requests": pq.read_table(d / "requests.parquet"), "timeseries": ts, "decisions": decisions}
+
 
 COMPARE_KEYS = ["variant", "routing", "capacity", "arrived", "served", "rejected", "unrouted", "slo_attainment", "ttft_p99_s",
                 "facility_kwh", "cost", "currency", "carbon_kg", "wh_per_request", "signal_coverage"]
@@ -82,7 +106,7 @@ def _fields(table: pa.Table) -> list[dict]:
 
 
 def write_run(out: str | Path, res, scn: Scenario, run: dict) -> Path:
-    """写出一次运行的结果数据包。res 为 SimResult；run 为运行描述（策略、时长等）。"""
+    """写出一次运行的结果数据包。res 为 RunResult；run 为运行描述（运行方式、策略、时长等）。"""
     d = Path(out)
     d.mkdir(parents=True, exist_ok=True)
     (d / "summary.json").write_text(json.dumps(res.summary, ensure_ascii=False, indent=2), encoding="utf-8")

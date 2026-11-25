@@ -5,7 +5,7 @@
   2. 检查输入完整性：状态不可达的站点排除在本周期之外（记入 excluded）；没有可用站点，或策略声明所需的输入
      （signals / demand）缺失或不完整时，跳过本周期并记录原因，不以缺省输入继续决策；
   3. 决策：调用容量策略 decide(view) → 各站点目标在线节点数、功率封顶比例、（可选）路由权重；
-  4. 执行：通过执行器下发到站点代理（或 Kubernetes），把路由权重下发到网关；
+  4. 执行：把数据中心指令下发到各站点代理（POST /admin/capacity），把路由权重下发到网关；
   5. 记录：决策日志（JSONL，含 result = applied / skipped 与原因）与 Prometheus 指标。
 
 启动：须在期限内从电网信号服务同步信号时钟，否则启动失败。
@@ -37,7 +37,6 @@ from ..health import HealthBoard, describe
 from ..models import SimClock, rtt_matrix
 from ..schemas import DemandSnapshot, SiteSnapshot
 from ..sched import ControlView, make_capacity
-from .actuators import make_actuator
 
 log = logging.getLogger("cpc.controller")
 
@@ -48,14 +47,22 @@ class PolicyBody(BaseModel):
 
 
 def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: dict | None = None,
-               interval_s: float | None = None, log_path: str | None = None, actuator: str = "site-agent",
-               k8s_namespace: str = "cpc", k8s_template: str = "vllm-{site}", k8s_auth: str = "incluster",
-               startup_timeout_s: float = 30.0, transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
+               interval_s: float | None = None, log_path: str | None = None, startup_timeout_s: float = 30.0, transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
     """transport 用于测试中注入故障（httpx.MockTransport）；缺省为真实网络。"""
     pol = {"policy": make_capacity(policy or scn.scheduler.capacity.policy, params if policy else scn.scheduler.capacity.params)}
     interval = interval_s or scn.scheduler.control_interval_s
     client = httpx.AsyncClient(timeout=5.0, headers=admin_headers(), trust_env=False, transport=transport)  # 内部通信不走系统代理
-    act = make_actuator(actuator, ep.sites, client, k8s_namespace, k8s_template, k8s_auth)
+
+    async def send(site: str, target) -> tuple[bool, str | None]:
+        """向站点代理下发指令；返回（是否成功，失败原因）。"""
+        try:
+            r = await client.post(ep.sites[site] + "/admin/capacity", json=target.model_dump(), timeout=5.0)
+        except httpx.HTTPError as e:
+            return False, describe(e)
+        if r.status_code != 200:
+            return False, f"HTTP {r.status_code}: {r.text[:200]}"
+        return True, None
+
     writer = JsonlWriter(log_path)
     rtt = rtt_matrix(scn)
     min_active = {s.id: s.min_active for s in scn.sites}
@@ -151,7 +158,7 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
         c_dec.labels(pol["policy"].name).inc()
         applied: dict[str, dict] = {}
         for sid, tgt in plan.targets.items():
-            ok, err = await act.apply(sid, tgt)
+            ok, err = await send(sid, tgt)
             applied[sid] = {"ok": ok, "error": err}
             if not ok:
                 c_apply.labels(sid).inc()
@@ -225,7 +232,7 @@ def create_app(scn: Scenario, ep: Endpoints, policy: str | None = None, params: 
     @app.get("/state")
     def state() -> dict:
         return {"policy": pol["policy"].name, "requires": sorted(pol["policy"].requires), "interval_s": interval,
-                "actuator": act.name, "upstreams": board.snapshot(), "last": last["record"]}
+                "upstreams": board.snapshot(), "last": last["record"]}
 
     @app.post("/admin/step", dependencies=[Depends(require_admin)])
     async def force_step() -> dict:

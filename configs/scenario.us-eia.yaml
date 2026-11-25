@@ -17,46 +17,17 @@ sources:
   - {id: central, name: Dallas,      lat: 32.78, lon: -96.80,  share: 0.25}
   - {id: east,    name: New York,    lat: 40.71, lon: -74.01,  share: 0.40}
 
-node_profiles:
+node_profiles:            # 同 configs/scenario.yaml
   h100x8:
-    # 8×H100 服务器运行 Llama-3.1-405B-Instruct-FP8。在服务时的功率与 token 间隔由 ML.ENERGY Benchmark v3 标定：
-    #   cpc data calibrate ${CPC_DATA_DIR}/mlenergy-benchmark-v3-llm --slots 128 --where device=H100 device_count=8 \
-    #       model=meta-llama/Llama-3.1-405B-Instruct-FP8 task=lm-arena-chat
-    #   6 次测量（并发 8–128），单卡功率 RMSE 5.4 W，token 间隔 RMSE 0.69 ms。
-    gpus: 8
-    gpu_model: H100
+    # 8×H100 服务器运行 Llama-3.1-405B-Instruct-FP8。表由 ML.ENERGY Benchmark v3 的测量生成：
+    #   cpc profile ${CPC_DATA_DIR}/mlenergy-benchmark-v3-llm --slots 128 --idle-w 1360 --host-w 800 \
+    #       --where device=H100 device_count=8 model=meta-llama/Llama-3.1-405B-Instruct-FP8 task=lm-arena-chat
+    # 在线空载功率（8 × 70 W + 主机 800 W）、主机功率、预填充吞吐与开机时间为示意值。
+    description: 8×H100，Llama-3.1-405B-Instruct-FP8
     slots: 128
-    gpu_active_min_w: 306.4
-    gpu_max_w: 581.6
-    power_exponent: 0.38
-    decode_s_per_token: 0.03163
-    decode_slowdown: 1.039
-    # 以下参数不在测量数据中，为示意值：
-    gpu_idle_w: 70                     # 单卡空载功率（无请求）
-    host_idle_w: 800                   # 主机部分（CPU、内存、风扇等）
-    host_max_w: 1600
+    power_w: [[0, 1360], [0.0624, 4060.4], [0.1246, 4184.3], [0.2493, 4544.3], [0.4989, 4962.1], [0.7477, 5274.6], [0.9973, 5406.1]]
+    tpot_s: [[0.0624, 0.03406], [0.1246, 0.03565], [0.2493, 0.04039], [0.4989, 0.04689], [0.7477, 0.05561], [0.9973, 0.06527]]
     prefill_tokens_per_s: 5000
-    cap_min_ratio: 0.5
-    cap_perf_exponent: 0.4
-    boot_s: 180                        # 开机并加载模型到可服务的时间
-  b200x4:
-    # 4×B200 服务器运行同一模型（Llama-3.1-405B-Instruct-FP8），标定方法同上（device=B200 device_count=4）：
-    #   5 次测量（并发 8–128），单卡功率 RMSE 8.9 W，token 间隔 RMSE 0.61 ms。
-    gpus: 4
-    gpu_model: B200
-    slots: 128
-    gpu_active_min_w: 836.2
-    gpu_max_w: 964.7
-    power_exponent: 0.73
-    decode_s_per_token: 0.02913
-    decode_slowdown: 0.987
-    # 示意值：
-    gpu_idle_w: 140
-    host_idle_w: 600
-    host_max_w: 1200
-    prefill_tokens_per_s: 8000
-    cap_min_ratio: 0.5
-    cap_perf_exponent: 0.4
     boot_s: 180
 
 sites:

@@ -22,22 +22,20 @@ sources:
   - {id: north, name: 北京, lat: 39.90, lon: 116.40, share: 0.25}
 
 node_profiles:
-  gpu-server:              # 真实服务器：GPU 功率实测；以下参数只用于全局策略的容量与功率估计
-    gpus: 1
-    gpu_model: measured
-    host_idle_w: 150
-    host_max_w: 250
-    cap_min_ratio: 0.6
-  emulated-a10:            # 仿真服务器：与真实服务器同级别的单卡服务器（示意参数，宜用真实服务器的测量数据标定）
-    gpus: 1
-    gpu_model: A10-24GB
-    gpu_idle_w: 20
-    gpu_max_w: 150
-    host_idle_w: 150
-    host_max_w: 250
+  gpu-server:              # 真实服务器：功率实测；表只用于全局策略的容量与功率估计及仿真（示意值，宜用实测数据生成）
+    description: 单卡推理服务器（示意值）
     slots: 32
+    power_w: [[0, 170], [0.25, 260], [1, 400]]
+    tpot_s: [[0, 0.03], [1, 0.05]]
     prefill_tokens_per_s: 4000
-    decode_s_per_token: 0.03
+    boot_s: 90
+    cap_min_ratio: 0.6
+  emulated-a10:            # 仿真服务器：与真实服务器同级别（示意值，宜用真实服务器的测量数据生成）
+    description: 单卡 A10 级服务器（示意值）
+    slots: 32
+    power_w: [[0, 170], [0.25, 230], [0.5, 280], [1, 400]]
+    tpot_s: [[0, 0.03], [1, 0.048]]
+    prefill_tokens_per_s: 4000
     boot_s: 90
 
 sites:

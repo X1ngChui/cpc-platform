@@ -165,21 +165,6 @@ class RoundRobin(RoutingPolicy):
         return RouteDecision.to(cands[next(self._it) % len(cands)].id, "round_robin")
 
 
-@register_routing("random")
-class RandomPolicy(RoutingPolicy):
-    """均匀随机（基线）。"""
-
-    def __init__(self, seed: int = 0, **params):
-        super().__init__(**params)
-        self.rng = random.Random(seed)
-
-    def choose(self, req, view, exclude=()):
-        cands = sorted(self.candidates(view, exclude), key=lambda sv: sv.id)
-        if not cands:
-            return RouteDecision.reject("no_available_site")
-        return RouteDecision.to(self.rng.choice(cands).id, "random")
-
-
 @register_routing("least_loaded")
 class LeastLoaded(RoutingPolicy):
     """最小负载率（基线）。"""

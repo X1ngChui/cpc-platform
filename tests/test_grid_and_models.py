@@ -7,7 +7,7 @@ import pytest
 from cpc.config import CST, DREvent, ExtraSignal
 from cpc.datasets import DatasetError
 from cpc.grid.signals import GridModel
-from cpc.models import node_power_w, rtt_matrix, service_s, speed_factor
+from cpc.models import power_w, rtt_matrix, service_s, speed_factor
 
 
 def t(h, m=30, day=15):
@@ -58,12 +58,13 @@ def test_grid_startup_checks(scn):
 
 def test_power_and_perf_models(scn):
     p = scn.node_profiles["a100x8"]
-    idle, _ = node_power_w(p, "on", 0.0)
-    half, _ = node_power_w(p, "on", 0.5)
-    full, _ = node_power_w(p, "on", 1.0)
-    capped, _ = node_power_w(p, "on", 1.0, cap_ratio=0.6)
+    idle = power_w(p, "on", 0.0)
+    half = power_w(p, "on", 0.5)
+    full = power_w(p, "on", 1.0)
+    capped = power_w(p, "on", 1.0, cap_ratio=0.6)
     assert idle < half < full and capped < full
-    assert node_power_w(p, "off", 0.0)[0] == p.standby_w
+    assert power_w(p, "off", 0.0) == p.off_w and power_w(p, "booting", 0.0) == idle == 1280
+    assert capped == pytest.approx(1280 + 0.6 * (4700 - 1280)) and half == pytest.approx(3304.4)
     assert speed_factor(p, 0.6) < 1.0
     assert service_s(p, 800, 200, 1.0) > service_s(p, 800, 200, 0.0)
 
@@ -76,12 +77,14 @@ def test_rtt_matrix(scn):
 
 def test_table_driven_server_model(scn):
     from cpc.config import NodeProfile
-    from cpc.models import gpu_power_w, tpot_s
+    from cpc.models import tpot_s
 
-    p = NodeProfile(gpus=4, gpu_idle_w=100, gpu_power_curve=[(0.1, 800), (0.5, 900), (1.0, 960)],
-                    tpot_curve=[(0.1, 0.03), (1.0, 0.06)])
-    assert gpu_power_w(p, 0.0) == 100 and gpu_power_w(p, 0.3) == pytest.approx(850)
-    assert gpu_power_w(p, 1.0, cap_ratio=0.9) < 960 and gpu_power_w(p, 0.05) == 800  # 低于首点取端点值
-    assert tpot_s(p, 0.55) == pytest.approx(0.045)
+    kw = dict(slots=8, prefill_tokens_per_s=1e4, boot_s=10)
+    p = NodeProfile(power_w=[(0, 100), (0.1, 800), (0.5, 900), (1.0, 960)], tpot_s=[(0.1, 0.03), (1.0, 0.06)], **kw)
+    assert power_w(p, "on", 0.0) == 100 and power_w(p, "on", 0.3) == pytest.approx(850)
+    assert power_w(p, "on", 1.0, cap_ratio=0.9) == pytest.approx(100 + 0.9 * 860) and power_w(p, "on", 0.2, 0.9) == 825
+    assert tpot_s(p, 0.55) == pytest.approx(0.045) and tpot_s(p, 0.0) == 0.03  # 超出表的范围取端点值
     with pytest.raises(ValueError, match="递增"):
-        NodeProfile(gpu_power_curve=[(0.5, 1.0), (0.2, 2.0)])
+        NodeProfile(power_w=[(0, 1.0), (0.5, 2.0), (0.2, 3.0)], tpot_s=[(1, 0.1)], **kw)
+    with pytest.raises(ValueError, match="u = 0|占用率须为 0"):
+        NodeProfile(power_w=[(0.1, 1.0), (1, 2.0)], tpot_s=[(1, 0.1)], **kw)

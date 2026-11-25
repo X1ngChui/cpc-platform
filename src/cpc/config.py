@@ -41,45 +41,46 @@ class PolicyConfig(_Strict):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
-Curve = list[tuple[float, float]]
+Table = list[tuple[float, float]]
+
+
+def _check_table(name: str, t: Table, from_zero: bool) -> None:
+    xs = [x for x, _ in t]
+    if not t or xs != sorted(set(xs)) or xs[0] < 0 or xs[-1] > 1:
+        raise ValueError(f"{name}：占用率须在 [0, 1] 内严格递增，当前为 {xs}")
+    if from_zero and xs[0] != 0:
+        raise ValueError(f"{name}：第一个点的占用率须为 0（在线空载功率），当前为 {xs[0]}")
+    if any(y < 0 for _, y in t):
+        raise ValueError(f"{name}：取值不得为负")
 
 
 class NodeProfile(_Strict):
-    """服务器类型：功率与性能模型参数（参数含义见《平台设计说明书》"服务器模型"一节）。
+    """服务器类型。功率与 token 间隔以随占用率变化的表给出，表中各点之间线性插值。
 
-    在服务时的单卡功率与 token 间隔有两种给法：参数式（gpu_active_min_w、gpu_max_w、power_exponent；
-    decode_s_per_token、decode_slowdown）或查表式（gpu_power_curve、tpot_curve：占用率 → 值的分段线性曲线，
-    通常由 power_profile 数据集的测量直接得到，见 cpc data calibrate --curves）。给出曲线时以曲线为准。
+    占用率 u = 在服务的请求数 / 并发槽数。
+    power_w   [[u, 服务器 IT 功率 W], ...]，第一个点须为 u = 0（在线、没有请求时的功率）；
+    tpot_s    [[u, token 间隔 s], ...]；
+    超出表的范围时取端点值。表可由测量数据生成（cpc profile），也可按任意公式计算后写入。
     """
 
-    gpus: int = 8
-    gpu_model: str = "A100-SXM4-80GB"
-    gpu_idle_w: float = 60.0  # 单卡空载功率（没有在服务的请求）
-    gpu_active_min_w: float | None = None  # 单卡在服务时的功率下限；None 表示取 gpu_idle_w
-    gpu_max_w: float = 400.0  # 单卡满载功率
-    host_idle_w: float = 800.0  # 主机部分（CPU、内存、风扇等）空载功率
-    host_max_w: float = 1500.0  # 主机部分满载功率
-    standby_w: float = 0.0  # 关机状态功率
-    power_exponent: float = 0.7  # GPU 动态功率 ∝ 占用率^α
-    slots: int = 16  # 并发序列数上限（连续批处理的批大小上限）
-    prefill_tokens_per_s: float = 20000.0  # 预填充吞吐
-    decode_s_per_token: float = 0.025  # 低负载时的 token 间隔
-    decode_slowdown: float = 0.6  # 满批时 token 间隔相对低负载的增加比例
-    cap_min_ratio: float = 0.5  # 功率封顶比例下限
-    cap_perf_exponent: float = 0.4  # 速度 ∝ 封顶比例^β
-    boot_s: float = 60.0  # 开机到可服务的时间（秒）
-    gpu_power_curve: Curve | None = None  # [(占用率, 单卡功率 W)]，占用率在 (0, 1] 内递增
-    tpot_curve: Curve | None = None  # [(占用率, token 间隔 s)]
+    description: str = ""  # 说明，如硬件、模型与数据来源
+    slots: int = Field(ge=1)  # 并发槽数（连续批处理的批大小上限）
+    power_w: Table  # 服务器 IT 功率表
+    tpot_s: Table  # token 间隔表
+    prefill_tokens_per_s: float = Field(gt=0)  # 预填充吞吐
+    boot_s: float = Field(ge=0)  # 开机到可服务的时间
+    off_w: float = Field(0.0, ge=0)  # 关机时的功率
+    cap_min_ratio: float = Field(0.5, gt=0, le=1)  # 功率封顶比例的下限
+    cap_perf_exponent: float = Field(0.4, ge=0)  # 封顶后速度 = 封顶比例 ^ 该指数
 
     @model_validator(mode="after")
-    def _curves(self) -> "NodeProfile":
-        for name in ("gpu_power_curve", "tpot_curve"):
-            c = getattr(self, name)
-            if c is None:
-                continue
-            xs = [x for x, _ in c]
-            if len(c) < 2 or xs != sorted(set(xs)) or xs[0] <= 0 or xs[-1] > 1 or any(y <= 0 for _, y in c):
-                raise ValueError(f"{name} 须至少 2 个点，占用率在 (0, 1] 内严格递增，取值为正")
+    def _tables(self) -> "NodeProfile":
+        _check_table("power_w", self.power_w, from_zero=True)
+        _check_table("tpot_s", self.tpot_s, from_zero=False)
+        if len(self.power_w) < 2:
+            raise ValueError("power_w 至少需要 2 个点（空载与至少一个在服务的占用率）")
+        if any(y <= 0 for _, y in self.tpot_s):
+            raise ValueError("tpot_s 的取值须为正")
         return self
 
 
@@ -298,7 +299,7 @@ class SchedulerConfig(_Strict):
     control_interval_s: float = 15.0  # 实验中的容量控制周期
     sim_control_interval_s: float = 300.0  # 仿真中的容量控制周期
     carbon_price_per_kg: float = 0.1  # 碳价（与电价同一货币单位 / kgCO2）
-    queue_limit_per_slot: float = 4.0  # 站点排队上限 = max(在线并发槽数, 最大服务器并发槽数) × 该系数
+    queue_limit_per_slot: float = 4.0  # 站点队列上限 = max(在线并发槽数, 最大单台服务器并发槽数) × 该系数
     rate_window_s: float = Field(60.0, gt=0)  # 站点到达率估计（指数加权）的时间常数
     retry: RetryConfig = RetryConfig()
     state_refresh_s: float = 1.0

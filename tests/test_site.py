@@ -82,7 +82,7 @@ def test_actuation_failure_is_recorded(scn):
 
 
 def test_site_service_api_and_readiness(scn):
-    scn.node_profiles["a100x8"].decode_s_per_token = 0.001
+    scn.node_profiles["a100x8"].tpot_s = [(0, 0.001), (1, 0.002)]
     scn.site("gz").scheduler.dispatch.policy = "affinity"
     with TestClient(create_app(scn, "gz")) as c:
         assert c.get("/healthz").json()["status"] == "alive"
@@ -96,7 +96,7 @@ def test_site_service_api_and_readiness(scn):
         assert len(nodes) == 1  # 请求属性经请求头传给站内派发策略：同一会话落在同一服务器
         r = c.post("/v1/chat/completions", json=body)
         assert r.status_code == 200 and r.json()["usage"]["completion_tokens"] == 8
-        assert r.headers["x-cpc-site"] == "gz" and "x-cpc-energy-est-j" in r.headers
+        assert r.headers["x-cpc-site"] == "gz" and r.headers["x-cpc-node"].startswith("gz-main-")
         # 仿真服务器要求请求给出输出上限：缺失时返回 400，而不是按缺省长度计时
         r = c.post("/v1/chat/completions", json={"model": "x", "messages": [{"role": "user", "content": "hi"}]})
         assert r.status_code == 400 and r.json()["error"]["type"] == "invalid_request_error"
@@ -105,6 +105,7 @@ def test_site_service_api_and_readiness(scn):
         assert data.endswith(b"data: [DONE]\n\n")
         assert c.post("/admin/capacity", json={"active_nodes": 2}).json()["nodes_on"] == 2
         m = c.get("/metrics").text
-        assert "DCGM_FI_DEV_POWER_USAGE{" in m and "cpc_site_facility_power_watts" in m and 'pool="main"' in m
+        assert "cpc_node_it_power_watts{" in m and "cpc_site_facility_power_watts" in m and 'pool="main"' in m
+        assert "DCGM_FI_DEV_POWER_USAGE{" not in m  # 加速卡指标只对实测服务器导出
         st = c.get("/state").json()
         assert st["power_scope"] == "node" and st["energy_coverage"] == pytest.approx(1.0) and st["pools"][0]["total"] == 6

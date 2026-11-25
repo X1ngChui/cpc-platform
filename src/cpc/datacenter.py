@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .config import NodeProfile, SiteConfig, UpstreamConfig
-from .models import node_idle_w, node_peak_w, node_power_w, service_s
+from .models import idle_w, peak_w, power_w, service_s
 from .schemas import CapacityTarget, NodeSnapshot, PoolSnapshot, SiteSnapshot
 from .sched.local import DispatchPolicy, PowerPolicy
 from .sched.routing import RequestInfo
@@ -48,7 +48,6 @@ class Server:
     pool: str
     profile: NodeProfile
     slots: int
-    gpus: int
     upstream: UpstreamConfig | None = None  # 真实服务器（OpenAI 兼容推理实例）；仿真服务器为 None
     model_power: bool = True  # True：功率由服务器模型给出；False：由驱动方写入实测值
     state: str = "off"
@@ -56,11 +55,10 @@ class Server:
     cap_ratio: float = 1.0
     boot_until: float = 0.0
     it_power_w: float | None = 0.0
-    gpu_power_w: float | None = 0.0
+    gpu_power_w: float | None = None  # 加速卡功率（只对实测服务器给出）
     power_missing: list[str] = field(default_factory=list)
     detail: dict = field(default_factory=dict)  # 实测的逐卡读数（驱动方写入，供指标导出）
     energy_j: float = 0.0  # 功率有效区间内的累计 IT 能耗
-    gpu_energy_j: float = 0.0
     measured_s: float = 0.0  # 功率有效的累计时长
     missing_s: float = 0.0  # 功率缺失的累计时长
     live_s: float = 0.0  # 非关机状态的累计时长
@@ -68,8 +66,8 @@ class Server:
     t: float = 0.0  # 能耗已积分到的时刻
 
     def __post_init__(self) -> None:
-        self.peak_w = node_peak_w(self.profile)
-        self.idle_w = node_idle_w(self.profile)
+        self.peak_w = peak_w(self.profile)
+        self.idle_w = idle_w(self.profile)
 
     @property
     def accepting(self) -> bool:
@@ -137,12 +135,11 @@ class Datacenter:
         for p in cfg.pools:
             prof = profiles[p.profile]
             if p.backend == "emulated":
-                self.servers += [Server(f"{cfg.id}-{p.id}-{i:02d}", p.id, prof, prof.slots, prof.gpus) for i in range(p.count)]
+                self.servers += [Server(f"{cfg.id}-{p.id}-{i:02d}", p.id, prof, prof.slots) for i in range(p.count)]
             elif emulate_all:
-                self.servers += [Server(u.id, p.id, prof, u.max_inflight, len(u.device_names)) for u in p.upstreams]
+                self.servers += [Server(u.id, p.id, prof, u.max_inflight) for u in p.upstreams]
             else:
-                self.servers += [Server(u.id, p.id, prof, u.max_inflight, len(u.device_names), upstream=u, model_power=False)
-                                 for u in p.upstreams]
+                self.servers += [Server(u.id, p.id, prof, u.max_inflight, upstream=u, model_power=False) for u in p.upstreams]
         self.by_id = {s.id: s for s in self.servers}
         n_on = len(self.servers) if initial_active is None else max(0, min(int(initial_active), len(self.servers)))
         for i, s in enumerate(self.servers):
@@ -182,8 +179,6 @@ class Datacenter:
             else:
                 s.energy_j += s.it_power_w * dt
                 s.measured_s += dt
-            if s.gpu_power_w is not None:
-                s.gpu_energy_j += s.gpu_power_w * dt
             if s.state != "off":
                 s.live_s += dt
             s.t = now
@@ -191,7 +186,7 @@ class Datacenter:
     @staticmethod
     def _repower(s: Server) -> None:
         if s.model_power:
-            s.it_power_w, s.gpu_power_w = node_power_w(s.profile, s.state, s.occupancy, s.cap_ratio)
+            s.it_power_w = power_w(s.profile, s.state, s.occupancy, s.cap_ratio)
 
     def advance(self, now: float) -> None:
         """把全部服务器的能耗积分到 now（实测服务器写入新读数之前调用）。"""

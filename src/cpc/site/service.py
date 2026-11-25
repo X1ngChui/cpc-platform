@@ -10,7 +10,7 @@
 - GET  /readyz                                  就绪检查（启动检查已通过，状态采样正常运行）
 - GET  /metrics                                 Prometheus 指标：
       DCGM_FI_DEV_POWER_USAGE / DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION / DCGM_FI_DEV_GPU_UTIL
-      （与 NVIDIA dcgm-exporter 同名）、cpc_site_* / cpc_node_* 指标、cpc_sensor_up / cpc_sensor_errors_total。
+      （真实服务器的加速卡，与 NVIDIA dcgm-exporter 同名）、cpc_site_* / cpc_node_* 指标、cpc_sensor_up / cpc_sensor_errors_total。
       读数缺失的功率类指标取 NaN。
 
 启动检查（失败则进程退出）：真实服务器的功率传感器可用且覆盖其声明的加速卡；配置的容器可访问；开启功率封顶时传感器支持封顶。
@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import time
 from contextlib import asynccontextmanager
 
@@ -118,15 +117,11 @@ def create_app(scn: Scenario, site_id: str, tick_s: float = 0.5, enable_power_ca
             m_node_cap.labels(*lv).set(n.cap_ratio)
             m_node_e.labels(*lv).set(n.energy_j)
             m_node_miss.labels(*lv).set(n.missing_s)
-            if n.model_power:  # 仿真服务器：各卡均分 GPU 功率，按占用率给出利用率
-                per = None if n.gpu_power_w is None else n.gpu_power_w / max(n.gpus, 1)
-                live = n.state in ("on", "draining")
-                cards = [(str(i), per, 100.0 * n.occupancy if live else 0.0, n.profile.gpu_model, n.gpu_energy_j * 1000.0 / max(n.gpus, 1))
-                         for i in range(n.gpus)]
-            else:
-                d = n.detail
-                cards = [(dev.removeprefix("gpu"), p, u, mdl, e) for dev, p, u, mdl, e in
-                         zip(node_devices(n), d.get("power_w", []), d.get("util_pct", []), d.get("model", []), d.get("energy_mj", []))]
+            if n.model_power:
+                continue  # 加速卡指标只对实测服务器导出
+            d = n.detail
+            cards = [(dev.removeprefix("gpu"), p, u, mdl, e) for dev, p, u, mdl, e in
+                     zip(node_devices(n), d.get("power_w", []), d.get("util_pct", []), d.get("model", []), d.get("energy_mj", []))]
             for g, p, u, mdl, e in cards:
                 lbl = (g, f"GPU-{cfg.id}-{n.id}-{g}", mdl, n.id, cfg.id)
                 m_gpu_p.labels(*lbl).set(_v(p))
@@ -236,8 +231,6 @@ def create_app(scn: Scenario, site_id: str, tick_s: float = 0.5, enable_power_ca
 
             return StreamingResponse(gen(), media_type="text/event-stream", headers=hdr)
         t1 = time.monotonic()
-        p_node = node.it_power_w
-        share = max(node.busy, 1)
         try:
             res = await executor.of(node).complete(node, path, body)
         finally:
@@ -247,9 +240,6 @@ def create_app(scn: Scenario, site_id: str, tick_s: float = 0.5, enable_power_ca
         m_req.labels(cfg.id, "ok" if res.status == 200 else "error").inc()
         m_tok.labels(cfg.id, "prompt").inc(res.prompt_tokens)
         m_tok.labels(cfg.id, "completion").inc(res.completion_tokens)
-        # 单请求能耗的粗略估计（请求开始时的节点功率按在途请求数均摊 × 服务时间 × PUE）；节点功率缺失时不给出
-        if p_node is not None and not math.isnan(p_node):
-            hdr["x-cpc-energy-est-j"] = f"{p_node / share * svc * cfg.pue:.2f}"
         hdr["x-cpc-service-s"] = f"{svc:.4f}"
         return JSONResponse(res.body, status_code=res.status, headers=hdr)
 
