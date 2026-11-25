@@ -2,6 +2,14 @@
 
 Versions follow semantic versioning.
 
+## Unreleased
+
+### Fixed
+
+- `scripts/smoke_test.py` resolves relative `-s` and `-e` paths before it runs `cpc live` in the repository root;
+  the deployment check of the user guide, run in `deploy/cloud/control-stack`, could not read the scenario.
+  `--external` without `-e` is a usage error.
+
 ## v0.4.0 (2026-11-26)
 
 ### Changed

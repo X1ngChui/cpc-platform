@@ -280,6 +280,12 @@ def main() -> None:
     ap.add_argument("--offline", action="store_true", help="base on the test scenario (synthetic workload and committed grid "
                                                            "data; no download)")
     args = ap.parse_args()
+    # cpc live and the services run in the repository root: paths relative to the caller's directory
+    args.scenario = str(Path(args.scenario).resolve())
+    if args.endpoints:
+        args.endpoints = str(Path(args.endpoints).resolve())
+    elif args.external:
+        ap.error("--external needs -e/--endpoints")
     OUT.mkdir(parents=True, exist_ok=True)
 
     if args.external:
