@@ -1,8 +1,8 @@
-# 平台镜像：所有服务（grid / site / gateway / controller / loadgen / nvml-exporter）共用一个镜像，
-# 通过不同的启动命令区分角色。
+# Platform image: all services (grid / site / gateway / controller) share one image and differ by
+# their command.
 #
-# 构建：docker build -t cpc-platform:latest .
-# 国内服务器可指定 PyPI 镜像：docker build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple -t cpc-platform:latest .
+# Build: docker build -t cpc-platform:latest .
+# A PyPI mirror may be given: docker build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple -t cpc-platform:latest .
 
 FROM python:3.12-slim
 
@@ -14,14 +14,14 @@ ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
     CPC_DATA_DIR=/var/lib/cpc/datasets
 
 WORKDIR /app
-# ipmitool：裸金属服务器上经 /dev/ipmi0 读取整机功率（ipmi 传感器）
+# ipmitool: whole-server power through /dev/ipmi0 on bare-metal servers (ipmi sensor)
 RUN apt-get update && apt-get install -y --no-install-recommends ipmitool && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install ".[nvml,docker]"
 COPY configs ./configs
 COPY deploy ./deploy
-# 公开数据集不打包进镜像：需要时把宿主机的数据集缓存目录挂载到 $CPC_DATA_DIR
+# public datasets are not part of the image: mount the dataset directory of the host at $CPC_DATA_DIR
 
 EXPOSE 8080 9000 9100 9300 9400
 ENTRYPOINT ["cpc"]

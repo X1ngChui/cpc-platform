@@ -1,31 +1,31 @@
 province,name,factor_kg_per_kwh,year,source
-beijing,北京,0.5554,2023,生态环境部 国家统计局 公告2025年第47号 表3
-tianjin,天津,0.6796,2023,生态环境部 国家统计局 公告2025年第47号 表3
-hebei,河北,0.6516,2023,生态环境部 国家统计局 公告2025年第47号 表3
-shanxi,山西,0.6634,2023,生态环境部 国家统计局 公告2025年第47号 表3
-inner_mongolia,内蒙古,0.6479,2023,生态环境部 国家统计局 公告2025年第47号 表3
-liaoning,辽宁,0.4878,2023,生态环境部 国家统计局 公告2025年第47号 表3
-jilin,吉林,0.4671,2023,生态环境部 国家统计局 公告2025年第47号 表3
-heilongjiang,黑龙江,0.5229,2023,生态环境部 国家统计局 公告2025年第47号 表3
-shanghai,上海,0.5737,2023,生态环境部 国家统计局 公告2025年第47号 表3
-jiangsu,江苏,0.5827,2023,生态环境部 国家统计局 公告2025年第47号 表3
-zhejiang,浙江,0.4974,2023,生态环境部 国家统计局 公告2025年第47号 表3
-anhui,安徽,0.6553,2023,生态环境部 国家统计局 公告2025年第47号 表3
-fujian,福建,0.4211,2023,生态环境部 国家统计局 公告2025年第47号 表3
-jiangxi,江西,0.5836,2023,生态环境部 国家统计局 公告2025年第47号 表3
-shandong,山东,0.6191,2023,生态环境部 国家统计局 公告2025年第47号 表3
-henan,河南,0.5897,2023,生态环境部 国家统计局 公告2025年第47号 表3
-hubei,湖北,0.4044,2023,生态环境部 国家统计局 公告2025年第47号 表3
-hunan,湖南,0.4976,2023,生态环境部 国家统计局 公告2025年第47号 表3
-guangdong,广东,0.4419,2023,生态环境部 国家统计局 公告2025年第47号 表3
-guangxi,广西,0.4476,2023,生态环境部 国家统计局 公告2025年第47号 表3
-hainan,海南,0.3648,2023,生态环境部 国家统计局 公告2025年第47号 表3
-chongqing,重庆,0.5581,2023,生态环境部 国家统计局 公告2025年第47号 表3
-sichuan,四川,0.1564,2023,生态环境部 国家统计局 公告2025年第47号 表3
-guizhou,贵州,0.5683,2023,生态环境部 国家统计局 公告2025年第47号 表3
-yunnan,云南,0.1333,2023,生态环境部 国家统计局 公告2025年第47号 表3
-shaanxi,陕西,0.6335,2023,生态环境部 国家统计局 公告2025年第47号 表3
-gansu,甘肃,0.4471,2023,生态环境部 国家统计局 公告2025年第47号 表3
-qinghai,青海,0.1796,2023,生态环境部 国家统计局 公告2025年第47号 表3
-ningxia,宁夏,0.6187,2023,生态环境部 国家统计局 公告2025年第47号 表3
-xinjiang,新疆,0.6021,2023,生态环境部 国家统计局 公告2025年第47号 表3
+beijing,Beijing,0.5554,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+tianjin,Tianjin,0.6796,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+hebei,Hebei,0.6516,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+shanxi,Shanxi,0.6634,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+inner_mongolia,Inner Mongolia,0.6479,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+liaoning,Liaoning,0.4878,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+jilin,Jilin,0.4671,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+heilongjiang,Heilongjiang,0.5229,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+shanghai,Shanghai,0.5737,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+jiangsu,Jiangsu,0.5827,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+zhejiang,Zhejiang,0.4974,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+anhui,Anhui,0.6553,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+fujian,Fujian,0.4211,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+jiangxi,Jiangxi,0.5836,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+shandong,Shandong,0.6191,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+henan,Henan,0.5897,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+hubei,Hubei,0.4044,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+hunan,Hunan,0.4976,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+guangdong,Guangdong,0.4419,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+guangxi,Guangxi,0.4476,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+hainan,Hainan,0.3648,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+chongqing,Chongqing,0.5581,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+sichuan,Sichuan,0.1564,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+guizhou,Guizhou,0.5683,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+yunnan,Yunnan,0.1333,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+shaanxi,Shaanxi,0.6335,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+gansu,Gansu,0.4471,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+qinghai,Qinghai,0.1796,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+ningxia,Ningxia,0.6187,2023,MEE and NBS Announcement No. 47 of 2025 Table 3
+xinjiang,Xinjiang,0.6021,2023,MEE and NBS Announcement No. 47 of 2025 Table 3

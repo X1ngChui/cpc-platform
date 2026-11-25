@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm]   # 服务端只面向 Linux x86_64 与 aarch64
+        os: [ubuntu-latest, ubuntu-24.04-arm]   # services target Linux x86_64 and aarch64 only
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -21,7 +21,7 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       - run: python -m pytest
       - name: smoke test (services as separate processes, offline scenario)
-        run: python scripts/smoke_test.py --offline --duration 20   # 测试场景：合成负载与随测试提交的电网数据
+        run: python scripts/smoke_test.py --offline --duration 20   # test scenario: synthetic workload and committed grid data
 
   docs:
     runs-on: ubuntu-latest
@@ -31,7 +31,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
-      - run: python -m pip install "typst>=0.14"   # PDF 插图需要 Typst 0.14 及以上
+      - run: python -m pip install "typst>=0.14"   # PDF figures need Typst 0.14 or later
       - run: python docs/build.py
       - uses: actions/upload-artifact@v4
         with:

@@ -1,37 +1,40 @@
-# 云服务器实验场景示例：3 台租用 GPU 服务器分别作为 3 个站点的真实服务器，另加 1 个只有仿真服务器的站点。
+# Example scenario of a cloud experiment: 3 rented GPU servers are the real servers of 3 sites, and one more
+# site has emulated servers only.
 #
-# - 真实服务器池（backend: openai）：每个 upstream 为一个 vLLM 实例，功率来自站点 measurement 中的传感器（NVML）；
-# - 仿真服务器池（backend: emulated）：服务器由服务器模型仿真，可与真实服务器在同一实验中共存；
-# - 租用的服务器通常在同一地域，跨数据中心时延由网关注入（network.emulate_wan: true）；
-#   若服务器确实分布在不同地域，改为 false，并可在 network.overrides 中填入实测 RTT。
+# - real pools (backend: openai): each upstream is a vLLM instance; power comes from the sensors of
+#   measurement (NVML);
+# - emulated pools (backend: emulated): servers emulated with the server model, mixed with real ones;
+# - rented servers are usually in one region, so the gateway injects the wide-area latency
+#   (network.emulate_wan: true); set it to false when the servers really are in different regions.
 #
-# measurement.host: excluded 表示服务器 IT 功率只含 GPU（云虚拟机通常不提供 RAPL 与 BMC）；
-# 裸金属服务器有本机 BMC 时可加入 {type: ipmi, max_w: <上限>} 并改为 host: server（站点栈映射 /dev/ipmi0）。
-# 本文件复制为 control-stack/ 中的 scenario.yaml；各站点代理启动时从控制节点取得（站点栈 .env 中的 CONTROL_URL）。
-# 数据集放在控制节点的 CPC_DATA_DIR 中（电网信号服务与负载生成器使用），准备方法见 examples/datasets/README.md。
+# measurement.host: excluded counts GPU power only (cloud VMs rarely expose RAPL or a BMC); bare-metal
+# servers with a local BMC may add {type: ipmi, max_w: <limit>} with host: server (the site stack maps /dev/ipmi0).
+# Copy this file to control-stack/scenario.yaml; site agents fetch it from the control node at startup
+# (CONTROL_URL in .env of the site stack). Datasets live in CPC_DATA_DIR of the control node (used by the
+# grid-signal service and cpc live); see examples/datasets/README.md.
 
 name: cloud-3real-1sim
 
 clock:
   start: "2026-07-15T08:00:00+08:00"
-  speedup: 12            # 真实 2 小时覆盖信号 24 小时；正式实验建议 1
+  speedup: 12            # 2 real hours cover 24 signal hours; use 1 for final experiments
 
 sources:
-  - {id: east,  name: 上海, lat: 31.23, lon: 121.47, share: 0.40}
-  - {id: south, name: 广州, lat: 23.13, lon: 113.26, share: 0.35}
-  - {id: north, name: 北京, lat: 39.90, lon: 116.40, share: 0.25}
+  - {id: east,  name: Shanghai, lat: 31.23, lon: 121.47, share: 0.40}
+  - {id: south, name: Guangzhou, lat: 23.13, lon: 113.26, share: 0.35}
+  - {id: north, name: Beijing, lat: 39.90, lon: 116.40, share: 0.25}
 
 node_profiles:
-  gpu-server:              # 真实服务器：功率实测；表只用于全局策略的容量与功率估计及仿真（示意值，宜用实测数据生成）
-    description: 单卡推理服务器（示意值）
+  gpu-server:              # real server: measured power; the tables serve policy estimates and simulation (illustrative; use cpc measure)
+    description: single-GPU inference server (illustrative)
     slots: 32
     power_w: [[0, 170], [0.25, 260], [1, 400]]
     tpot_s: [[0, 0.03], [1, 0.05]]
     prefill_tokens_per_s: 4000
     boot_s: 90
     cap_min_ratio: 0.6
-  emulated-a10:            # 仿真服务器：与真实服务器同级别（示意值，宜用真实服务器的测量数据生成）
-    description: 单卡 A10 级服务器（示意值）
+  emulated-a10:            # emulated server of the same class (illustrative; generate from measurements of the real servers)
+    description: single A10-class server (illustrative)
     slots: 32
     power_w: [[0, 170], [0.25, 230], [0.5, 280], [1, 400]]
     tpot_s: [[0, 0.03], [1, 0.048]]
@@ -40,7 +43,7 @@ node_profiles:
 
 sites:
   - id: sh
-    name: 长三角·上海（真实服务器 A）
+    name: Yangtze River Delta - Shanghai (real server A)
     region: shanghai
     lat: 31.15
     lon: 121.12
@@ -52,7 +55,7 @@ sites:
         upstreams: [{id: sh-vllm0, url: "http://vllm-0:8000", gpu_indices: [0], container: cpc-vllm-0, max_inflight: 32}]
     measurement: {sensors: [{type: nvml}], host: excluded}
   - id: gz
-    name: 贵州·贵安（真实服务器 B）
+    name: Guizhou - Gui'an (real server B)
     region: guizhou
     lat: 26.40
     lon: 106.40
@@ -64,7 +67,7 @@ sites:
         upstreams: [{id: gz-vllm0, url: "http://vllm-0:8000", gpu_indices: [0], container: cpc-vllm-0, max_inflight: 32}]
     measurement: {sensors: [{type: nvml}], host: excluded}
   - id: nm
-    name: 内蒙古·和林格尔（真实服务器 C）
+    name: Inner Mongolia - Horinger (real server C)
     region: inner_mongolia
     lat: 40.38
     lon: 111.82
@@ -76,7 +79,7 @@ sites:
         upstreams: [{id: nm-vllm0, url: "http://vllm-0:8000", gpu_indices: [0], container: cpc-vllm-0, max_inflight: 32}]
     measurement: {sensors: [{type: nvml}], host: excluded}
   - id: gd
-    name: 粤港澳·韶关（仿真）
+    name: Greater Bay Area - Shaoguan (emulated)
     region: guangdong
     lat: 24.81
     lon: 113.60
@@ -91,7 +94,7 @@ grid:
   price:  {dataset: "${CPC_DATA_DIR}/cn-grid-2026", signal: price}
   carbon: {dataset: "${CPC_DATA_DIR}/cn-grid-2026", signal: carbon_intensity}
 
-workload:                      # Azure LLM Inference Trace 2024 对话服务一天，稀疏化到平均约 2.7 请求/秒
+workload:                      # one day of Azure LLM Inference Trace 2024 (conversation), thinned to ~2.7 requests/s
   dataset: "${CPC_DATA_DIR}/azure-llm-2024-conv"
   start_s: 230400
   duration_s: 86400

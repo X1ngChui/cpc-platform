@@ -1,13 +1,14 @@
-# 控制栈：部署在一台控制服务器上（可以是无 GPU 的小规格云主机，也可以与某个站点共用）。
+# Control stack on one control server (a small instance without GPUs, or shared with a site).
 #
-# 组成：电网信号服务、路由网关、容量控制器、Prometheus、Grafana，以及场景中的仿真站点（可选）。
-# 安全：grid/gateway/controller/站点端口应只对同一 VPC 内的服务器开放（云安全组），并设置 CPC_ADMIN_TOKEN；
-#       Prometheus 与 Grafana 只绑定 127.0.0.1，通过 SSH 隧道访问。
-# 准备：
+# Services: grid-signal service, routing gateway, capacity controller, Prometheus, Grafana, and the
+# emulated sites of the scenario (optional).
+# Security: open the grid/gateway/controller/site ports only to servers of the same VPC (security group) and
+#           set CPC_ADMIN_TOKEN; Prometheus and Grafana bind to 127.0.0.1 and are reached through SSH tunnels.
+# Preparation:
 #   printf 'CPC_ADMIN_TOKEN=...\nGRAFANA_PASSWORD=...\nCPC_IMAGE=ghcr.io/x1ngchui/cpc-platform:0.3.0\n' > .env
-#   cp ../scenario.cloud.example.yaml scenario.yaml        # 按实验修改
-#   cp ../endpoints.cloud.example.yaml endpoints.yaml      # 填入各服务器 IP
-#   cp ../prometheus.cloud.example.yml prometheus.yml      # 填入各服务器 IP
+#   cp ../scenario.cloud.example.yaml scenario.yaml        # adapt to the experiment
+#   cp ../endpoints.cloud.example.yaml endpoints.yaml      # fill in the server addresses
+#   cp ../prometheus.cloud.example.yml prometheus.yml      # fill in the server addresses
 #   docker compose up -d
 
 name: cpc-control
@@ -19,10 +20,10 @@ x-cpc: &cpc
     - ./scenario.yaml:/app/cfg/scenario.yaml:ro
     - ./endpoints.yaml:/app/cfg/endpoints.yaml:ro
     - ./logs:/logs
-    - ${CPC_DATA_DIR:-~/.cache/cpc/datasets}:/var/lib/cpc/datasets:ro   # 数据集目录（控制节点上按 examples/datasets 准备）
+    - ${CPC_DATA_DIR:-~/.cache/cpc/datasets}:/var/lib/cpc/datasets:ro   # datasets (prepared on the control node with examples/datasets)
   environment:
     CPC_ENDPOINTS: /app/cfg/endpoints.yaml
-    CPC_ADMIN_TOKEN: ${CPC_ADMIN_TOKEN:?请在 .env 中设置管理接口令牌 CPC_ADMIN_TOKEN}
+    CPC_ADMIN_TOKEN: ${CPC_ADMIN_TOKEN:?set the admin token CPC_ADMIN_TOKEN in .env}
 
 services:
   grid:
@@ -40,7 +41,7 @@ services:
     command: ["controller", "-s", "/app/cfg/scenario.yaml", "--host", "0.0.0.0", "--port", "9300", "--log", "/logs/controller.jsonl"]
     ports: ["9300:9300"]
 
-  # 场景中的仿真站点（示例 gd）；没有仿真站点时删除
+  # emulated site of the scenario (gd in the example); remove without emulated sites
   site-gd:
     <<: *cpc
     command: ["site", "-s", "/app/cfg/scenario.yaml", "--site", "gd", "--host", "0.0.0.0", "--port", "9104"]
@@ -54,18 +55,18 @@ services:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ../../prometheus/rules:/etc/prometheus/rules:ro
       - prom-data:/prometheus
-    ports: ["127.0.0.1:9090:9090"]   # 仅本机访问；远程查看用 ssh -L 9090:localhost:9090 <控制节点>
+    ports: ["127.0.0.1:9090:9090"]   # local only; remotely: ssh -L 9090:localhost:9090 <control node>
 
   grafana:
     image: grafana/grafana:12.1.1
     restart: unless-stopped
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?请在 .env 中设置 Grafana 管理员密码 GRAFANA_PASSWORD}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?set the Grafana admin password GRAFANA_PASSWORD in .env}
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/cpc-overview.json
     volumes:
       - ../../grafana/provisioning:/etc/grafana/provisioning:ro
       - ../../grafana/dashboards:/var/lib/grafana/dashboards:ro
-    ports: ["127.0.0.1:3000:3000"]   # 仅本机访问；远程查看用 ssh -L 3000:localhost:3000 <控制节点>
+    ports: ["127.0.0.1:3000:3000"]   # local only; remotely: ssh -L 3000:localhost:3000 <control node>
 
 volumes:
   prom-data:

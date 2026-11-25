@@ -1,7 +1,8 @@
-# 开启硬件功率封顶（GPU 站点栈的补充文件）：站点代理经 NVML 设置 GPU 功率上限，容器需要 SYS_ADMIN 权限。
-# 用法：docker compose -f docker-compose.yml -f docker-compose.powercap.yml up -d
+# Hardware power capping (override of the GPU site stack): the site agent sets GPU power limits through
+# NVML, which needs SYS_ADMIN in the container.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.powercap.yml up -d
 services:
   site-agent:
-    command: ["site", "--control", "${CONTROL_URL:?请在 .env 中设置控制节点的电网信号服务地址 CONTROL_URL}",
+    command: ["site", "--control", "${CONTROL_URL:?set CONTROL_URL in .env to the grid-signal service of the control node}",
               "--site", "${SITE_ID}", "--host", "0.0.0.0", "--port", "9100", "--enable-power-cap"]
     cap_add: [SYS_ADMIN]

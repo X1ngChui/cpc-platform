@@ -1,29 +1,24 @@
-# 能耗感知的"标准化指标"——Prometheus 记录规则（recording rules）。
+# Standard energy metrics as Prometheus recording rules.
 #
-# 设计：各类采集器（站点代理的服务器模型 / 传感器读数、通用功率导出器 cpc exporter）
-# 输出的原始指标名各不相同；这里统一汇总为以 site 为维度的标准指标，调度器、仪表盘与实验分析只依赖这些标准指标。
-# 命名遵循 Prometheus 官方约定 level:metric:operations。
+# The site agents export raw metrics (server model or sensor readings); these rules aggregate them into
+# standard per-site metrics for dashboards and analysis. Names follow the Prometheus convention
+# level:metric:operations.
 groups:
   - name: cpc-energy
     interval: 5s
     rules:
-      # ---- 设备层：GPU 功率（指标名与 NVIDIA dcgm-exporter 相同，仿真站点与真实站点通用）
+      # ---- devices: GPU power (metric of NVIDIA dcgm-exporter, exported for real servers)
       - record: site:gpu_power_watts:sum
         expr: sum by (site) (DCGM_FI_DEV_POWER_USAGE)
-      # ---- 设备层（通用导出器 cpc exporter：NVIDIA GPU、CPU RAPL、本机 BMC 与 command 传感器）
-      - record: host_kind:device_power_watts:sum
-        expr: sum by (host, kind) (cpc_device_power_watts)
-      - record: host:device_energy_joules:rate1m
-        expr: sum by (host) (rate(cpc_device_energy_joules_total[1m]))
-      # ---- 服务器层：IT 功率（GPU + 主机）
+      # ---- servers: IT power (GPU + host)
       - record: site:it_power_watts:sum
         expr: sum by (site) (cpc_site_it_power_watts)
-      # ---- 设施层：设施功率 = IT 功率 × PUE
+      # ---- facility: facility power = IT power x PUE
       - record: site:facility_power_watts:sum
         expr: sum by (site) (cpc_site_facility_power_watts)
       - record: global:facility_power_watts:sum
         expr: sum(site:facility_power_watts:sum)
-      # ---- 电网层：用电成本速率（电价货币单位/小时）与碳排放速率（kg/小时）
+      # ---- grid: cost rate (currency of the price per hour) and carbon rate (kg per hour)
       - record: site:energy_cost_per_hour
         expr: site:facility_power_watts:sum / 1000 * on (site) group_left max by (site) (cpc_grid_price_per_kwh)
       - record: site:carbon_kg_per_hour
@@ -32,10 +27,10 @@ groups:
         expr: sum(site:energy_cost_per_hour)
       - record: global:carbon_kg_per_hour
         expr: sum(site:carbon_kg_per_hour)
-      # ---- 需求响应：设施功率相对上限的余量（无上限的站点不出现）
+      # ---- demand response: headroom of facility power below the limit (sites without a limit are absent)
       - record: site:power_cap_headroom_watts
         expr: max by (site) (cpc_grid_power_cap_kw > 0) * 1000 - on (site) site:facility_power_watts:sum
-      # ---- 能效：每输出 token 的设施能耗（J/token）
+      # ---- efficiency: facility energy per output token (J/token)
       - record: site:joules_per_output_token:rate1m
         expr: >
           site:facility_power_watts:sum

@@ -1,7 +1,8 @@
-# 单元测试与冒烟测试用场景。
-# 负载为合成数据集（tests/conftest.py 与 scripts/smoke_test.py 在首次使用时用 examples/datasets/synthetic_workload.py 生成）；
-# 电网信号为 examples/datasets/cn_grid/convert.py 转换得到的 2026 年 7 月数据（随测试提交）。
-# 服务器参数为示意值（8 卡 A100 级服务器），只用于检验平台行为。
+# Scenario of the unit and smoke tests.
+# The workload is synthetic (generated on first use by tests/conftest.py and scripts/smoke_test.py with
+# examples/datasets/synthetic_workload.py); the grid signals are July 2026 data converted by
+# examples/datasets/cn_grid/convert.py (committed with the tests). Server parameters are illustrative
+# (8-GPU A100-class server) and only exercise the platform.
 
 name: test-4dc
 
@@ -10,14 +11,14 @@ clock:
   speedup: 1
 
 sources:
-  - {id: east,  name: 上海,  lat: 31.23, lon: 121.47, share: 0.40}
-  - {id: south, name: 广州,  lat: 23.13, lon: 113.26, share: 0.35}
-  - {id: north, name: 北京,  lat: 39.90, lon: 116.40, share: 0.25}
+  - {id: east,  name: Shanghai,  lat: 31.23, lon: 121.47, share: 0.40}
+  - {id: south, name: Guangzhou, lat: 23.13, lon: 113.26, share: 0.35}
+  - {id: north, name: Beijing,   lat: 39.90, lon: 116.40, share: 0.25}
 
 node_profiles:
   a100x8:
-    # 示意值：表按"单卡 60–400 W、功率 ∝ 占用率^0.7，主机 800–1500 W 线性"的公式在 5 个占用率上计算得到。
-    description: 8 卡 A100 级服务器（示意值）
+    # illustrative: tables from "60-400 W per GPU, power ~ occupancy^0.7, host 800-1500 W linear" at 5 occupancies
+    description: 8-GPU A100-class server (illustrative)
     slots: 16
     power_w: [[0, 1280], [0.25, 2485.7], [0.5, 3304.4], [0.75, 4028.9], [1, 4700]]
     tpot_s: [[0, 0.025], [1, 0.04]]
@@ -26,28 +27,28 @@ node_profiles:
 
 sites:
   - id: sh
-    name: 长三角·上海
+    name: Yangtze River Delta - Shanghai
     region: shanghai
     lat: 31.15
     lon: 121.12
     pue: 1.25
     pools: [{id: main, profile: a100x8, count: 4}]
   - id: gd
-    name: 粤港澳·韶关
+    name: Greater Bay Area - Shaoguan
     region: guangdong
     lat: 24.81
     lon: 113.60
     pue: 1.25
     pools: [{id: main, profile: a100x8, count: 4}]
   - id: gz
-    name: 贵州·贵安
+    name: Guizhou - Gui'an
     region: guizhou
     lat: 26.40
     lon: 106.40
     pue: 1.20
     pools: [{id: main, profile: a100x8, count: 6}]
   - id: nm
-    name: 内蒙古·和林格尔
+    name: Inner Mongolia - Horinger
     region: inner_mongolia
     lat: 40.38
     lon: 111.82

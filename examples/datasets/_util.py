@@ -1,4 +1,5 @@
-"""转换范例的公共函数。范例代码不属于平台核心，演示如何把原始公开数据整理为符合平台规范的数据集。"""
+"""Helpers of the conversion examples. The examples are not part of the platform; they show how public raw
+data become datasets in the platform format."""
 
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ from cpc.datasets import data_dir
 
 
 def download(url: str, dest: Path, token_env: str | None = None) -> Path:
-    """下载原始文件到 dest（已存在时直接使用）。外部下载使用系统代理设置。"""
+    """Download a raw file to dest (reused if present). External downloads use the system proxy settings."""
     if dest.is_file():
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -20,10 +21,10 @@ def download(url: str, dest: Path, token_env: str | None = None) -> Path:
     if token_env:
         tok = os.environ.get(token_env)
         if not tok:
-            sys.exit(f"下载 {url} 需要访问令牌：请设置环境变量 {token_env}")
+            sys.exit(f"downloading {url} needs an access token: set the environment variable {token_env}")
         headers["Authorization"] = f"Bearer {tok}"
     part = dest.with_name(dest.name + ".part")
-    print(f"下载 {url}", file=sys.stderr)
+    print(f"downloading {url}", file=sys.stderr)
     with httpx.stream("GET", url, headers=headers, follow_redirects=True, timeout=httpx.Timeout(60.0, connect=15.0)) as r:
         r.raise_for_status()
         with open(part, "wb") as f:
@@ -34,22 +35,22 @@ def download(url: str, dest: Path, token_env: str | None = None) -> Path:
 
 
 def raw_file(raw: str | None, group: str, url: str, token_env: str | None = None) -> Path:
-    """原始文件：给出 --raw 时使用该文件，否则下载到 ${CPC_DATA_DIR}/raw/<group>/。"""
+    """Raw file: --raw if given, otherwise downloaded to ${CPC_DATA_DIR}/raw/<group>/."""
     if raw:
         return Path(raw)
     return download(url, data_dir() / "raw" / group / url.rsplit("/", 1)[-1], token_env)
 
 
 def out_dir(out: str | None, name: str) -> Path:
-    """输出目录：给出 --out 时使用该目录，否则为 ${CPC_DATA_DIR}/<数据集名>。"""
+    """Output directory: --out if given, otherwise ${CPC_DATA_DIR}/<dataset name>."""
     return Path(out) if out else data_dir() / name
 
 
 WORKLOAD_CORE = [
-    {"name": "arrival_s", "type": "number", "unit": "s", "description": "到达时间（相对 cpc.origin 的秒数）",
+    {"name": "arrival_s", "type": "number", "unit": "s", "description": "arrival time (s from cpc.origin)",
      "constraints": {"required": True, "minimum": 0}},
-    {"name": "input_tokens", "type": "integer", "description": "输入 token 数", "constraints": {"required": True, "minimum": 0}},
-    {"name": "output_tokens", "type": "integer", "description": "输出 token 数", "constraints": {"required": True, "minimum": 1}},
+    {"name": "input_tokens", "type": "integer", "description": "input tokens", "constraints": {"required": True, "minimum": 0}},
+    {"name": "output_tokens", "type": "integer", "description": "output tokens", "constraints": {"required": True, "minimum": 1}},
 ]
 
 SIGNAL_CORE = [
@@ -62,6 +63,6 @@ SIGNAL_CORE = [
 
 
 def zero_output(n_zero: int, mode: str, what: str) -> None:
-    """输出 token 数为 0 的请求（平台规范要求 ≥ 1）须由转换参数显式处理。"""
+    """Requests with 0 output tokens (the specification requires >= 1) need an explicit conversion option."""
     if n_zero and mode == "fail":
-        sys.exit(f"{what} 中有 {n_zero} 个请求的输出 token 数为 0；请用 --zero-output drop 显式剔除")
+        sys.exit(f"{what} has {n_zero} requests with 0 output tokens; drop them explicitly with --zero-output drop")

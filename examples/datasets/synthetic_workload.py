@@ -1,10 +1,12 @@
-"""合成负载（日内波动的非齐次泊松到达）→ workload 数据集。只用于单元测试、冒烟测试与功能演示，不作为实验数据。
+"""Synthetic workload (non-homogeneous Poisson arrivals with a daily cycle) -> workload dataset. For unit tests,
+smoke tests and demonstrations only, never as experimental data.
 
-到达率 λ(h) = rps × max(0, 1 + A·cos(2π(h − peak_hour)/24))，h 为 origin 所在时区的当地小时；
-输入、输出 token 数服从对数正态分布（参数 mean 为算术均值，sigma 为对数标准差），截断到 [1, max]。
+Arrival rate lambda(h) = rps x max(0, 1 + A cos(2 pi (h - peak_hour) / 24)) with h the local hour in the time
+zone of origin; input and output tokens are log-normal (mean: arithmetic mean, sigma: log standard
+deviation), truncated to [1, max].
 
-用法：
-    python examples/datasets/synthetic_workload.py --out 目录 --origin 2026-07-15T00:00:00+08:00 --hours 48 --rps 12 \\
+Usage:
+    python examples/datasets/synthetic_workload.py --out DIR --origin 2026-07-15T00:00:00+08:00 --hours 48 --rps 12 \\
         --amplitude 0.5 --peak-hour 20 --input 800,0.8,8192 --output 200,0.7,1024 --seed 1
 """
 
@@ -32,7 +34,7 @@ def generate(out: str | Path, *, origin: datetime, hours: float, rps: float, amp
              input_tokens: tuple[float, float, int], output_tokens: tuple[float, float, int], seed: int,
              name: str = "synthetic-workload"):
     if origin.tzinfo is None:
-        raise ValueError("origin 须带时区")
+        raise ValueError("origin needs a UTC offset")
     rng = np.random.default_rng(seed)
     dur = hours * 3600.0
     lam_max = rps * (1 + abs(amplitude))
@@ -46,7 +48,7 @@ def generate(out: str | Path, *, origin: datetime, hours: float, rps: float, amp
     params = {"hours": hours, "rps": rps, "amplitude": amplitude, "peak_hour": peak_hour, "input_tokens": list(input_tokens),
               "output_tokens": list(output_tokens), "seed": seed}
     return write_dataset(out, name=name, version="1", kind="workload", table=table, fields=WORKLOAD_CORE,
-                         title="合成负载：日内波动的非齐次泊松到达（只用于测试与演示）", licenses=[{"name": "CC0-1.0"}],
+                         title="Synthetic workload: non-homogeneous Poisson arrivals with a daily cycle (tests and demonstrations only)", licenses=[{"name": "CC0-1.0"}],
                          cpc={"origin": origin.isoformat(), "synthetic": True,
                               "conversion": {"script": "examples/datasets/synthetic_workload.py", **params}})
 
@@ -64,8 +66,8 @@ def main() -> None:
     ap.add_argument("--rps", type=float, required=True)
     ap.add_argument("--amplitude", type=float, required=True)
     ap.add_argument("--peak-hour", type=float, required=True)
-    ap.add_argument("--input", type=_triple, required=True, help="均值,对数标准差,上限")
-    ap.add_argument("--output", type=_triple, required=True, help="均值,对数标准差,上限")
+    ap.add_argument("--input", type=_triple, required=True, help="mean,log-sd,max")
+    ap.add_argument("--output", type=_triple, required=True, help="mean,log-sd,max")
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--name", default="synthetic-workload")
     a = ap.parse_args()

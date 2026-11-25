@@ -1,16 +1,17 @@
-# 快速上手：在 quickstart 场景上比较 3 组全局调度策略（cpc run examples/quickstart/experiment.yaml）。
+# Quick start: compare 3 combinations of global policies on the quickstart scenario
+# (cpc run examples/quickstart/experiment.yaml).
 
 name: quickstart
-scenario: scenario.yaml          # 相对于本文件
-hours: 0.9                       # 负载约 58 分钟
-bin_s: 60                        # 时间序列每 60 秒一行
+scenario: scenario.yaml          # relative to this file
+hours: 0.9                       # the workload lasts about 58 minutes
+bin_s: 60                        # one time-series row per 60 s
 variants:
-  - name: nearest-static         # 就近路由，全部服务器常开
+  - name: nearest-static         # nearest site, all servers always on
     routing:  {policy: nearest}
     capacity: {policy: static}
-  - name: nearest-reactive       # 就近路由，按负载开关服务器
+  - name: nearest-reactive       # nearest site, servers switched with the load
     routing:  {policy: nearest}
     capacity: {policy: reactive}
-  - name: cost-reactive          # 按电价与碳价选择站点，按负载开关服务器
+  - name: cost-reactive          # site by price and carbon, servers switched with the load
     routing:  {policy: cost_aware}
     capacity: {policy: reactive}

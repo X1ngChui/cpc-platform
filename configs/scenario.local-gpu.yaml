@@ -1,10 +1,12 @@
-# 本机联调场景：站点 lab 只有真实服务器（任意 OpenAI 兼容推理实例），功率由 NVML 实测；站点 emu 为仿真服务器。
+# Single-machine scenario: site lab has one real server (any OpenAI-compatible inference instance) whose
+# power NVML measures; site emu has emulated servers.
 #
-# lab 的推理实例：有真实模型时为 vLLM 等推理服务；没有时可用平台的仿真站点充当 OpenAI 兼容接口：
+# The inference instance of lab is vLLM or a similar server; without a model, an emulated site of the
+# platform can stand in as the OpenAI-compatible interface:
 #   cpc site -s configs/scenario.yaml --local --site gz --port 8000 --host 127.0.0.1
 #   cpc up -s configs/scenario.local-gpu.yaml
-# 使用真实 vLLM 时，把 upstreams[0].url 指向 vLLM，并把请求中的 model 设为其 served-model-name（loadgen --model）。
-# 数据准备：azure_llm.py --variant 2023-conv、cn_grid/convert.py（见 examples/datasets/README.md）。
+# With vLLM, point upstreams[0].url at it and set the request model to its served-model-name (cpc live --model).
+# Data: azure_llm.py --variant 2023-conv and cn_grid/convert.py (see examples/datasets/README.md).
 
 name: local-gpu
 
@@ -13,22 +15,22 @@ clock:
   speedup: 60
 
 sources:
-  - {id: east, name: 上海, lat: 31.23, lon: 121.47, share: 1.0}
+  - {id: east, name: Shanghai, lat: 31.23, lon: 121.47, share: 1.0}
 
 network:
   default_source: east
 
 node_profiles:
-  local:                       # 本机推理实例：功率来自实测；表只用于全局策略的容量与功率估计及仿真（示意值）
-    description: 单卡推理实例（示意值）
+  local:                       # local inference instance: measured power; the tables serve policy estimates and simulation (illustrative)
+    description: single-GPU inference instance (illustrative)
     slots: 32
     power_w: [[0, 45], [0.25, 120], [1, 250]]
     tpot_s: [[0, 0.008], [1, 0.02]]
     prefill_tokens_per_s: 20000
     boot_s: 60
   emulated:
-    # 示意值：表按"单卡 60–400 W、功率 ∝ 占用率^0.7，主机 800–1500 W 线性"的公式在 5 个占用率上计算得到。
-    description: 8 卡 A100 级服务器（示意值）
+    # illustrative: tables from "60-400 W per GPU, power ~ occupancy^0.7, host 800-1500 W linear" at 5 occupancies
+    description: 8-GPU A100-class server (illustrative)
     slots: 16
     power_w: [[0, 1280], [0.25, 2485.7], [0.5, 3304.4], [0.75, 4028.9], [1, 4700]]
     tpot_s: [[0, 0.025], [1, 0.04]]
@@ -37,7 +39,7 @@ node_profiles:
 
 sites:
   - id: lab
-    name: 本机 GPU（真实服务器）
+    name: local GPU (real server)
     region: guizhou
     lat: 26.40
     lon: 106.40
@@ -50,9 +52,9 @@ sites:
           - {id: lab-0, url: "http://127.0.0.1:8000", gpu_indices: [0], container: cpc-vllm-local, max_inflight: 32}
     measurement:
       sensors: [{type: nvml, gpus: [0]}]
-      host: excluded           # 服务器 IT 功率只含 GPU
+      host: excluded           # server IT power covers the GPU only
   - id: emu
-    name: 仿真站点
+    name: emulated site
     region: guangdong
     lat: 24.81
     lon: 113.60
@@ -63,7 +65,7 @@ grid:
   price:  {dataset: "${CPC_DATA_DIR}/cn-grid-2026", signal: price}
   carbon: {dataset: "${CPC_DATA_DIR}/cn-grid-2026", signal: carbon_intensity}
 
-workload:                      # Azure LLM Inference Trace 2023（对话，1 小时，平均约 5.4 请求/秒）稀疏化到约 2 请求/秒
+workload:                      # Azure LLM Inference Trace 2023 (conversation, 1 h, ~5.4 requests/s) thinned to ~2 requests/s
   dataset: "${CPC_DATA_DIR}/azure-llm-2023-conv"
   rate_scale: 0.4
   seed: 1

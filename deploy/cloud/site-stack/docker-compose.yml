@@ -1,15 +1,16 @@
-# 站点栈（GPU）：部署在每台 GPU 服务器上（一台服务器上的推理实例 = 一个站点的真实服务器池）。
-# 没有 GPU 的服务器使用 docker-compose.cpu.yml（llama.cpp 推理）。
+# Site stack (GPU) on every GPU server (the inference instances of one server = the real pool of a site).
+# Servers without GPUs use docker-compose.cpu.yml (llama.cpp).
 #
-# 组成：
-#   vllm-0 / vllm-1   推理实例（OpenAI 兼容接口），每个实例占一张 GPU，对平台而言是一台真实服务器
-#   site-agent        站点代理：启动时从控制节点取得场景与服务地址；排队与派发、按场景 measurement 声明采集功率、
-#                     开关实例（Docker API）、可选功率封顶
-#   node-exporter     （可选）主机 CPU/内存/网络指标；裸金属上还可读取 RAPL 能耗
+# Services:
+#   vllm-0 / vllm-1   inference instances (OpenAI-compatible), one GPU each, one real server each for the platform
+#   site-agent        site agent: fetches scenario and addresses from the control node at startup; queueing and
+#                     dispatch, power measurement as declared by measurement, instance on/off (Docker API),
+#                     optional power capping (docker-compose.powercap.yml)
+#   node-exporter     (optional) host CPU/memory/network metrics; RAPL energy on bare metal
 #
-# 前置：NVIDIA 驱动 + Docker + NVIDIA Container Toolkit（见《使用手册》"实验部署"一章）。
-# 用法：
-#   cp .env.example .env   # 按本机修改 SITE_ID、CONTROL_URL、CPC_ADMIN_TOKEN、MODEL 等
+# Prerequisites: NVIDIA driver + Docker + NVIDIA Container Toolkit (see the guide, "Live experiments").
+# Usage:
+#   cp .env.example .env   # set SITE_ID, CONTROL_URL, CPC_ADMIN_TOKEN, MODEL, ...
 #   docker compose up -d
 
 name: cpc-site
@@ -36,7 +37,7 @@ services:
           devices: [{driver: nvidia, device_ids: ["0"], capabilities: [gpu]}]
     ports: ["8000:8000"]
 
-  # 第二张 GPU（单卡服务器删除此服务，并在场景文件中删去对应 upstream）
+  # second GPU (remove this service on single-GPU servers, and the upstream in the scenario)
   vllm-1:
     <<: *vllm
     container_name: cpc-vllm-1
@@ -52,21 +53,21 @@ services:
   site-agent:
     image: ${CPC_IMAGE:-cpc-platform:latest}
     restart: unless-stopped
-    command: ["site", "--control", "${CONTROL_URL:?请在 .env 中设置控制节点的电网信号服务地址 CONTROL_URL}",
+    command: ["site", "--control", "${CONTROL_URL:?set CONTROL_URL in .env to the grid-signal service of the control node}",
               "--site", "${SITE_ID}", "--host", "0.0.0.0", "--port", "9100"]
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock   # 用于启停 vLLM 容器（服务器开关）
-      # 裸金属服务器上使用 rapl 传感器时取消注释，并在场景中写 {type: rapl, root: /host/powercap}
-      # （Docker 默认屏蔽容器内的 /sys/devices/virtual/powercap）：
+      - /var/run/docker.sock:/var/run/docker.sock   # starts and stops the vLLM containers (server on/off)
+      # uncomment for the rapl sensor on bare metal and write {type: rapl, root: /host/powercap} in the scenario
+      # (Docker masks /sys/devices/virtual/powercap in containers):
       # - /sys/devices/virtual/powercap:/host/powercap:ro
-    # 裸金属服务器上使用 ipmi 传感器（本机 BMC）时取消注释：
+    # uncomment for the ipmi sensor (local BMC) on bare metal:
     # devices: ["/dev/ipmi0:/dev/ipmi0"]
     environment:
-      CPC_ADMIN_TOKEN: ${CPC_ADMIN_TOKEN:?请在 .env 中设置与控制栈相同的 CPC_ADMIN_TOKEN}
+      CPC_ADMIN_TOKEN: ${CPC_ADMIN_TOKEN:?set CPC_ADMIN_TOKEN in .env, identical to the control stack}
     deploy:
       resources:
         reservations:
-          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]   # 仅用于读取 NVML 功率
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]   # NVML power readings only
     ports: ["9100:9100"]
 
   node-exporter:
@@ -75,5 +76,5 @@ services:
     restart: unless-stopped
     pid: host
     network_mode: host
-    command: ["--path.rootfs=/host", "--web.listen-address=:9101"]   # 避开站点代理的 9100 端口
+    command: ["--path.rootfs=/host", "--web.listen-address=:9101"]   # the site agent uses 9100
     volumes: ["/:/host:ro,rslave"]

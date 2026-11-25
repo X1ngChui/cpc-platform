@@ -1,19 +1,24 @@
-# 工商业峰谷分时电价的时段结构与浮动比例（原始规则，由 convert.py 展开为 grid_signal 数据集的逐时段电价）。
+# Periods and multipliers of commercial and industrial time-of-use tariffs (raw rules; convert.py expands them
+# into the per-period prices of a grid_signal dataset).
 #
-# 说明：
-# 1. 时段与浮动比例取自各省发展改革委文件，出处见每项的 source 字段。
-# 2. flat_price（平段电价，CNY/kWh）为示意值；实际值随月度代理购电价格变化，使用前应按目标月份的电网企业代理购电公告更新。
-# 3. 简化：浮动比例作用于整个平段电价；实际政策中政府性基金及附加、容量（需量）电价不参与浮动。
-# 4. 2026 年起部分省份对直接参与市场交易的工商业用户取消了固定分时电价，改为随现货市场价格浮动；
-#    研究市场价格时，应以现货价格数据转换得到的 grid_signal 数据集作为场景的 grid.price。
+# Notes:
+# 1. Periods and multipliers come from documents of the provincial development and reform commissions; see
+#    source of each entry.
+# 2. flat_price (CNY/kWh) is illustrative; the actual value follows the monthly agency purchase price and should
+#    be updated from the grid company's announcement for the target month.
+# 3. Simplification: the multipliers apply to the whole flat price; in the actual policies government funds,
+#    surcharges and capacity (demand) charges are not multiplied.
+# 4. From 2026 some provinces replaced fixed time-of-use prices by spot-market prices for users trading on the
+#    market directly; studies of market prices should use a grid_signal dataset converted from spot prices as
+#    grid.price of the scenario.
 #
-# 结构：每个省份由若干 season 组成；各 season 的月份合起来恰好覆盖 1–12 月各一次（转换时校验）。
-# periods 中未列出的小时为平段（flat）；小时区间为 [start, end)，取 0–24，按北京时间。
-# sharp：尖峰，价格 = 高峰价 × multiplier_over_peak；deep_valley：深谷，价格 = 低谷价 × multiplier_over_valley。
+# Structure: each province has seasons whose months cover 1-12 exactly once (checked by the conversion).
+# Hours not listed in periods are flat; hour ranges are [start, end) within 0-24, Beijing time.
+# sharp: price = peak price x multiplier_over_peak; deep_valley: price = valley price x multiplier_over_valley.
 
 guangdong:
-  name: 广东
-  source: 广东省发展改革委《关于进一步完善我省峰谷分时电价政策有关问题的通知》（粤发改价格〔2021〕331号），2021-10-01 起执行
+  name: Guangdong
+  source: Guangdong Development and Reform Commission, notice on further improving the time-of-use tariff policy (Yue Fa Gai Jia Ge [2021] No. 331), effective 2021-10-01
   flat_price: 0.65
   seasons:
     - months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
@@ -22,13 +27,13 @@ guangdong:
         valley: [[0, 8]]
       multipliers: {peak: 1.70, valley: 0.38}
       sharp:
-        months: [7, 8, 9]   # 另含日最高气温≥35℃的高温日，此处未建模
+        months: [7, 8, 9]   # also on days with a maximum temperature of at least 35 C, not modelled here
         hours: [[11, 12], [15, 17]]
         multiplier_over_peak: 1.25
 
 guizhou:
-  name: 贵州
-  source: 贵州省发展改革委《关于完善峰谷分时电价机制有关事项的通知》（黔发改价格〔2023〕481号），2023-08-01 起执行
+  name: Guizhou
+  source: Guizhou Development and Reform Commission, notice on improving the time-of-use tariff mechanism (Qian Fa Gai Jia Ge [2023] No. 481), effective 2023-08-01
   flat_price: 0.50
   seasons:
     - months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
@@ -38,17 +43,17 @@ guizhou:
       multipliers: {peak: 1.60, valley: 0.40}
 
 inner_mongolia:
-  name: 内蒙古（蒙西电网）
-  source: 内蒙古自治区发展改革委《关于完善蒙西电网工商业分时电价政策的通知（试行）》（2023-12-28 发布，2024-02-01 起执行）
-  note: 文件给出大风季的峰谷时段；小风季沿用相同时段为本数据的假设，待核实。
+  name: Inner Mongolia (western grid)
+  source: Inner Mongolia Development and Reform Commission, notice on improving the commercial and industrial time-of-use tariffs of the western Inner Mongolia grid (trial; published 2023-12-28, effective 2024-02-01)
+  note: the document gives the periods of the windy season; using the same periods in the low-wind season is an assumption of this dataset, to be verified.
   flat_price: 0.40
   seasons:
-    - months: [1, 2, 3, 4, 5, 9, 10, 11, 12]   # 大风季
+    - months: [1, 2, 3, 4, 5, 9, 10, 11, 12]   # windy season
       periods:
         peak: [[6, 8], [18, 22]]
         valley: [[11, 16]]
       multipliers: {peak: 1.68, valley: 0.48}
-    - months: [6, 7, 8]                         # 小风季
+    - months: [6, 7, 8]                         # low-wind season
       periods:
         peak: [[6, 8], [18, 22]]
         valley: [[11, 16]]
@@ -61,11 +66,11 @@ inner_mongolia:
         multiplier_over_valley: 0.80
 
 shanghai:
-  name: 上海
-  source: 上海市发展改革委《关于进一步完善我市分时电价机制有关事项的通知》（沪发改价管〔2022〕50号），2023-01-01 起执行；此处为两部制工商业用户
+  name: Shanghai
+  source: Shanghai Development and Reform Commission, notice on further improving the time-of-use tariff mechanism (Hu Fa Gai Jia Guan [2022] No. 50), effective 2023-01-01; two-part commercial and industrial users
   flat_price: 0.70
   seasons:
-    - months: [7, 8, 9]                          # 夏季
+    - months: [7, 8, 9]                          # summer
       periods:
         peak: [[8, 15], [18, 21]]
         valley: [[22, 24], [0, 6]]
@@ -74,7 +79,7 @@ shanghai:
         months: [7, 8]
         hours: [[12, 14]]
         multiplier_over_peak: 1.25
-    - months: [1, 12]                            # 冬季
+    - months: [1, 12]                            # winter
       periods:
         peak: [[8, 11], [18, 21]]
         valley: [[22, 24], [0, 6]]
@@ -82,7 +87,7 @@ shanghai:
       sharp:
         hours: [[19, 21]]
         multiplier_over_peak: 1.25
-    - months: [2, 3, 4, 5, 6, 10, 11]            # 其他月份
+    - months: [2, 3, 4, 5, 6, 10, 11]            # other months
       periods:
         peak: [[8, 11], [18, 21]]
         valley: [[22, 24], [0, 6]]

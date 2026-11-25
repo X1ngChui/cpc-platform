@@ -1,6 +1,6 @@
 {
   "uid": "cpc-overview",
-  "title": "算电协同调度平台",
+  "title": "cpc platform",
   "tags": [
     "cpc"
   ],
@@ -16,8 +16,8 @@
     {
       "id": 1,
       "type": "stat",
-      "title": "设施总功率",
-      "description": "各站点 IT 功率 × PUE 之和",
+      "title": "Facility power",
+      "description": "sum of IT power x PUE over sites",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -63,7 +63,7 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "用电成本速率（每小时）",
+      "title": "Energy cost per hour",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -110,7 +110,7 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "碳排放速率（kg/小时）",
+      "title": "Carbon (kg per hour)",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -157,7 +157,7 @@
     {
       "id": 4,
       "type": "stat",
-      "title": "请求速率",
+      "title": "Request rate",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -204,7 +204,7 @@
     {
       "id": 5,
       "type": "stat",
-      "title": "SLO 达成率（5 分钟）",
+      "title": "SLO attainment (5 min)",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -251,8 +251,8 @@
     {
       "id": 6,
       "type": "stat",
-      "title": "信号时钟（时）",
-      "description": "电网信号时间的小时数；演示时可加速",
+      "title": "Signal clock (hour)",
+      "description": "hour of the grid-signal time; may be accelerated",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -298,7 +298,7 @@
     {
       "id": 10,
       "type": "timeseries",
-      "title": "站点设施功率",
+      "title": "Facility power per site",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -414,7 +414,7 @@
     {
       "id": 11,
       "type": "timeseries",
-      "title": "电价（每 kWh）",
+      "title": "Price per kWh",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -530,7 +530,7 @@
     {
       "id": 12,
       "type": "timeseries",
-      "title": "在线服务器数",
+      "title": "Online servers",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -646,7 +646,7 @@
     {
       "id": 13,
       "type": "timeseries",
-      "title": "电力碳强度（kgCO2/kWh）",
+      "title": "Carbon intensity (kgCO2/kWh)",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -762,7 +762,7 @@
     {
       "id": 14,
       "type": "timeseries",
-      "title": "各站点请求速率",
+      "title": "Request rate per site",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -878,7 +878,7 @@
     {
       "id": 15,
       "type": "timeseries",
-      "title": "首 token 时延 P99",
+      "title": "TTFT P99",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -994,8 +994,8 @@
     {
       "id": 16,
       "type": "timeseries",
-      "title": "需求响应：功率上限余量",
-      "description": "设施功率上限 − 实际设施功率；为负表示越限。仅在有上限的时段显示",
+      "title": "Demand response: power headroom",
+      "description": "facility power limit - facility power; negative values exceed the limit. Shown while a limit applies",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1110,7 +1110,7 @@
     {
       "id": 17,
       "type": "timeseries",
-      "title": "每输出 token 设施能耗（J/token）",
+      "title": "Facility energy per output token (J/token)",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -1226,7 +1226,7 @@
     {
       "id": 18,
       "type": "timeseries",
-      "title": "排队请求数",
+      "title": "Queued requests",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -1342,7 +1342,7 @@
     {
       "id": 19,
       "type": "timeseries",
-      "title": "GPU 功率（按站点汇总，DCGM 兼容指标）",
+      "title": "GPU power per site (DCGM-compatible metric)",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -1458,8 +1458,8 @@
     {
       "id": 20,
       "type": "timeseries",
-      "title": "上游可用性（网关 / 控制器视角）",
-      "description": "1 为正常，0 为故障；站点不可用时被移出路由视图或控制周期",
+      "title": "Upstream availability (gateway / controller)",
+      "description": "1 healthy, 0 failed; unavailable sites leave the routing view and the control period",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1474,7 +1474,7 @@
         {
           "refId": "A",
           "expr": "min by (component, upstream) (cpc_upstream_up)",
-          "legendFormat": "{{component}} → {{upstream}}",
+          "legendFormat": "{{component}} -> {{upstream}}",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1574,8 +1574,8 @@
     {
       "id": 21,
       "type": "timeseries",
-      "title": "功率传感器状态与能耗数据完整率",
-      "description": "传感器 1 正常 0 故障；读数缺失时站点功率为 NaN，不以其他值替代",
+      "title": "Power sensor health",
+      "description": "1 healthy, 0 failed; missing readings make site power NaN, never another value",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1690,7 +1690,7 @@
     {
       "id": 22,
       "type": "timeseries",
-      "title": "能耗数据完整率（功率有效时长占比）",
+      "title": "Energy data coverage (share of time with valid power)",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -1806,7 +1806,7 @@
     {
       "id": 23,
       "type": "timeseries",
-      "title": "网关转发尝试结果",
+      "title": "Gateway forwarding attempts",
       "description": "",
       "datasource": {
         "type": "prometheus",

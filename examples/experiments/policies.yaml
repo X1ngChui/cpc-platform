@@ -1,19 +1,20 @@
-# 实验描述：默认场景下比较 4 组跨数据中心调度策略（cpc run examples/experiments/policies.yaml）。
-# 结果写入 results/policies/<变体名>/（结果数据包）与 results/policies/comparison.csv。
+# Experiment: compare 4 combinations of global policies on the default scenario
+# (cpc run examples/experiments/policies.yaml). Results go to results/policies/<variant>/ (result
+# packages) and results/policies/comparison.csv.
 
 name: policies
 scenario: ../../configs/scenario.yaml
 hours: 24
 variants:
-  - name: nearest-static                 # 就近路由，全部服务器常开（基线）
+  - name: nearest-static                 # nearest site, all servers always on (baseline)
     routing:  {policy: nearest, params: {max_wait_s: 0.5}}
     capacity: {policy: static}
-  - name: leastloaded-reactive           # 负载均衡 + 按需伸缩
+  - name: leastloaded-reactive           # load balancing + autoscaling
     routing:  {policy: least_loaded}
     capacity: {policy: reactive, params: {target_util: 0.6}}
-  - name: cost-reactive                  # 电价与碳价感知路由 + 按需伸缩
+  - name: cost-reactive                  # price- and carbon-aware routing + autoscaling
     routing:  {policy: cost_aware}
     capacity: {policy: reactive, params: {target_util: 0.6}}
-  - name: weighted-gridaware             # 两级：容量策略按等效电价分配容量与路由权重，网关按权重分流
+  - name: weighted-gridaware             # two levels: capacity and routing weights by effective price, split by weight
     routing:  {policy: weighted}
     capacity: {policy: grid_aware}

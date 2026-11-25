@@ -1,4 +1,4 @@
-# 统一使用 LF 换行，避免 Windows 检出的脚本在 Linux 容器中出错
+# LF line endings everywhere, so scripts checked out on Windows still run in Linux containers
 * text=auto eol=lf
 *.png binary
 *.pdf binary

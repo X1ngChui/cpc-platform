@@ -1,9 +1,9 @@
-"""生成 Grafana 仪表盘 JSON（deploy/grafana/dashboards/cpc-overview.json）。
+"""Generate the Grafana dashboard JSON (deploy/grafana/dashboards/cpc-overview.json).
 
-用脚本生成而不是手工编辑 JSON，便于增删面板、统一配色。站点颜色固定（不随排序变化）：
-站点按场景文件中的顺序依次使用分类色板的第 1–8 个颜色。
+Generated rather than edited by hand, so panels and colours stay consistent. Site colours are fixed
+(independent of sorting): sites take colours 1-8 of the categorical palette in scenario order.
 
-用法：python deploy/grafana/build_dashboard.py [-s configs/scenario.yaml]
+Usage: python deploy/grafana/build_dashboard.py [-s configs/scenario.yaml]
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-# 分类色板（固定顺序；已通过相邻配对的色觉缺陷区分度校验）
+# categorical palette (fixed order; adjacent pairs checked for colour-vision deficiency)
 PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
 DS = {"type": "prometheus", "uid": "prometheus"}
 
@@ -59,33 +59,33 @@ def stat(pid, title, expr, unit, x, decimals=1, desc=""):
 
 def build(sites: list[str]) -> dict:
     p = [
-        stat(1, "设施总功率", "global:facility_power_watts:sum", "watt", 0, desc="各站点 IT 功率 × PUE 之和"),
-        stat(2, "用电成本速率（每小时）", "global:energy_cost_per_hour", "none", 4, 2),
-        stat(3, "碳排放速率（kg/小时）", "global:carbon_kg_per_hour", "none", 8, 2),
-        stat(4, "请求速率", "sum(site:requests:rate1m)", "reqps", 12, 2),
-        stat(5, "SLO 达成率（5 分钟）", "global:slo_attainment:ratio5m", "percentunit", 16, 3),
-        stat(6, "信号时钟（时）", "cpc_grid_signal_hour", "none", 20, 2, desc="电网信号时间的小时数；演示时可加速"),
-        ts(10, "站点设施功率", "site:facility_power_watts:sum", "watt", 0, 4, sites),
-        ts(11, "电价（每 kWh）", "max by (site) (cpc_grid_price_per_kwh)", "none", 12, 4, sites, step=True),
-        ts(12, "在线服务器数", "max by (site) (cpc_site_nodes_on)", "none", 0, 12, sites, step=True),
-        ts(13, "电力碳强度（kgCO2/kWh）", "max by (site) (cpc_grid_carbon_intensity_kg_per_kwh)", "none", 12, 12, sites),
-        ts(14, "各站点请求速率", "site:requests:rate1m", "reqps", 0, 20, sites),
-        ts(15, "首 token 时延 P99", "site:ttft_seconds:p99_1m", "s", 12, 20, sites),
-        ts(16, "需求响应：功率上限余量", "site:power_cap_headroom_watts", "watt", 0, 28, sites,
-           desc="设施功率上限 − 实际设施功率；为负表示越限。仅在有上限的时段显示"),
-        ts(17, "每输出 token 设施能耗（J/token）", "site:joules_per_output_token:rate1m", "none", 12, 28, sites),
-        ts(18, "排队请求数", "max by (site) (cpc_site_queue_length)", "none", 0, 36, sites),
-        ts(19, "GPU 功率（按站点汇总，DCGM 兼容指标）", "site:gpu_power_watts:sum", "watt", 12, 36, sites),
-        ts(20, "上游可用性（网关 / 控制器视角）", "min by (component, upstream) (cpc_upstream_up)", "none", 0, 44, sites,
-           legend="{{component}} → {{upstream}}", step=True, desc="1 为正常，0 为故障；站点不可用时被移出路由视图或控制周期"),
-        ts(21, "功率传感器状态与能耗数据完整率", "min by (site, sensor) (cpc_sensor_up)", "none", 12, 44, sites,
-           legend="{{site}} {{sensor}}", step=True, desc="传感器 1 正常 0 故障；读数缺失时站点功率为 NaN，不以其他值替代"),
-        ts(22, "能耗数据完整率（功率有效时长占比）", "max by (site) (cpc_site_energy_coverage_ratio)", "percentunit", 0, 52, sites),
-        ts(23, "网关转发尝试结果", "sum by (outcome) (rate(cpc_gateway_attempts_total[1m]))", "reqps", 12, 52, sites,
+        stat(1, "Facility power", "global:facility_power_watts:sum", "watt", 0, desc="sum of IT power x PUE over sites"),
+        stat(2, "Energy cost per hour", "global:energy_cost_per_hour", "none", 4, 2),
+        stat(3, "Carbon (kg per hour)", "global:carbon_kg_per_hour", "none", 8, 2),
+        stat(4, "Request rate", "sum(site:requests:rate1m)", "reqps", 12, 2),
+        stat(5, "SLO attainment (5 min)", "global:slo_attainment:ratio5m", "percentunit", 16, 3),
+        stat(6, "Signal clock (hour)", "cpc_grid_signal_hour", "none", 20, 2, desc="hour of the grid-signal time; may be accelerated"),
+        ts(10, "Facility power per site", "site:facility_power_watts:sum", "watt", 0, 4, sites),
+        ts(11, "Price per kWh", "max by (site) (cpc_grid_price_per_kwh)", "none", 12, 4, sites, step=True),
+        ts(12, "Online servers", "max by (site) (cpc_site_nodes_on)", "none", 0, 12, sites, step=True),
+        ts(13, "Carbon intensity (kgCO2/kWh)", "max by (site) (cpc_grid_carbon_intensity_kg_per_kwh)", "none", 12, 12, sites),
+        ts(14, "Request rate per site", "site:requests:rate1m", "reqps", 0, 20, sites),
+        ts(15, "TTFT P99", "site:ttft_seconds:p99_1m", "s", 12, 20, sites),
+        ts(16, "Demand response: power headroom", "site:power_cap_headroom_watts", "watt", 0, 28, sites,
+           desc="facility power limit - facility power; negative values exceed the limit. Shown while a limit applies"),
+        ts(17, "Facility energy per output token (J/token)", "site:joules_per_output_token:rate1m", "none", 12, 28, sites),
+        ts(18, "Queued requests", "max by (site) (cpc_site_queue_length)", "none", 0, 36, sites),
+        ts(19, "GPU power per site (DCGM-compatible metric)", "site:gpu_power_watts:sum", "watt", 12, 36, sites),
+        ts(20, "Upstream availability (gateway / controller)", "min by (component, upstream) (cpc_upstream_up)", "none", 0, 44, sites,
+           legend="{{component}} -> {{upstream}}", step=True, desc="1 healthy, 0 failed; unavailable sites leave the routing view and the control period"),
+        ts(21, "Power sensor health", "min by (site, sensor) (cpc_sensor_up)", "none", 12, 44, sites,
+           legend="{{site}} {{sensor}}", step=True, desc="1 healthy, 0 failed; missing readings make site power NaN, never another value"),
+        ts(22, "Energy data coverage (share of time with valid power)", "max by (site) (cpc_site_energy_coverage_ratio)", "percentunit", 0, 52, sites),
+        ts(23, "Gateway forwarding attempts", "sum by (outcome) (rate(cpc_gateway_attempts_total[1m]))", "reqps", 12, 52, sites,
            legend="{{outcome}}"),
     ]
     return {
-        "uid": "cpc-overview", "title": "算电协同调度平台", "tags": ["cpc"], "timezone": "browser",
+        "uid": "cpc-overview", "title": "cpc platform", "tags": ["cpc"], "timezone": "browser",
         "schemaVersion": 39, "version": 1, "refresh": "5s", "time": {"from": "now-30m", "to": "now"},
         "panels": p, "templating": {"list": []}, "annotations": {"list": []}, "editable": True,
     }

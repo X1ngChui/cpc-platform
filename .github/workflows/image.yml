@@ -1,6 +1,6 @@
-# 构建并发布多架构平台镜像到 GitHub Container Registry：ghcr.io/<owner>/cpc-platform
-# main 分支推送 → :main 与 :sha-xxxx；推送 v* 标签 → :0.1.0、:0.1、:latest
-# 第三方 action 固定到提交 SHA（注释为对应版本），由 Dependabot 定期提出更新
+# Build and publish the multi-architecture platform image to GitHub Container Registry: ghcr.io/<owner>/cpc-platform
+# push to main -> :main and :sha-xxxx; v* tag -> :0.1.0, :0.1, :latest
+# third-party actions are pinned to commit SHAs (comments give the versions) and updated by Dependabot
 name: image
 
 on:
@@ -25,7 +25,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: image name (GHCR 要求小写)
+      - name: image name (GHCR requires lower case)
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/cpc-platform" >> "$GITHUB_ENV"
       - id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0

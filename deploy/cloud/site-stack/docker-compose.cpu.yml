@@ -1,21 +1,22 @@
-# 站点栈（CPU）：没有 GPU 的服务器以 llama.cpp 在 CPU 上推理，作为一个站点的真实服务器。
+# Site stack (CPU): a server without GPUs runs llama.cpp on its CPUs as the real server of a site.
 #
-# 组成：
-#   llm-0       推理实例（llama.cpp server，OpenAI 兼容接口），对平台而言是一台真实服务器
-#   site-agent  站点代理：启动时从控制节点取得场景与服务地址；功率由 RAPL（CPU 与内存）与本机 BMC（整机）测量
+# Services:
+#   llm-0       inference instance (llama.cpp server, OpenAI-compatible), one real server for the platform
+#   site-agent  site agent: fetches scenario and addresses from the control node at startup; power from RAPL
+#               (CPU and memory) and the local BMC (whole server)
 #
-# 前置：Docker；裸金属 Linux（RAPL 与 /dev/ipmi0）；模型文件（GGUF）放在 MODEL_DIR 中，例如：
+# Prerequisites: Docker; bare-metal Linux (RAPL and /dev/ipmi0); a GGUF model file in MODEL_DIR, e.g.:
 #   mkdir -p /data/models && curl -L -o /data/models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
 #     https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf
-# 用法：
-#   cp .env.example .env   # 修改 SITE_ID、CONTROL_URL、CPC_ADMIN_TOKEN、CPC_IMAGE，并加入 MODEL_DIR、MODEL_FILE
+# Usage:
+#   cp .env.example .env   # set SITE_ID, CONTROL_URL, CPC_ADMIN_TOKEN, CPC_IMAGE and add MODEL_DIR, MODEL_FILE
 #   docker compose -f docker-compose.cpu.yml up -d
 #
-# 场景中该站点的写法（上游的 url 为本文件中的服务名，不声明加速卡；功率为整机读数）：
-#   pools: [{id: cpu, profile: <服务器类型>, backend: openai,
-#            upstreams: [{id: <站点>-llm0, url: "http://llm-0:8080", container: cpc-llm-0, max_inflight: 4}]}]
+# The site in the scenario (the upstream url is the service name of this file, no accelerators; whole-server power):
+#   pools: [{id: cpu, profile: <server type>, backend: openai,
+#            upstreams: [{id: <site>-llm0, url: "http://llm-0:8080", container: cpc-llm-0, max_inflight: 4}]}]
 #   measurement: {sensors: [{type: ipmi, max_w: 2000}, {type: rapl, root: /host/powercap}], host: server}
-# llama.cpp 把上下文长度 -c 平均分给 --parallel 个并发槽：每槽的上下文须容纳负载中最长的请求。
+# llama.cpp splits the context -c evenly over --parallel slots: each slot must hold the longest request.
 
 name: cpc-site
 
@@ -23,7 +24,7 @@ services:
   llm-0:
     image: ghcr.io/ggml-org/llama.cpp:${LLAMA_TAG:-server}
     container_name: cpc-llm-0
-    restart: "no"                    # 由站点代理开关
+    restart: "no"                    # switched by the site agent
     volumes: ["${MODEL_DIR:-/data/models}:/models:ro"]
     command: ["-m", "/models/${MODEL_FILE:-qwen2.5-0.5b-instruct-q4_k_m.gguf}", "--alias", "cpc", "--host", "0.0.0.0",
               "--port", "8080", "-c", "${CONTEXT:-65536}", "--parallel", "${PARALLEL:-4}", "-t", "${THREADS:-16}"]
@@ -31,12 +32,12 @@ services:
   site-agent:
     image: ${CPC_IMAGE:-cpc-platform:latest}
     restart: unless-stopped
-    command: ["site", "--control", "${CONTROL_URL:?请在 .env 中设置控制节点的电网信号服务地址 CONTROL_URL}",
+    command: ["site", "--control", "${CONTROL_URL:?set CONTROL_URL in .env to the grid-signal service of the control node}",
               "--site", "${SITE_ID}", "--host", "0.0.0.0", "--port", "9100"]
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock          # 开关推理容器
-      - /sys/devices/virtual/powercap:/host/powercap:ro    # RAPL（Docker 默认屏蔽容器内的 powercap 目录）
-    devices: ["/dev/ipmi0:/dev/ipmi0"]                     # 本机 BMC
+      - /var/run/docker.sock:/var/run/docker.sock          # starts and stops the inference container
+      - /sys/devices/virtual/powercap:/host/powercap:ro    # RAPL (Docker masks the powercap directory in containers)
+    devices: ["/dev/ipmi0:/dev/ipmi0"]                     # local BMC
     environment:
-      CPC_ADMIN_TOKEN: ${CPC_ADMIN_TOKEN:?请在 .env 中设置与控制栈相同的 CPC_ADMIN_TOKEN}
+      CPC_ADMIN_TOKEN: ${CPC_ADMIN_TOKEN:?set CPC_ADMIN_TOKEN in .env, identical to the control stack}
     ports: ["9100:9100"]

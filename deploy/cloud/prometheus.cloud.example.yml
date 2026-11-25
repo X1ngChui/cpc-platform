@@ -1,4 +1,5 @@
-# Prometheus 配置（云服务器部署）。把 <...> 换成各服务器 IP；控制栈内的服务用容器名访问。
+# Prometheus configuration of a cloud deployment. Replace <...> with the server addresses; services of the
+# control stack are reached by container name.
 global:
   scrape_interval: 5s
   evaluation_interval: 5s
@@ -15,8 +16,8 @@ scrape_configs:
     static_configs: [{targets: ["controller:9300"]}]
   - job_name: cpc-site
     static_configs:
-      - targets: ["<服务器A_IP>:9100", "<服务器B_IP>:9100", "<服务器C_IP>:9100", "site-gd:9104"]
-  # 可选：node_exporter（站点栈 --profile host），主机 CPU/内存/网络；裸金属可读 RAPL 能耗
+      - targets: ["<server-a-ip>:9100", "<server-b-ip>:9100", "<server-c-ip>:9100", "site-gd:9104"]
+  # optional: node_exporter (site stack --profile host) for host CPU/memory/network; RAPL energy on bare metal
   - job_name: node
     static_configs:
-      - {targets: ["<服务器A_IP>:9101"], labels: {site: sh}}   # 站点栈中 node_exporter 监听 9101（避开站点代理的 9100）
+      - {targets: ["<server-a-ip>:9101"], labels: {site: sh}}   # node_exporter of the site stack listens on 9101 (the site agent uses 9100)

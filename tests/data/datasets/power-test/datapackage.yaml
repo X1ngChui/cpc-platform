@@ -1,7 +1,7 @@
-# 测试用功率特性数据集（合成数据，只用于单元测试）。
+# Power-profile dataset for the unit tests (synthetic).
 name: power-test
 version: "1"
-title: 合成功率特性（测试用）
+title: synthetic power profile (tests)
 licenses: [{name: CC0-1.0}]
 cpc: {kind: power_profile, profile: 1, synthetic: true}
 resources:

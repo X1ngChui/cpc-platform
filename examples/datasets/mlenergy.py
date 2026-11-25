@@ -1,15 +1,16 @@
-"""ML.ENERGY Benchmark v3（LLM 运行汇总）→ power_profile 数据集。
+"""ML.ENERGY Benchmark v3 (LLM run summaries) -> power_profile dataset.
 
-原始数据：https://huggingface.co/datasets/ml-energy/benchmark-v3（提交 f4db020，文件 runs/llm.parquet），Apache-2.0。
-Hugging Face 上为受控访问：在数据集页面申请访问后，以环境变量 HF_TOKEN 提供访问令牌。
-引用：Chung J-W, Ma J J, Wu R, et al. The ML.ENERGY Benchmark: Toward Automated Inference Energy Measurement and
+Raw data: https://huggingface.co/datasets/ml-energy/benchmark-v3 (commit f4db020, file runs/llm.parquet), Apache-2.0.
+Access on Hugging Face is gated: request access on the dataset page and provide the token as HF_TOKEN.
+Citation: Chung J-W, Ma J J, Wu R, et al. The ML.ENERGY Benchmark: Toward Automated Inference Energy Measurement and
 Optimization. NeurIPS Datasets and Benchmarks, 2025.
 
-字段对应：gpu_model → device，num_gpus → device_count，model_id → model，avg_batch_size → concurrency，
-avg_power_watts → power_w，mean_itl_ms / 1000 → itl_s；扩展字段 max_concurrency（max_num_seqs）、throughput_tokens_per_s、
-energy_per_token_j、task。缺省只保留 is_stable 为真的运行（--include-unstable 保留全部，并输出 is_stable 字段）。
+Fields: gpu_model -> device, num_gpus -> device_count, model_id -> model, avg_batch_size -> concurrency,
+avg_power_watts -> power_w, mean_itl_ms / 1000 -> itl_s; extensions max_concurrency (max_num_seqs),
+throughput_tokens_per_s, energy_per_token_j, task. Only runs with is_stable are kept by default
+(--include-unstable keeps all and adds the field is_stable).
 
-用法：python examples/datasets/mlenergy.py [--raw llm.parquet] [--out 目录]
+Usage: python examples/datasets/mlenergy.py [--raw llm.parquet] [--out DIR]
 """
 
 from __future__ import annotations
@@ -54,21 +55,21 @@ def main() -> None:
     table = pa.table(cols)
     fields = [
         {"name": "device", "type": "string"}, {"name": "device_count", "type": "integer", "constraints": {"minimum": 1}},
-        {"name": "model", "type": "string"}, {"name": "concurrency", "type": "number", "description": "平均批大小"},
-        {"name": "power_w", "type": "number", "unit": "W", "description": "全部 GPU 的平均总功率"},
-        {"name": "itl_s", "type": "number", "unit": "s", "description": "平均 token 间隔"},
+        {"name": "model", "type": "string"}, {"name": "concurrency", "type": "number", "description": "mean batch size"},
+        {"name": "power_w", "type": "number", "unit": "W", "description": "mean total power of all GPUs"},
+        {"name": "itl_s", "type": "number", "unit": "s", "description": "mean inter-token latency"},
         {"name": "max_concurrency", "type": "integer", "description": "vLLM max_num_seqs"},
         {"name": "throughput_tokens_per_s", "type": "number"}, {"name": "energy_per_token_j", "type": "number"},
         {"name": "task", "type": "string"},
     ] + ([{"name": "is_stable", "type": "boolean"}] if args.include_unstable else [])
     name = "mlenergy-benchmark-v3-llm"
     d = write_dataset(out_dir(args.out, name), name=name, version="f4db020", kind="power_profile", table=table, fields=fields,
-                      title="ML.ENERGY Benchmark v3：LLM 推理运行的功率、时延与吞吐（NVIDIA H100、B200）",
+                      title="ML.ENERGY Benchmark v3: power, latency and throughput of LLM inference runs (NVIDIA H100, B200)",
                       licenses=[{"name": "Apache-2.0"}],
                       sources=[{"title": "ML.ENERGY Benchmark", "path": "https://huggingface.co/datasets/ml-energy/benchmark-v3"}],
                       cpc={"citation": CITE, "conversion": {"script": "examples/datasets/mlenergy.py",
                                                             "stable_only": not args.include_unstable}})
-    print(f"{d.ref}：{table.num_rows} 次测量 → {d.root}")
+    print(f"{d.ref}: {table.num_rows} measurements -> {d.root}")
 
 
 if __name__ == "__main__":
