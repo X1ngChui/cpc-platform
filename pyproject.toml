@@ -1,6 +1,6 @@
 [project]
 name = "cpc-platform"
-version = "0.4.0"
+version = "0.4.1"
 description = "Energy-aware scheduling of AI inference across data centres (compute-power coordination)"
 readme = "README.md"
 requires-python = ">=3.10"

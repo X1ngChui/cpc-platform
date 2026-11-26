@@ -301,8 +301,8 @@ NVIDIA Container Toolkit 的软件源配置命令随版本变化，请以 NVIDIA
 
 ```bash
 git clone https://github.com/X1ngChui/cpc-platform.git && cd cpc-platform
-# 或 xingchui/cpc-platform:0.4.0，或自行 docker build
-docker pull ghcr.io/x1ngchui/cpc-platform:0.4.0
+# 或 xingchui/cpc-platform:0.4.1，或自行 docker build
+docker pull ghcr.io/x1ngchui/cpc-platform:0.4.1
 ```
 
 === 控制栈（控制节点，先启动）
@@ -315,7 +315,7 @@ cd deploy/cloud/control-stack
 cat > .env <<'EOF'
 CPC_ADMIN_TOKEN=<自定，各服务器相同>
 GRAFANA_PASSWORD=<自定>
-CPC_IMAGE=ghcr.io/x1ngchui/cpc-platform:0.4.0
+CPC_IMAGE=ghcr.io/x1ngchui/cpc-platform:0.4.1
 EOF
 cp ../scenario.cloud.example.yaml scenario.yaml      # 按实验修改
 cp ../endpoints.cloud.example.yaml endpoints.yaml    # 填入各服务器内网 IP
