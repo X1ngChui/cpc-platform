@@ -775,7 +775,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("measure", help="measure power and inter-token latency of a real server; write a power_profile dataset")
     sp.add_argument("--site", required=True, help="site-agent address, e.g. http://10.0.0.11:9100")
-    sp.add_argument("--node", default=None, help="server to measure (optional with one real server that is on)")
+    sp.add_argument("--node", default=None, help="server to measure; it must be the only server of the site that is on "
+                                                 "(default: that server)")
     sp.add_argument("--concurrency", default=None, help="levels, e.g. 0,1,2,4 (default 0, 1, 2, 4, ... up to the limit)")
     sp.add_argument("--warmup", type=_nonnegative, default=15.0, help="warm-up per level (s, default 15)")
     sp.add_argument("--duration", type=_positive, default=60.0, help="measurement per level (s, default 60)")

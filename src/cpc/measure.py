@@ -14,8 +14,9 @@ OFF_WINDOW_S seconds while off (inference instance stopped, machine running: off
 then it is switched on and timed until it serves again.
 
 The power scope follows the measurement configuration of the site (power_scope in /state: node is the
-whole server or host part included; accelerators covers accelerators only). The site should carry no
-other load during the measurement; a change of the server state (switched off, draining) is an error.
+whole server or host part included; accelerators covers accelerators only). The site dispatches the
+measurement requests over all servers that are on, so the measured server must be the only one that is on,
+and the site should carry no other load; a change of the server state (switched off, draining) is an error.
 """
 
 from __future__ import annotations
@@ -69,18 +70,21 @@ async def _node_state(client: httpx.AsyncClient, site: str, node: str) -> tuple[
 
 
 async def pick_node(client: httpx.AsyncClient, site: str, node: str | None) -> tuple[dict, dict]:
-    """The server to measure; without node the site must have exactly one real server that is on."""
+    """The server to measure: the only server of the site that is on, since the site dispatches the measurement
+    requests over all servers that are on. node, if given, must be that server."""
     s = await _site_state(client, site)
-    if not (real := [n for n in s.get("nodes", []) if n.get("power_source") == "sensors"]):
+    nodes = s.get("nodes", [])
+    if not (real := [n["id"] for n in nodes if n.get("power_source") == "sensors"]):
         raise ConfigError(f"site {s.get('site')} has no real server with measured power")
-    ids = [n["id"] for n in real]
-    if node is None:
-        if len(on := [n for n in real if n["state"] == "on"]) != 1:
-            raise ConfigError(f"site {s.get('site')} has {len(on)} real servers that are on ({ids}); choose one with --node")
-        return s, on[0]
-    if (n := next((n for n in real if n["id"] == node), None)) is None:
-        raise ConfigError(f"site {s.get('site')} has no real server {node} ({ids})")
-    return s, n
+    if node is not None and node not in real:
+        raise ConfigError(f"site {s.get('site')} has no real server {node} ({real})")
+    on = [n for n in nodes if n["state"] == "on"]
+    if len(on) != 1 or on[0]["id"] not in real or node not in (None, on[0]["id"]):
+        raise ConfigError(
+            f"site {s.get('site')} has {len(on)} servers that are on ({[n['id'] for n in on]}); the site dispatches the "
+            f"measurement requests over all of them, so {node or 'one real server'} must be the only one: stop the "
+            "capacity controller and switch the other servers off (POST /admin/capacity with active_nodes 1)")
+    return s, on[0]
 
 
 async def measure_level(client: httpx.AsyncClient, site: str, node: str, c: int, warmup_s: float, duration_s: float,
@@ -157,10 +161,11 @@ async def _wait_state(client: httpx.AsyncClient, site: str, node: str, state: st
         await asyncio.sleep(0.5)
 
 
-async def measure_boot(client: httpx.AsyncClient, site: str, node: str, total: int,
+async def measure_boot(client: httpx.AsyncClient, site: str, node: str, total: int, restore: int,
                        timeout_s: float = 900.0) -> tuple[float, float | None]:
-    """Switch all servers off through the admin interface, read the power while off, switch them on and
-    time until the server serves again (state on). Returns (boot time, power while off or None)."""
+    """Switch all servers off through the admin interface, read the power while off, switch all of them on
+    and time until the server serves again (state on), then restore the number of servers that were on.
+    Returns (boot time, power while off or None)."""
     url = site + "/admin/capacity"
     hint = " (stop the capacity controller during the measurement)"
     (await client.post(url, json={"active_nodes": 0}, headers=admin_headers())).raise_for_status()
@@ -175,7 +180,10 @@ async def measure_boot(client: httpx.AsyncClient, site: str, node: str, total: i
     t0 = time.monotonic()
     (await client.post(url, json={"active_nodes": total}, headers=admin_headers())).raise_for_status()
     await _wait_state(client, site, node, "on", timeout_s, "")
-    return time.monotonic() - t0, _mean(powers)
+    boot_s = time.monotonic() - t0
+    if restore != total:
+        (await client.post(url, json={"active_nodes": restore}, headers=admin_headers())).raise_for_status()
+    return boot_s, _mean(powers)
 
 
 def flat_power_warning(levels: list[Level]) -> str | None:
@@ -219,7 +227,7 @@ async def run_measure(site: str, node: str | None, levels: list[int], warmup_s: 
         if boot:
             log(f"  power while off and boot time: switching off (reading power for {OFF_WINDOW_S:g} s), then on ...")
             try:
-                boot_s, off_w = await measure_boot(client, site, node, s["nodes_total"])
+                boot_s, off_w = await measure_boot(client, site, node, s["nodes_total"], s["nodes_on"])
                 meta["boot_s"] = round(boot_s, 1)
                 if off_w is not None:
                     meta["off_w"] = round(off_w, 1)

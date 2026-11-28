@@ -136,6 +136,44 @@ def test_measure_writes_power_profile(tmp_path, monkeypatch, capsys):
     assert "idle power 100 W measured" in text and "off_w: 55.0" in text and "power while off from the measurement" in text
 
 
+def test_measure_needs_the_only_server_on(monkeypatch):
+    """The site dispatches the measurement requests over all servers that are on: the measured server must be
+    the only one; the boot measurement switches all servers on and then restores the number that was on."""
+    from cpc import measure
+    from cpc.config import ConfigError
+
+    monkeypatch.setattr(measure, "SAMPLE_S", 0.01)
+    monkeypatch.setattr(measure, "OFF_WINDOW_S", 0.05)
+    states, posts = {"a": "on", "b": "on"}, []
+
+    def handler(request):
+        if request.url.path == "/admin/capacity":
+            n = json.loads(request.content)["active_nodes"]
+            posts.append(n)
+            states.update(a="on" if n >= 2 else "off", b="on" if n >= 1 else "off")
+            return httpx.Response(200, json={})
+        nodes = [{"id": i, "state": st, "slots": 4, "busy": 0, "power_source": "sensors", "it_power_w": 50.0}
+                 for i, st in states.items()]
+        return httpx.Response(200, json={"site": "lab", "nodes_total": 2, "nodes": nodes,
+                                         "nodes_on": sum(st == "on" for st in states.values())})
+
+    async def run(fn, *args):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+            return await fn(c, "http://lab", *args)
+
+    for node in (None, "a"):
+        with pytest.raises(ConfigError, match="must be the only one"):
+            asyncio.run(run(measure.pick_node, node))
+    with pytest.raises(ConfigError, match="no real server c"):
+        asyncio.run(run(measure.pick_node, "c"))
+    states["a"] = "off"
+    assert asyncio.run(run(measure.pick_node, None))[1]["id"] == "b"
+    with pytest.raises(ConfigError, match="must be the only one"):
+        asyncio.run(run(measure.pick_node, "a"))
+    boot_s, off_w = asyncio.run(run(measure.measure_boot, "b", 2, 1))
+    assert posts == [0, 2, 1] and off_w == 50.0 and states == {"a": "off", "b": "on"}
+
+
 def test_site_fetches_config_from_control_node(scn, monkeypatch):
     """A site agent fetches scenario and addresses from the control node (GET /v1/config, admin token)."""
     from fastapi.testclient import TestClient

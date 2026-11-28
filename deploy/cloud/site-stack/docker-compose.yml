@@ -29,8 +29,10 @@ services:
   vllm-0:
     <<: *vllm
     container_name: cpc-vllm-0
-    command: ["--model", "${MODEL}", "--served-model-name", "cpc", "--max-model-len", "${MAX_MODEL_LEN:-8192}",
-              "--gpu-memory-utilization", "0.90", "--max-num-seqs", "${MAX_NUM_SEQS:-32}"]
+    # VLLM_ARGS: extra vLLM arguments (see .env.example)
+    command: >-
+      --model ${MODEL} --served-model-name cpc --max-model-len ${MAX_MODEL_LEN:-8192}
+      --gpu-memory-utilization 0.90 --max-num-seqs ${MAX_NUM_SEQS:-32} ${VLLM_ARGS:-}
     deploy:
       resources:
         reservations:
@@ -42,8 +44,9 @@ services:
     <<: *vllm
     container_name: cpc-vllm-1
     profiles: ["gpu2"]
-    command: ["--model", "${MODEL}", "--served-model-name", "cpc", "--max-model-len", "${MAX_MODEL_LEN:-8192}",
-              "--gpu-memory-utilization", "0.90", "--max-num-seqs", "${MAX_NUM_SEQS:-32}"]
+    command: >-
+      --model ${MODEL} --served-model-name cpc --max-model-len ${MAX_MODEL_LEN:-8192}
+      --gpu-memory-utilization 0.90 --max-num-seqs ${MAX_NUM_SEQS:-32} ${VLLM_ARGS:-}
     deploy:
       resources:
         reservations:

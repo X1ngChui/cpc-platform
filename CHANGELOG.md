@@ -2,6 +2,20 @@
 
 Versions follow semantic versioning.
 
+## Unreleased
+
+### Fixed
+
+- `cpc measure` requires the measured server to be the only server of the site that is on. The site dispatches
+  the measurement requests over all servers that are on, so with several servers on the measured server
+  carried only part of the load (found on a site with two V100 instances). After `--boot` the number of
+  servers that were on is restored.
+
+### Added
+
+- `VLLM_ARGS` in the GPU site stack passes extra arguments to vLLM, e.g. `--dtype half` on GPUs without
+  bfloat16 (V100, T4). The user guide names a vLLM release that still runs on the V100.
+
 ## v0.4.1 (2026-11-26)
 
 ### Fixed

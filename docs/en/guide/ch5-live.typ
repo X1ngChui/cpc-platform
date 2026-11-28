@@ -395,6 +395,9 @@ throughput.
 `MODEL` in `.env` should fit into GPU memory; in mainland China models download through
 `HF_ENDPOINT=https://hf-mirror.com`, or from ModelScope with `VLLM_USE_MODELSCOPE=True`. Models can also be
 downloaded on the host first (`huggingface-cli download <model>`) and loaded offline from the mounted cache.
+`VLLM_ARGS` passes extra arguments to vLLM. GPUs without bfloat16 (V100, T4) need `VLLM_ARGS=--dtype half`, and
+current vLLM releases are no longer built for the V100 (compute capability 7.0): there `VLLM_TAG` names a
+release that still supports it, such as `v0.8.5.post1`, which runs on its V0 engine.
 
 Checks:
 
@@ -481,9 +484,12 @@ Servers in one region have little latency between them, so the gateway injects t
 To make simulated servers behave like real ones, measure power and inter-token latency of the real server at
 several concurrency levels, then generate a server type from the measurements.
 
-*Step 1: preparation.* Site agent and inference instance run and the server is on; the site should carry no
-other load during the measurement, and the capacity controller should be stopped
-(`docker compose stop controller`) so that it does not switch servers meanwhile.
+*Step 1: preparation.* Site agent and inference instance run, and the measured server is the only server of
+the site that is on: the site dispatches the measurement requests over all servers that are on, and
+`cpc measure` stops with an error otherwise. Stop the capacity controller (`docker compose stop controller`)
+so that it does not switch servers meanwhile, and on sites with several servers switch the others off
+(`POST /admin/capacity` with `{"active_nodes": 1}`; `/state` shows which server stays on). The site should
+carry no other load during the measurement.
 
 *Step 2: measurement.* On a machine that reaches the site agent:
 
@@ -498,8 +504,8 @@ cpc measure --site http://<site address>:9100 --device A10 --model-name Qwen2.5-
 every second it reads the measured power of the server from the site agent, and the streams give
 inter-token latency, TTFT and throughput. Level 0 measures power only, the online idle power. `--boot`
 switches the server off through the admin interface of the site, measures the power while off (inference
-instance stopped, machine running), then switches it on and times how long it takes to serve again. Levels
-are printed as they finish:
+instance stopped, machine running), then switches all servers on, times how long the measured one takes to
+serve again and restores the number of servers that were on. Levels are printed as they finish:
 
 ```text
   concurrency 0: warm-up 0 s, measurement 60 s ...

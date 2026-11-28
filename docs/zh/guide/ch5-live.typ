@@ -362,7 +362,9 @@ docker compose -f docker-compose.yml -f docker-compose.powercap.yml up -d
 
 `.env` 中的 `MODEL` 应选择能放进显存的模型；国内服务器下载模型可设置 `HF_ENDPOINT=https://hf-mirror.com`，或设置
 `VLLM_USE_MODELSCOPE=True` 从 ModelScope 下载。也可以先在宿主机下载好模型（`huggingface-cli download <模型名>`），
-容器挂载缓存目录后离线加载。
+容器挂载缓存目录后离线加载。`VLLM_ARGS` 向 vLLM 传递额外参数：不支持 bfloat16 的 GPU（V100、T4）需要
+`VLLM_ARGS=--dtype half`；当前的 vLLM 版本已不再为 V100（计算能力 7.0）编译，此时 `VLLM_TAG` 应指定仍支持它的版本，
+如 `v0.8.5.post1`（以其 V0 引擎运行）。
 
 检查：
 
@@ -443,8 +445,10 @@ histogram_quantile(0.99, sum by (le, site) (rate(cpc_gateway_ttft_seconds_bucket
 
 使仿真中的服务器与真实服务器一致：先测量真实服务器在各级并发下的功率与 token 间隔，再由测量生成服务器类型。
 
-*第一步：准备。* 站点代理与推理实例已启动，被测服务器处于开启状态；测量期间站点不应承担其他负载，
-并停止容量控制器（`docker compose stop controller`），避免控制器在测量中开关服务器。
+*第一步：准备。* 站点代理与推理实例已启动，被测服务器是站点中唯一处于开启状态的服务器：站点把测量请求派发给所有开启的服务器，
+否则 `cpc measure` 报错退出。停止容量控制器（`docker compose stop controller`），避免控制器在测量中开关服务器；
+站点有多台服务器时关闭其余服务器（`POST /admin/capacity`，`{"active_nodes": 1}`；由 `/state` 查看保持开启的是哪一台）。
+测量期间站点不应承担其他负载。
 
 *第二步：测量。* 在能访问站点代理的机器上：
 
@@ -457,7 +461,7 @@ cpc measure --site http://<站点地址>:9100 --device A10 --model-name Qwen2.5-
 `cpc measure` 依次在并发 0、1、2、4……直至服务器的并发上限下保持固定数目的流式请求（输入、输出各 256 token），
 每级预热 15 秒后测量 60 秒：每秒读取站点代理给出的该服务器实测功率，并由流式响应计算 token 间隔、首 token 时延与吞吐。
 并发 0 一级只测量功率，作为在线空载功率；`--boot` 经站点管理接口关闭服务器，测量关机状态的功率
-（推理实例停止而机器仍在运行时的功率），再开启服务器并测量开机到可服务的时间。
+（推理实例停止而机器仍在运行时的功率），再开启全部服务器，测量被测服务器开机到可服务的时间，并恢复原先开启的服务器数。
 运行中逐级打印结果：
 
 ```text
