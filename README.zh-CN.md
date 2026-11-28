@@ -59,7 +59,7 @@ Python 中：`cpc.simulate("examples/quickstart/scenario.yaml", routing="cost_aw
 `ghcr.io/x1ngchui/cpc-platform`（GitHub Actions 构建）与 `xingchui/cpc-platform`（Docker Hub），均为 amd64 / arm64，入口为 `cpc`：
 
 ```bash
-docker run --rm --gpus all ghcr.io/x1ngchui/cpc-platform:0.4.1 sensors --types nvml
+docker run --rm --gpus all ghcr.io/x1ngchui/cpc-platform:0.4.2 sensors --types nvml
 ```
 
 ## 目录

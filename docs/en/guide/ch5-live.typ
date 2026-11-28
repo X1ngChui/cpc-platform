@@ -323,8 +323,8 @@ The repository setup of the NVIDIA Container Toolkit changes between versions; f
 
 ```bash
 git clone https://github.com/X1ngChui/cpc-platform.git && cd cpc-platform
-# or xingchui/cpc-platform:0.4.1, or docker build yourself
-docker pull ghcr.io/x1ngchui/cpc-platform:0.4.1
+# or xingchui/cpc-platform:0.4.2, or docker build yourself
+docker pull ghcr.io/x1ngchui/cpc-platform:0.4.2
 ```
 
 === Control stack (control node, first)
@@ -337,7 +337,7 @@ cd deploy/cloud/control-stack
 cat > .env <<'EOF'
 CPC_ADMIN_TOKEN=<your token, the same on all servers>
 GRAFANA_PASSWORD=<your password>
-CPC_IMAGE=ghcr.io/x1ngchui/cpc-platform:0.4.1
+CPC_IMAGE=ghcr.io/x1ngchui/cpc-platform:0.4.2
 EOF
 cp ../scenario.cloud.example.yaml scenario.yaml      # adapt to the experiment
 cp ../endpoints.cloud.example.yaml endpoints.yaml    # fill in the private addresses

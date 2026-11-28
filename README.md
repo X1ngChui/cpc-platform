@@ -72,7 +72,7 @@ described in the user guide.
 amd64 / arm64. The entry point is `cpc`:
 
 ```bash
-docker run --rm --gpus all ghcr.io/x1ngchui/cpc-platform:0.4.1 sensors --types nvml
+docker run --rm --gpus all ghcr.io/x1ngchui/cpc-platform:0.4.2 sensors --types nvml
 ```
 
 ## Layout
